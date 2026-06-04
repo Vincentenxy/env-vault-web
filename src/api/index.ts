@@ -1,5 +1,13 @@
 /**
- * API 层聚合导出。本期只暴露 `http` 与 `request` 两个基础工具,
- * 业务相关函数(auth/me/organization/...)在后续业务阶段补齐。
+ * API 层聚合导出。集中暴露 http 基础工具和业务模块函数。
  */
 export { http, request } from './http'
+
+// 业务模块
+export * from './me'
+export * from './organization'
+export * from './project'
+export * from './env'
+export * from './folder'
+export * from './secret'
+export * from './rbac'

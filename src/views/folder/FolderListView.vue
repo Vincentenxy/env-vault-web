@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   ElMessage,
@@ -57,14 +57,24 @@ const effectiveParent = computed<string>(() => {
   return selectedParentId.value
 })
 
-/** level=2 模式下可选的父 folder(当前 env 下的 level=1 folder) */
-const parentFolderOptions = computed<Folder[]>(() =>
-  selectedLevel.value === 1
-    ? []
-    : folderStore.items.filter(
-        (f) => f.level === 1 && getFolderEnvId(f) === selectedEnvId.value,
-      ),
-)
+/**
+ * 弹窗里"父级 folder"下拉的选项。
+ *
+ * 关键:这里用弹窗级的 `createForm.level` 而不是页面级的 `selectedLevel.value`,
+ * 否则用户在弹窗里从 level=1 切到 level=2 时,options 仍按页面级判断为空。
+ *
+ * 数据源:必须保证 `folderStore.items` 装的是当前 env 的 level=1 folder。
+ *   - 页面刚加载:onEnvChange 已拉
+ *   - 页面切到 level=2 后又选了父 folder:items 被覆写成 level=2,见 watch 补救
+ *   - 弹窗内从 1 切到 2:见下面的 watch(createForm.level)
+ */
+const parentFolderOptions = computed<Folder[]>(() => {
+  if (createForm.level !== 2) return []
+  // items 可能因为列表模式切换被覆写,这里兜底过滤出 level=1
+  return folderStore.items.filter(
+    (f) => f.level === 1 && getFolderEnvId(f) === selectedEnvId.value,
+  )
+})
 
 // ==================== 列表 ====================
 async function refreshCurrent(): Promise<void> {
@@ -136,12 +146,20 @@ function onLevelChange(level: string | number | boolean | undefined): void {
   if (level !== 1 && level !== 2) return
   selectedLevel.value = level
   selectedParentId.value = ''
-  if (level === 1 && selectedEnvId.value) {
+  if (!selectedEnvId.value) {
+    folderStore.clear()
+    return
+  }
+  if (level === 1) {
     folderStore
       .fetchList({ environmentId: selectedEnvId.value, pageNum: 1, pageSize: 20 })
       .catch(() => undefined)
   } else {
-    folderStore.clear()
+    // level=2 模式下,主列表要等选了父级才拉,但父级下拉需要当前 env 下的 level=1 folder,
+    // 这里也按 environmentId 拉一次,store 会把 items 标为 level=1,刚好满足父级下拉
+    folderStore
+      .fetchList({ environmentId: selectedEnvId.value, pageNum: 1, pageSize: 100 })
+      .catch(() => undefined)
   }
 }
 
@@ -228,7 +246,43 @@ function resetCreateForm(): void {
 function openCreate(): void {
   resetCreateForm()
   createDialogVisible.value = true
+  // 弹窗打开后,如果默认是 level=2,需要确保 folderStore.items 是 level=1 folder
+  // (页面级可能因为切到 level=2 选了父 folder 后被覆写成 level=2,见 onParentFolderChange)
+  void nextTick().then(() => {
+    if (createForm.level === 2 && selectedEnvId.value) {
+      const need =
+        folderStore.context?.level !== 1 ||
+        folderStore.context.parent !== selectedEnvId.value
+      if (need) {
+        folderStore
+          .fetchList({ environmentId: selectedEnvId.value, pageNum: 1, pageSize: 100 })
+          .catch(() => undefined)
+      }
+    }
+  })
 }
+
+/**
+ * 弹窗内 level 切换:重置 parentId,避免保留上一档的脏值(env id / 父 folder id 混用),
+ * 同时如果是切到 2,确保 store 里是 level=1 folder。
+ */
+watch(
+  () => createForm.level,
+  (level) => {
+    createForm.parentId = ''
+    createFormRef.value?.clearValidate(['parentId'])
+    if (level === 2 && selectedEnvId.value) {
+      const need =
+        folderStore.context?.level !== 1 ||
+        folderStore.context.parent !== selectedEnvId.value
+      if (need) {
+        folderStore
+          .fetchList({ environmentId: selectedEnvId.value, pageNum: 1, pageSize: 100 })
+          .catch(() => undefined)
+      }
+    }
+  },
+)
 
 function fillFromPreset(preset: (typeof PRESET_FOLDERS)[number]): void {
   createForm.code = preset.code

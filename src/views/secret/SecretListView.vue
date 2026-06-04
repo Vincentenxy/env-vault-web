@@ -42,7 +42,7 @@ const folderStore = useFolderStore()
 const envStore = useEnvStore()
 const orgStore = useOrganizationStore()
 const projectStore = useProjectStore()
-const { has } = usePermission()
+const { has, rbac } = usePermission()
 
 // ==================== 顶部选择器 ====================
 const selectedOrgId = ref<string>('')
@@ -351,6 +351,15 @@ watch(
     else if (p && p !== selectedProjectId.value) void onProjectChange(p)
     else if (e && e !== selectedEnvId.value) void onEnvChange(e)
     else if (f && f !== selectedFolderId.value) onFolderChange(f)
+  },
+)
+
+// 选中 env 后,切 rbac 当前 scope 到 environment 级别,
+// 这样 SecretReveal / SecretRead 等判断会按"我在该 env 是否有权限"来走。
+watch(
+  () => selectedEnvId.value,
+  (envId) => {
+    if (envId) void rbac.setCurrentScope({ scopeType: 'environment', scopeId: envId })
   },
 )
 </script>

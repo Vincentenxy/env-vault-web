@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import {
@@ -28,7 +28,7 @@ import type { EnvSpec } from '@/types/project'
 
 const projectStore = useProjectStore()
 const orgStore = useOrganizationStore()
-const { has } = usePermission()
+const { has, rbac } = usePermission()
 const router = useRouter()
 
 const selectedOrgId = ref<string>('')
@@ -316,6 +316,16 @@ onMounted(async () => {
     }
   }
 })
+
+// 选中组织后,切 rbac 当前 scope 到 organization 级别,
+// 这样 has(Permission.ProjectForceDelete) 等判断会按"我在该 org 是否有权限"来走。
+watch(
+  () => selectedOrgId.value,
+  (orgId) => {
+    if (orgId) void rbac.setCurrentScope({ scopeType: 'organization', scopeId: orgId })
+    else void rbac.setCurrentScope({ scopeType: 'global' })
+  },
+)
 </script>
 
 <template>

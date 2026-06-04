@@ -1,30 +1,31 @@
-import { computed } from 'vue'
-import { useAuthStore } from '@/stores/auth'
+import { useRbacStore } from '@/stores/rbac'
 import type { PermissionCode } from '@/constants/permission'
 
 /**
  * 权限判断 composable。
  *
- * 本期未接入后端授权列表,所有判断默认返回 false,等 `useAuthStore` 接入
- * 实际授权数据后这里直接基于扁平 permission 集合判定。
+ * 数据来源:`useRbacStore`。
+ * 当前 scope 默认为 global,业务页通过 `rbacStore.setCurrentScope({...})` 切换。
+ *
+ * 失败安全:store 未初始化(刚刷新页面、还没拉到权限)时,`granted` 是空 Set,
+ * 所有 `has()` 返回 false —— 表现为按钮 disabled,与"没权限"一致,不会越权放行。
  */
 export function usePermission() {
-  const auth = useAuthStore()
-
-  const granted = computed<Set<PermissionCode>>(() => new Set())
+  const rbac = useRbacStore()
 
   function has(permission: PermissionCode): boolean {
-    void auth
-    return granted.value.has(permission)
+    return rbac.granted.has(permission)
   }
 
   function hasAll(perms: PermissionCode[]): boolean {
+    if (perms.length === 0) return true
     return perms.every(has)
   }
 
   function hasAny(perms: PermissionCode[]): boolean {
+    if (perms.length === 0) return true
     return perms.some(has)
   }
 
-  return { has, hasAll, hasAny }
+  return { has, hasAll, hasAny, rbac }
 }

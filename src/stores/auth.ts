@@ -5,6 +5,7 @@ import { ApiError } from '@/types/api'
 import { tokenStore } from '@/utils/token'
 import { storage } from '@/utils/storage'
 import { getMe } from '@/api/me'
+import { useRbacStore } from '@/stores/rbac'
 
 const STORAGE_KEY = 'envvault.auth.token'
 
@@ -47,12 +48,16 @@ export const useAuthStore = defineStore('auth', () => {
   /**
    * 使用 Bearer token 登录:写入持久化 + 调 /me 验证。
    * 失败抛 ApiError,由调用方决定 UI。
+   * 成功后顺手把 rbac 切到 global scope 拉一次权限。
    */
   async function login(rawToken: string): Promise<User> {
     setToken(rawToken)
     try {
       const me = await getMe()
       setCurrentUser(me)
+      // 拉一次 global 权限;失败不阻断登录(只是按钮 disabled)
+      const rbac = useRbacStore()
+      await rbac.fetchMyPermissions({ scopeType: 'global' }).catch(() => undefined)
       return me
     } catch (e) {
       if (e instanceof ApiError && e.code === 1401) {
@@ -65,12 +70,16 @@ export const useAuthStore = defineStore('auth', () => {
   /** 静默刷新当前用户。失败不抛:
    *  - 1401:清空 token(已失效,避免后续请求持续 1401)
    *  - 其它:只清空 currentUser(网络/服务异常,token 仍可能是好的)
+   *  启动期刷新不希望弹错误 toast,通过 `silent: true` 抑制。
+   *  顺手拉一次 global 权限,让 usePermission 启动即可用。
    */
   async function refreshMe(): Promise<void> {
     if (!token.value) return
     try {
-      const me = await getMe()
+      const me = await getMe({ silent: true })
       setCurrentUser(me)
+      const rbac = useRbacStore()
+      await rbac.fetchMyPermissions({ scopeType: 'global' }).catch(() => undefined)
     } catch (e) {
       if (e instanceof ApiError && e.code === 1401) {
         clearToken()
@@ -82,6 +91,8 @@ export const useAuthStore = defineStore('auth', () => {
   function logout(): void {
     clearToken()
     setCurrentUser(null)
+    // 顺手清掉 RBAC 缓存,避免换账号后看到旧权限
+    useRbacStore().clear()
   }
 
   return {

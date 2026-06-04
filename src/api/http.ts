@@ -1,6 +1,8 @@
 import axios, { type AxiosInstance, type AxiosRequestConfig, type InternalAxiosRequestConfig } from 'axios'
 import { ApiError, ConflictError, NotFoundError } from '@/types/api'
+import { ErrorCode, type ErrorCodeValue } from '@/constants/error-code'
 import { tokenStore } from '@/utils/token'
+import { notify } from '@/utils/notify'
 
 /**
  * 全局唯一的 Axios 实例。
@@ -11,11 +13,19 @@ import { tokenStore } from '@/utils/token'
  *
  * 响应拦截:
  *  - 业务信封 {code, msg, data} 剥到 data
- *  - code !== 0 走错误码 → 抛出 ApiError 子类
- *  - HTTP 错误同样归一为 ApiError
+ *  - code !== 0 走错误码 → 抛出 ApiError 子类,并通过 notify 提示用户
+ *  - HTTP 错误同样归一为 ApiError 并提示
+ *  - 请求配置里带 `silent: true` 时跳过提示(给静默失败场景用,例如启动期 refreshMe)
  */
 
 const baseURL = import.meta.env.VITE_API_BASE || '/api/v1'
+
+declare module 'axios' {
+  export interface AxiosRequestConfig {
+    /** true 时,响应拦截器不再弹错误 toast —— 调用方自己处理 */
+    silent?: boolean
+  }
+}
 
 export const http: AxiosInstance = axios.create({
   baseURL,
@@ -59,13 +69,36 @@ function buildErrorFromEnvelope(
 ): ApiError {
   const common = { code: envelope.code, httpStatus, msg: envelope.msg, requestId }
   switch (envelope.code) {
-    case 1404:
+    case ErrorCode.NotFound:
       return new NotFoundError(common)
-    case 1409:
+    case ErrorCode.Conflict:
       return new ConflictError(common)
     default:
       return new ApiError(common)
   }
+}
+
+/**
+ * 把业务错误码映射成对用户友好的中文提示。
+ * 后端 `msg` 字段往往直接来自 Go 内部错误信息,不一定适合直接展示;
+ * 这里只对常见码做兜底,其余情况优先用后端 msg。
+ */
+function friendlyMessage(err: ApiError): string {
+  const map: Record<ErrorCodeValue, string> = {
+    [ErrorCode.GenericError]: '请求失败,请稍后重试',
+    [ErrorCode.BadRequest]: '请求参数有误',
+    [ErrorCode.Unauthorized]: '登录已过期,请重新登录',
+    [ErrorCode.Forbidden]: '没有访问权限',
+    [ErrorCode.NotFound]: '资源不存在或已被删除',
+    [ErrorCode.Conflict]: '操作冲突,请刷新后重试',
+    [ErrorCode.Internal]: '服务异常,请稍后重试',
+    [ErrorCode.ServiceUnavailable]: '服务暂不可用,请稍后重试',
+  }
+  return map[err.code as ErrorCodeValue] ?? err.message
+}
+
+function notifyApiError(err: ApiError): void {
+  notify.error(friendlyMessage(err))
 }
 
 http.interceptors.response.use(
@@ -75,25 +108,32 @@ http.interceptors.response.use(
       if (data.code === 0) {
         return data.data
       }
-      throw buildErrorFromEnvelope(data, response.status, response.headers['x-request-id'])
+      const err = buildErrorFromEnvelope(data, response.status, response.headers['x-request-id'])
+      if (!response.config.silent) {
+        notifyApiError(err)
+      }
+      throw err
     }
     return data
   },
   (error) => {
     const data = error?.response?.data
-    if (isEnvelope(data)) {
-      throw buildErrorFromEnvelope(
-        data,
-        error.response.status,
-        error.response.headers?.['x-request-id'],
-      )
+    const err = isEnvelope(data)
+      ? buildErrorFromEnvelope(
+          data,
+          error.response.status,
+          error.response.headers?.['x-request-id'],
+        )
+      : new ApiError({
+          code: ErrorCode.GenericError,
+          httpStatus: error?.response?.status ?? 0,
+          msg: error?.message ?? 'request failed',
+          requestId: error?.response?.headers?.['x-request-id'],
+        })
+    if (!error?.config?.silent) {
+      notifyApiError(err)
     }
-    throw new ApiError({
-      code: -1,
-      httpStatus: error?.response?.status ?? 0,
-      msg: error?.message ?? 'request failed',
-      requestId: error?.response?.headers?.['x-request-id'],
-    })
+    throw err
   },
 )
 

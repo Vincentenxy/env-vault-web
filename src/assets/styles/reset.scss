@@ -1,4 +1,7 @@
-/* 基础 reset + 全局背景/文字变量,响应 html.dark。 */
+/* 基础 reset。
+   全局背景/文字直接吃 tokens.scss 的 --v-* 变量,
+   主题切换时由 useThemeStore 给 <html> 加 .dark class,
+   tokens.scss 的 .dark 块接管所有颜色,这里不需要重复定义。 */
 *,
 *::before,
 *::after {
@@ -18,14 +21,9 @@ body {
     'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: var(--app-bg, #f5f7fa);
-  color: var(--app-text, #1f2329);
+  background: var(--v-app-bg);
+  color: var(--v-text-primary);
   transition:
     background 0.2s ease,
     color 0.2s ease;
-}
-
-html.dark body {
-  background: var(--app-bg, #0f1115);
-  color: var(--app-text, #e5e7eb);
 }

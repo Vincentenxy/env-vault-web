@@ -1,6 +1,11 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import 'element-plus/theme-chalk/dark/css-vars.css'
+// ElMessage / ElMessageBox / ElNotification 是函数式 API,
+// unplugin-vue-components 不会自动注入它们的样式,这里集中显式引入。
+import 'element-plus/theme-chalk/el-message.css'
+import 'element-plus/theme-chalk/el-message-box.css'
+import 'element-plus/theme-chalk/el-notification.css'
 import App from './App.vue'
 import { router } from './router'
 import { useThemeStore } from './stores/theme'

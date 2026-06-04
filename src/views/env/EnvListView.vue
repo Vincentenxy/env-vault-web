@@ -35,7 +35,7 @@ const router = useRouter()
 const envStore = useEnvStore()
 const orgStore = useOrganizationStore()
 const projectStore = useProjectStore()
-const { has } = usePermission()
+const { has, rbac } = usePermission()
 
 const selectedOrgId = ref<string>('')
 const selectedProjectId = ref<string>('')
@@ -334,6 +334,14 @@ watch(
     const p = (projectId as string | undefined) ?? ''
     if (o && o !== selectedOrgId.value) onOrgChange(o)
     else if (p && p !== selectedProjectId.value) onProjectChange(p)
+  },
+)
+
+// 选中 project 后,切 rbac 当前 scope 到 project 级别
+watch(
+  () => selectedProjectId.value,
+  (projectId) => {
+    if (projectId) void rbac.setCurrentScope({ scopeType: 'project', scopeId: projectId })
   },
 )
 </script>

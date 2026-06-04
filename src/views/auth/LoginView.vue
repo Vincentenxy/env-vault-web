@@ -239,7 +239,7 @@ async function onSubmit(): Promise<void> {
   }
 
   &__form-wrap {
-    background: #fff;
+    background: var(--v-surface-bg);
     display: flex;
     align-items: center;
     justify-content: center;
