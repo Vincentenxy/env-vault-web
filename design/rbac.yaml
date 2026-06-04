@@ -1,0 +1,1014 @@
+openapi: 3.0.3
+info:
+  title: EnvVault RBAC API
+  version: 0.1.0
+  description: EnvVault RBAC interfaces for permissions, roles, users, and role bindings.
+servers:
+  - url: /
+security:
+  - bearerAuth: []
+tags:
+  - name: RBAC Permissions
+  - name: RBAC Roles
+  - name: RBAC Bindings
+  - name: RBAC Users
+paths:
+  /api/v1/rbac/permission/list:
+    post:
+      tags:
+        - RBAC Permissions
+      summary: List system permissions
+      operationId: listPermissions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PageRequest"
+      responses:
+        "200":
+          description: Permission list.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: "#/components/schemas/PageResp"
+                          - type: object
+                            properties:
+                              list:
+                                type: array
+                                items:
+                                  $ref: "#/components/schemas/Permission"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/rbac/me/permissions:
+    post:
+      tags:
+        - RBAC Permissions
+      summary: Get current user permissions in a scope
+      operationId: getMyPermissions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScopeRequest"
+      responses:
+        "200":
+          description: Effective permissions for current user.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PermissionCodeList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/rbac/role/list:
+    post:
+      tags:
+        - RBAC Roles
+      summary: List roles in a scope
+      description: |
+        Caller must have `rbac:role:read` in the requested scope (via the
+        resource-scope ancestor chain: folder → environment → project → organization → global).
+        `platform_admin` is allowed in any scope; non-platform callers are
+        restricted to scopes where they hold the permission.
+      operationId: listRoles
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/ScopeRequest"
+                - $ref: "#/components/schemas/PageRequest"
+      responses:
+        "200":
+          description: Role list.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: "#/components/schemas/PageResp"
+                          - type: object
+                            properties:
+                              list:
+                                type: array
+                                items:
+                                  $ref: "#/components/schemas/Role"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/rbac/role/info:
+    post:
+      tags:
+        - RBAC Roles
+      summary: Get role detail
+      description: |
+        Caller must have `rbac:role:read` in the global scope (the lookup is
+        by id/code and does not carry scope context).
+      operationId: getRole
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoleInfoRequest"
+      responses:
+        "200":
+          description: Role detail.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Role"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/rbac/role/create:
+    post:
+      tags:
+        - RBAC Roles
+      summary: Create a custom role
+      description: |
+        Caller authorization — all four must hold:
+        1. `rbac:role:manage` in the target `scopeType` / `scopeId` (via ancestor chain).
+        2. Caller's effective permission set (in the target scope) must be a superset
+           of the new role's `permissions` array. (You cannot grant a permission
+           you do not yourself possess.)
+        3. If `scopeType = "global"`, caller must be `platform_admin`.
+        4. If `code = "platform_admin"`, caller must be `platform_admin`.
+
+        On success the role is persisted; existing system roles (code prefix `default`)
+        cannot be modified through this endpoint.
+      operationId: createRole
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoleUpsertRequest"
+      responses:
+        "200":
+          description: Created role.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Role"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/rbac/role/update:
+    post:
+      tags:
+        - RBAC Roles
+      summary: Update a custom role
+      description: |
+        Same authorization rules as `POST /rbac/role/create`:
+        1. `rbac:role:manage` in target scope.
+        2. Caller's effective permission set must be a superset of the updated `permissions`.
+        3. `global` scope → caller must be `platform_admin`.
+        4. Updating `code = "platform_admin"` → caller must be `platform_admin`.
+
+        System roles (read-only) cannot be updated.
+      operationId: updateRole
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - type: object
+                  required:
+                    - id
+                  properties:
+                    id:
+                      type: string
+                      format: uuid
+                - $ref: "#/components/schemas/RoleUpsertRequest"
+      responses:
+        "200":
+          description: Updated role.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Role"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/rbac/role/delete:
+    post:
+      tags:
+        - RBAC Roles
+      summary: Delete a custom role
+      description: |
+        Caller must have `rbac:role:manage` in the global scope.
+        System roles cannot be deleted (409 Conflict).
+      operationId: deleteRole
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IDRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Deleted"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/rbac/binding/list:
+    post:
+      tags:
+        - RBAC Bindings
+      summary: List role bindings in a scope
+      description: |
+        Caller must have `rbac:binding:read` in the requested scope (via the
+        resource-scope ancestor chain).
+      operationId: listRoleBindings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/ScopeRequest"
+                - $ref: "#/components/schemas/PageRequest"
+      responses:
+        "200":
+          description: Role binding list.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: "#/components/schemas/PageResp"
+                          - type: object
+                            properties:
+                              list:
+                                type: array
+                                items:
+                                  $ref: "#/components/schemas/RoleGrant"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/rbac/binding/grant:
+    post:
+      tags:
+        - RBAC Bindings
+      summary: Grant a role to a user in a scope
+      description: |
+        Caller authorization — all four must hold:
+        1. `rbac:binding:manage` in the target `scopeType` / `scopeId` (via ancestor chain).
+        2. Caller's effective permission set (in the target scope) must be a superset
+           of the role's permission set. (You cannot grant a permission you do
+           not yourself possess.)
+        3. If `scopeType = "global"`, caller must be `platform_admin`.
+        4. If `roleCode = "platform_admin"`, caller must be `platform_admin`.
+
+        Audit: each grant writes a row to `role_binding_audit_records`
+        (`action = grant_role`, `actor` = caller's external user id).
+      operationId: grantRole
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoleGrantRequest"
+      responses:
+        "200":
+          description: Created role binding.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/RoleGrant"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/rbac/binding/revoke:
+    post:
+      tags:
+        - RBAC Bindings
+      summary: Revoke a role from a user in a scope
+      description: |
+        Caller authorization:
+        1. `rbac:binding:manage` in the target scope.
+        2. If `scopeType = "global"`, caller must be `platform_admin`.
+
+        Last-owner protection: revoking an `org_owner` binding that would
+        leave the target organization with zero active `org_owner` bindings
+        is rejected with 409 Conflict. (A non-platform caller can still
+        revoke other roles, including `platform_admin` in non-global scopes,
+        provided they otherwise pass the superset check at grant time.)
+
+        Audit: each revoke writes a row to `role_binding_audit_records`
+        (`action = revoke_role`).
+      operationId: revokeRole
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoleRevokeRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Deleted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/rbac/user/me:
+    post:
+      tags:
+        - RBAC Users
+      summary: List direct grants for the current user
+      operationId: getCurrentRBACUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PageRequest"
+      responses:
+        "200":
+          description: Current RBAC user.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: "#/components/schemas/PageResp"
+                          - type: object
+                            properties:
+                              list:
+                                type: array
+                                items:
+                                  $ref: "#/components/schemas/RoleGrant"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/rbac/user/list:
+    post:
+      tags:
+        - RBAC Users
+      summary: List users visible in a scope
+      operationId: listRBACUsers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/ScopeRequest"
+                - $ref: "#/components/schemas/PageRequest"
+      responses:
+        "200":
+          description: User list.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: "#/components/schemas/PageResp"
+                          - type: object
+                            properties:
+                              list:
+                                type: array
+                                items:
+                                  $ref: "#/components/schemas/User"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/rbac/user/grants:
+    post:
+      tags:
+        - RBAC Users
+      summary: List direct grants for a user
+      operationId: listUserGrants
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/UserLookupRequest"
+                - $ref: "#/components/schemas/PageRequest"
+      responses:
+        "200":
+          description: Direct grants for the user.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: "#/components/schemas/PageResp"
+                          - type: object
+                            properties:
+                              list:
+                                type: array
+                                items:
+                                  $ref: "#/components/schemas/RoleGrant"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/rbac/user/permissions:
+    post:
+      tags:
+        - RBAC Users
+      summary: Get user permissions in a scope
+      operationId: getUserPermissions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/UserLookupRequest"
+                - $ref: "#/components/schemas/ScopeRequest"
+      responses:
+        "200":
+          description: Effective permissions and source grants.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/EffectivePermissionResult"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    BadRequest:
+      description: Bad request.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: 1002
+            msg: invalid request
+            data: null
+    Unauthorized:
+      description: Missing or invalid JWT.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: 1401
+            msg: missing bearer token
+            data: null
+    Forbidden:
+      description: Permission denied.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: 1403
+            msg: permission denied
+            data: null
+    NotFound:
+      description: Record not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: 1404
+            msg: record not found
+            data: null
+    Conflict:
+      description: Business conflict.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: 1409
+            msg: conflict
+            data: null
+    Deleted:
+      description: Deleted successfully.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Response"
+              - type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      deleted:
+                        type: boolean
+                        example: true
+
+  schemas:
+    Response:
+      type: object
+      required:
+        - code
+        - msg
+        - data
+      properties:
+        code:
+          type: integer
+          example: 0
+        msg:
+          type: string
+          example: success
+        data:
+          nullable: true
+
+    ErrorResponse:
+      allOf:
+        - $ref: "#/components/schemas/Response"
+
+    IDRequest:
+      type: object
+      required:
+        - id
+      properties:
+        id:
+          type: string
+          format: uuid
+
+    ScopeType:
+      type: string
+      enum:
+        - global
+        - organization
+        - project
+        - environment
+        - folder
+
+    ScopeRequest:
+      type: object
+      required:
+        - scopeType
+      properties:
+        scopeType:
+          $ref: "#/components/schemas/ScopeType"
+        scopeId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Required when scopeType is not global.
+
+    UserLookupRequest:
+      type: object
+      description: |
+        At least one of `externalUserId` or `userId` must be set. When both are
+        present, `userId` is preferred (SDK-friendly alias). `scopeType` /
+        `resourceType` follow the same alias priority.
+      properties:
+        externalUserId:
+          type: string
+          example: user-123
+        userId:
+          type: string
+          example: user-123
+          description: Alias of externalUserId. Preferred when both are set.
+
+    PageRequest:
+      type: object
+      properties:
+        pageNum:
+          type: integer
+          minimum: 1
+          default: 1
+          example: 1
+        pageSize:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+          example: 20
+
+    PageResp:
+      type: object
+      required:
+        - pageNum
+        - pageSize
+        - total
+        - list
+      properties:
+        pageNum:
+          type: integer
+          example: 1
+        pageSize:
+          type: integer
+          example: 20
+        total:
+          type: integer
+          format: int64
+          example: 128
+        list:
+          type: array
+          items: {}
+
+    Permission:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+          example: secret:update
+        resourceType:
+          type: string
+          example: secret
+        action:
+          type: string
+          example: update
+        description:
+          type: string
+        isSystem:
+          type: boolean
+
+    PermissionCodeList:
+      type: object
+      properties:
+        permissions:
+          type: array
+          items:
+            type: string
+          example:
+            - project:read
+            - secret:list
+            - secret:read
+
+    Role:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+          example: project_admin
+        name:
+          type: string
+          example: Project Admin
+        description:
+          type: string
+        scopeType:
+          $ref: "#/components/schemas/ScopeType"
+        orgId:
+          type: string
+          format: uuid
+          nullable: true
+        projectId:
+          type: string
+          format: uuid
+          nullable: true
+        isSystem:
+          type: boolean
+        permissions:
+          type: array
+          items:
+            type: string
+          example:
+            - project:read
+            - project:update
+            - secret:create
+            - secret:update
+
+    RoleInfoRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+          example: project_admin
+      anyOf:
+        - required:
+            - id
+        - required:
+            - code
+
+    RoleUpsertRequest:
+      type: object
+      required:
+        - scopeType
+        - code
+        - name
+        - permissions
+      properties:
+        scopeType:
+          $ref: "#/components/schemas/ScopeType"
+        scopeId:
+          type: string
+          format: uuid
+          nullable: true
+        code:
+          type: string
+          example: release_operator
+        name:
+          type: string
+          example: Release Operator
+        description:
+          type: string
+          example: Release deployment operator.
+        permissions:
+          type: array
+          items:
+            type: string
+          example:
+            - secret:list
+            - secret:read
+            - secret:reveal
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        externalUserId:
+          type: string
+          example: user-123
+        name:
+          type: string
+          example: Alice
+        email:
+          type: string
+          example: alice@example.com
+        source:
+          type: string
+          example: jwt
+        isDisabled:
+          type: boolean
+        lastSeenAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    RoleBinding:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user:
+          $ref: "#/components/schemas/User"
+        roleCode:
+          type: string
+          example: project_developer
+        roleId:
+          type: string
+          format: uuid
+        scopeType:
+          $ref: "#/components/schemas/ScopeType"
+        scopeId:
+          type: string
+          format: uuid
+          nullable: true
+        grantedBy:
+          type: string
+          example: admin-user
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    RoleGrant:
+      type: object
+      description: |
+        SDK-friendly projection of a `RoleBinding`. The four core fields
+        (`userId` / `roleType` / `resourceType` / `resourceId`) follow the
+        "user-role-resource" mental model. The remaining fields
+        (`expiresAt` / `grantedBy` / `grantedAt`) are bookkeeping.
+      properties:
+        userId:
+          type: string
+          example: user-123
+        roleType:
+          type: string
+          example: project_developer
+        resourceType:
+          $ref: "#/components/schemas/ScopeType"
+        resourceId:
+          type: string
+          format: uuid
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        grantedBy:
+          type: string
+          example: admin-user
+        grantedAt:
+          type: string
+          format: date-time
+
+    RoleGrantRequest:
+      type: object
+      description: |
+        For SDK friendliness, every field has a camelCase alias. When both
+        the legacy and alias fields are set, the alias wins. Existing
+        clients using `externalUserId` / `roleCode` / `scopeType` / `scopeId`
+        continue to work unchanged.
+      required:
+        - scopeType
+      properties:
+        externalUserId:
+          type: string
+          example: user-123
+        userId:
+          type: string
+          example: user-123
+          description: Alias of externalUserId. Preferred when both are set.
+        name:
+          type: string
+          example: Alice
+        email:
+          type: string
+          example: alice@example.com
+        roleCode:
+          type: string
+          example: project_developer
+        roleType:
+          type: string
+          example: project_developer
+          description: Alias of roleCode. Preferred when both are set.
+        scopeType:
+          $ref: "#/components/schemas/ScopeType"
+        resourceType:
+          $ref: "#/components/schemas/ScopeType"
+          description: Alias of scopeType. Preferred when both are set.
+        scopeId:
+          type: string
+          format: uuid
+          nullable: true
+        resourceId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Alias of scopeId. Preferred when both are set.
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    RoleRevokeRequest:
+      type: object
+      required:
+        - scopeType
+      properties:
+        externalUserId:
+          type: string
+          example: user-123
+        userId:
+          type: string
+          example: user-123
+          description: Alias of externalUserId. Preferred when both are set.
+        roleCode:
+          type: string
+          example: project_developer
+        roleType:
+          type: string
+          example: project_developer
+          description: Alias of roleCode. Preferred when both are set.
+        scopeType:
+          $ref: "#/components/schemas/ScopeType"
+        resourceType:
+          $ref: "#/components/schemas/ScopeType"
+          description: Alias of scopeType. Preferred when both are set.
+        scopeId:
+          type: string
+          format: uuid
+          nullable: true
+        resourceId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Alias of scopeId. Preferred when both are set.
+
+    EffectivePermissionResult:
+      type: object
+      properties:
+        permissions:
+          type: array
+          items:
+            type: string
+          example:
+            - project:read
+            - project:update
+            - secret:list
+            - secret:read
+            - secret:reveal
+        sourceGrants:
+          type: array
+          items:
+            type: object
+            properties:
+              roleCode:
+                type: string
+                example: org_admin
+              scopeType:
+                $ref: "#/components/schemas/ScopeType"
+              scopeId:
+                type: string
+                format: uuid
+                nullable: true

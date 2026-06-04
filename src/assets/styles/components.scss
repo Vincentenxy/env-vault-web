@@ -1,0 +1,167 @@
+/* 业务组件级微调。覆盖 Element Plus 默认,贴近 Infisical 视觉。 */
+
+/* ---------- Card: 去默认阴影、改边框+圆角 ---------- */
+.el-card {
+  --el-card-border-color: var(--v-surface-border);
+  border: 1px solid var(--v-surface-border);
+  box-shadow: var(--v-shadow-sm) !important;
+  border-radius: var(--v-radius-lg);
+}
+
+.el-card__header {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--v-divider);
+}
+
+.el-card__body {
+  padding: 20px;
+}
+
+/* ---------- Table: 行高、悬停、边框 ---------- */
+.el-table {
+  --el-table-border-color: var(--v-divider);
+  --el-table-header-bg-color: var(--v-surface-bg-subtle);
+  --el-table-row-hover-bg-color: var(--v-surface-row-hover);
+  --el-table-header-text-color: var(--v-text-secondary);
+  --el-table-text-color: var(--v-text-primary);
+  --el-table-border: none;
+  --el-table-header-border-color: var(--v-divider);
+  font-size: var(--v-font-md);
+}
+
+.el-table th.el-table__cell {
+  font-weight: 500;
+  font-size: var(--v-font-sm);
+  text-transform: none;
+  letter-spacing: 0;
+  background: var(--v-surface-bg-subtle);
+}
+
+.el-table td.el-table__cell,
+.el-table th.el-table__cell {
+  height: var(--v-table-row-height);
+  padding: 0 16px;
+}
+
+.el-table .el-table__row {
+  transition: background 0.1s ease;
+}
+
+.el-table .el-table__row--striped td.el-table__cell {
+  background: var(--v-surface-bg-subtle);
+}
+
+.el-table .el-table__row--striped:hover td.el-table__cell {
+  background: var(--v-surface-row-hover);
+}
+
+/* ---------- Dialog: 紫 icon header、紧凑 padding ---------- */
+.el-dialog {
+  --el-dialog-border-radius: var(--v-radius-lg);
+  --el-dialog-padding-primary: 20px;
+  border-radius: var(--v-radius-lg);
+  overflow: hidden;
+}
+
+.el-dialog__header {
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--v-divider);
+  margin-right: 0;
+}
+
+.el-dialog__title {
+  font-size: var(--v-font-lg);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.el-dialog__body {
+  padding: 20px;
+}
+
+.el-dialog__footer {
+  padding: 14px 20px;
+  border-top: 1px solid var(--v-divider);
+  background: var(--v-surface-bg-subtle);
+}
+
+/* ---------- Button: 圆角 6px、紧凑 padding ---------- */
+.el-button {
+  --el-button-border-radius: var(--v-radius-md);
+  font-weight: 500;
+}
+
+.el-button--small {
+  --el-button-size: 28px;
+}
+
+.el-button.is-link {
+  font-weight: 500;
+}
+
+/* ---------- Form: 紧凑间距 ---------- */
+.el-form-item {
+  margin-bottom: 16px;
+}
+
+.el-form-item__label {
+  font-size: var(--v-font-sm);
+  font-weight: 500;
+  color: var(--v-text-primary);
+  line-height: 1.5;
+  padding-bottom: 4px;
+}
+
+/* ---------- Pagination: 紧凑 ---------- */
+.el-pagination {
+  --el-pagination-button-height: 30px;
+  --el-pagination-button-width: 30px;
+  font-size: var(--v-font-sm);
+  justify-content: flex-end;
+}
+
+/* ---------- Descriptions: 用于查看详情 ---------- */
+.el-descriptions {
+  --el-descriptions-item-bordered-label-bg: var(--v-surface-bg-subtle);
+}
+
+.el-descriptions__label {
+  font-weight: 500;
+  color: var(--v-text-secondary);
+  width: 100px;
+}
+
+/* ---------- Tag: 紧凑 ---------- */
+.el-tag {
+  --el-tag-border-radius: var(--v-radius-sm);
+  font-weight: 500;
+}
+
+/* ---------- Input/Select: 圆角 6px ---------- */
+.el-input__wrapper,
+.el-select__wrapper,
+.el-textarea__inner {
+  border-radius: var(--v-radius-md) !important;
+}
+
+/* ---------- Checkbox: 略紧凑 ---------- */
+.el-checkbox {
+  font-size: var(--v-font-md);
+}
+
+/* ---------- Dropdown: 圆角菜单 ---------- */
+.el-popper.is-light,
+.el-dropdown-menu {
+  border-radius: var(--v-radius-md);
+  box-shadow: var(--v-shadow-lg);
+  border: 1px solid var(--v-divider);
+}
+
+.el-dropdown-menu__item {
+  font-size: var(--v-font-md);
+  line-height: 36px;
+  padding: 0 12px;
+  min-width: 140px;
+}

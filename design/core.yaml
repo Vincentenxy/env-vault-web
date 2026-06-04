@@ -1,0 +1,1603 @@
+openapi: 3.0.3
+info:
+  title: EnvVault Core API
+  version: 0.1.0
+  description: Core EnvVault APIs for organization, project, environment, folder, secret key/value, audit, and development token testing.
+servers:
+  - url: http://localhost:8880
+security:
+  - bearerAuth: []
+tags:
+  - name: Health
+  - name: Auth Dev
+  - name: Current User
+  - name: Organizations
+  - name: Projects
+  - name: Environments
+  - name: Folders
+  - name: Secrets
+  - name: Audit
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+
+  /api/v1/readyz:
+    get:
+      tags: [Health]
+      summary: Readiness check
+      security: []
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+
+  /api/v1/auth/dev/token:
+    post:
+      tags: [Auth Dev]
+      summary: Create a development JWT
+      description: Only available when auth.dev_token_enabled is true. Do not enable in production.
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DevTokenRequest"
+      responses:
+        "200":
+          description: Development JWT.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/DevToken"
+
+  /api/v1/me:
+    get:
+      tags: [Current User]
+      summary: Current authenticated user
+      responses:
+        "200":
+          description: Current user.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/UserInfo"
+
+  /api/v1/org/list:
+    post:
+      tags: [Organizations]
+      summary: List organizations
+      description: |
+        Lists organizations the caller has access to, narrowed by the caller's
+        active `user_role_bindings` (v7+). The result is a subset of the org
+        hierarchy:
+
+        - `platform_admin` (bound at `global`): returns all non-deleted orgs.
+        - `org_admin` / `org_owner` / `org_viewer` / `org_auditor` bound at
+          `(organization, X)`: returns org X (and any cascaded children if
+          relevant).
+        - A caller with no active binding for `org:read`: returns an empty
+          list (implicit 200, no 403).
+
+        The list is no longer gated by an `allowScope` against a fixed scope;
+        the SQL itself filters by `(scope_type, scope_id)` derived from the
+        caller's bindings. See `design/DESIGN.md` §"List 接口按 caller 权限收窄（v7）".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PageRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/OrganizationList"
+
+  /api/v1/org/create:
+    post:
+      tags: [Organizations]
+      summary: Create organization
+      requestBody:
+        $ref: "#/components/requestBodies/CreateEntity"
+      responses:
+        "200":
+          $ref: "#/components/responses/Entity"
+
+  /api/v1/org/info:
+    post:
+      tags: [Organizations]
+      summary: Get organization
+      requestBody:
+        $ref: "#/components/requestBodies/IdOrCode"
+      responses:
+        "200":
+          $ref: "#/components/responses/Entity"
+
+  /api/v1/org/update:
+    post:
+      tags: [Organizations]
+      summary: Update organization
+      requestBody:
+        $ref: "#/components/requestBodies/UpdateByIdOrCode"
+      responses:
+        "200":
+          $ref: "#/components/responses/Entity"
+
+  /api/v1/org/delete:
+    post:
+      tags: [Organizations]
+      summary: Delete organization
+      description: |
+        Soft-deletes the organization. Behavior depends on the `force` flag:
+
+        - `force=false` (default): if the org has any **active** (non-soft-deleted) project,
+          returns 409 Conflict without touching any data.
+        - `force=true`: cascades the soft-delete to **all** child resources
+          (projects → environments → folders → secrets). Requires both
+          `org:delete` and `org:force_delete` permissions.
+
+        All deletions are soft (`is_deleted = true`); rows are retained in the
+        database. The deletion is atomic: a failure mid-cascade rolls back
+        everything in the same transaction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/IdOrCodeRequest"
+                - type: object
+                  properties:
+                    force:
+                      type: boolean
+                      default: false
+                      description: |
+                        When `true`, cascades the soft-delete to all child resources
+                        (projects, environments, folders, secrets) atomically.
+                        Requires the `org:force_delete` permission in addition to `org:delete`.
+                      example: false
+      responses:
+        "200":
+          $ref: "#/components/responses/Deleted"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            Organization has active child resources. Caller must pass `force=true`
+            to cascade, or remove the child resources first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+              example:
+                code: 1409
+                msg: organization has 3 active project(s); pass force=true to cascade delete
+                data: null
+
+  /api/v1/project/list:
+    post:
+      tags: [Projects]
+      summary: List projects
+      description: |
+        Lists projects under `orgId` that the caller has access to, narrowed by
+        the caller's active `user_role_bindings` (v7+). The org parent filter
+        (`orgId`) is still required and applied first; the narrowing then
+        trims further:
+
+        - `platform_admin` (bound at `global`): returns all non-deleted
+          projects under `orgId`.
+        - Caller with `project:read` at `(project, P_i)` under `orgId`:
+          returns `P_i`.
+        - Caller with `project:read` at `(organization, orgId)` (e.g.
+          `org_admin`): returns all projects under `orgId` (cascading).
+        - Caller with no active binding: returns an empty list.
+
+        See `design/DESIGN.md` §"List 接口按 caller 权限收窄（v7）".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/PageRequest"
+                - type: object
+                  properties:
+                    orgId:
+                      type: string
+                      format: uuid
+      responses:
+        "200":
+          $ref: "#/components/responses/ProjectList"
+
+  /api/v1/project/create:
+    post:
+      tags: [Projects]
+      summary: Create project
+      description: |
+        Creates the project and, atomically, the listed environments. Folders under
+        each environment are NOT auto-created — call /api/v1/folder/create explicitly
+        for each folder you need. For each environment code, an org-level
+        `environment_templates` row is upserted on first write and reused thereafter.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/CreateChildEntityRequest"
+                - type: object
+                  properties:
+                    environments:
+                      type: array
+                      items:
+                        $ref: "#/components/schemas/EnvSpec"
+                      description: |
+                        Environments to create under the new project. If omitted, no environments
+                        are created and the caller must create them via /api/v1/env/create.
+      responses:
+        "200":
+          $ref: "#/components/responses/Entity"
+
+  /api/v1/project/info:
+    post:
+      tags: [Projects]
+      summary: Get project
+      requestBody:
+        $ref: "#/components/requestBodies/IdOrCode"
+      responses:
+        "200":
+          $ref: "#/components/responses/Entity"
+
+  /api/v1/project/update:
+    post:
+      tags: [Projects]
+      summary: Update project
+      requestBody:
+        $ref: "#/components/requestBodies/UpdateByIdOrCode"
+      responses:
+        "200":
+          $ref: "#/components/responses/Entity"
+
+  /api/v1/project/delete:
+    post:
+      tags: [Projects]
+      summary: Delete project
+      description: |
+        Soft-deletes the project **and** all child environments, folders, and secrets
+        under it, in a single transaction. Child resources are filtered out of
+        subsequent list/info responses.
+      requestBody:
+        $ref: "#/components/requestBodies/IdOrCode"
+      responses:
+        "200":
+          $ref: "#/components/responses/Deleted"
+
+  /api/v1/env/list:
+    post:
+      tags: [Environments]
+      summary: List environments
+      description: |
+        Lists environments under `projectId` that the caller has access to,
+        narrowed by the caller's active `user_role_bindings` (v7+). The
+        project parent filter (`projectId`) is still required and applied
+        first; the narrowing then trims further:
+
+        - `platform_admin`: returns all environments under `projectId`.
+        - Caller with `env:read` at `(environment, E_i)` under `projectId`:
+          returns `E_i`.
+        - Caller with `env:read` at `(project, projectId)` (e.g.
+          `project_admin`): returns all environments under `projectId`
+          (cascading).
+        - Caller with `env:read` at `(organization, org)` that owns
+          `projectId` (e.g. `org_admin`): returns all environments under
+          `projectId` (cascading).
+        - Caller with no active binding: returns an empty list.
+
+        See `design/DESIGN.md` §"List 接口按 caller 权限收窄（v7）".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/PageRequest"
+                - type: object
+                  required: [projectId]
+                  properties:
+                    projectId:
+                      type: string
+                      format: uuid
+                      description: Project whose environments to list.
+      responses:
+        "200":
+          $ref: "#/components/responses/EnvironmentList"
+
+  /api/v1/env/create:
+    post:
+      tags: [Environments]
+      summary: Create environment
+      description: |
+        Creates an environment under the project identified by `parentId`. **No
+        default folders are created** — call /api/v1/folder/create explicitly for
+        each folder you need. Upserts the org-level `environment_templates` row for
+        the new env code (snapshot on first write only).
+      requestBody:
+        $ref: "#/components/requestBodies/CreateChildEntity"
+      responses:
+        "200":
+          $ref: "#/components/responses/Entity"
+
+  /api/v1/env/info:
+    post:
+      tags: [Environments]
+      summary: Get environment
+      requestBody:
+        $ref: "#/components/requestBodies/IdOrCode"
+      responses:
+        "200":
+          $ref: "#/components/responses/Entity"
+
+  /api/v1/env/update:
+    post:
+      tags: [Environments]
+      summary: Update environment
+      requestBody:
+        $ref: "#/components/requestBodies/UpdateByIdOrCode"
+      responses:
+        "200":
+          $ref: "#/components/responses/Entity"
+
+  /api/v1/env/delete:
+    post:
+      tags: [Environments]
+      summary: Delete environment
+      description: |
+        Soft-deletes the environment **and** all child folders and secrets under it,
+        in a single transaction.
+      requestBody:
+        $ref: "#/components/requestBodies/IdOrCode"
+      responses:
+        "200":
+          $ref: "#/components/responses/Deleted"
+
+  /api/v1/env/template/list:
+    post:
+      tags: [Environments]
+      summary: List environment templates for an org
+      description: |
+        Read-only summary of env codes the org has ever instantiated. The template's
+        name/comment is the snapshot from the first write; updating individual
+        environments does not change the template.
+
+        Narrowed by the caller's active `user_role_bindings` (v7+):
+
+        - `platform_admin`: returns all non-deleted templates under `orgId`.
+        - Caller with `env:template:read` at `(organization, orgId)` (e.g.
+          `org_admin` / `org_viewer` / `org_auditor`): returns all
+          templates under `orgId`.
+        - Caller with no active binding: returns an empty list.
+
+        See `design/DESIGN.md` §"List 接口按 caller 权限收窄（v7）".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/PageRequest"
+                - type: object
+                  required: [orgId]
+                  properties:
+                    orgId:
+                      type: string
+                      format: uuid
+      responses:
+        "200":
+          $ref: "#/components/responses/EnvironmentTemplateList"
+
+  /api/v1/env/template/info:
+    post:
+      tags: [Environments]
+      summary: Get a single environment template
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/IdOrCodeRequest"
+                - type: object
+                  description: |
+                    For this endpoint, `parentId` carries the orgId and `code` is the env code.
+      responses:
+        "200":
+          $ref: "#/components/responses/EnvironmentTemplate"
+
+  /api/v1/folder/list:
+    post:
+      tags: [Folders]
+      summary: List folders
+      description: |
+        Lists folders under either an environment (level=1 folders) or under a specific
+        parent folder (level=2 folders). The two modes are mutually exclusive:
+
+        - `environmentId` set: returns all `level=1` folders directly under that
+          environment (`parent_id IS NULL`).
+        - `folderParentId` set: returns all `level=2` folders under that parent
+          folder. The environment is inferred from the parent folder server-side.
+
+        Narrowed by the caller's active `user_role_bindings` (v7+):
+
+        - `platform_admin`: returns all matching folders.
+        - Caller with `folder:read` at `(folder, F_i)`: returns `F_i` if it
+          matches the parent filter.
+        - Caller with `folder:read` at `(environment, E)` and parent filter
+          is `environmentId == E`: returns all `level=1` folders under `E`
+          (cascading).
+        - Caller with `folder:read` at `(project, P)` or `(organization, O)`
+          that owns the resolved environment: returns matching folders
+          (cascading across the 4-level chain folder → env → project → org).
+        - Caller with no active binding: returns an empty list.
+
+        See `design/DESIGN.md` §"List 接口按 caller 权限收窄（v7）".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/PageRequest"
+                - type: object
+                  properties:
+                    environmentId:
+                      type: string
+                      format: uuid
+                      description: List level=1 folders under this environment.
+                    folderParentId:
+                      type: string
+                      format: uuid
+                      description: List level=2 folders under this parent folder.
+                  description: Exactly one of environmentId or folderParentId is required.
+      responses:
+        "200":
+          $ref: "#/components/responses/FolderList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/v1/folder/create:
+    post:
+      tags: [Folders]
+      summary: Create folder
+      description: |
+        Creates a folder under an environment, supporting up to 2 levels:
+
+        - `level=1` (top-level): `parentId` carries the **environment id**; the folder
+          sits directly under that environment.
+        - `level=2` (sub-folder): `parentId` carries the **parent folder id**; the
+          parent must be a `level=1` folder. The environment is inferred from the
+          parent folder on the server side — clients do not (and should not) pass it.
+
+        The `Entity.parentId` field in the response is polymorphic: for `level=1`
+        it is the environment id; for `level=2` it is the parent folder id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateFolderRequest"
+            examples:
+              topLevel:
+                value:
+                  level: 1
+                  parentId: "11111111-1111-1111-1111-111111111111"
+                  code: globals
+                  name: Globals
+              subFolder:
+                value:
+                  level: 2
+                  parentId: "22222222-2222-2222-2222-222222222222"
+                  code: payment
+                  name: Payment Providers
+      responses:
+        "200":
+          $ref: "#/components/responses/Entity"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            Returned when the level/parent combination is invalid, e.g. a `level=2`
+            folder with a `level=2` parent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+
+  /api/v1/folder/info:
+    post:
+      tags: [Folders]
+      summary: Get folder
+      requestBody:
+        $ref: "#/components/requestBodies/IdOrCode"
+      responses:
+        "200":
+          $ref: "#/components/responses/Entity"
+
+  /api/v1/folder/update:
+    post:
+      tags: [Folders]
+      summary: Update folder
+      requestBody:
+        $ref: "#/components/requestBodies/UpdateByIdOrCode"
+      responses:
+        "200":
+          $ref: "#/components/responses/Entity"
+
+  /api/v1/folder/delete:
+    post:
+      tags: [Folders]
+      summary: Delete folder
+      description: |
+        Soft-deletes the folder **and** all secrets under it, in a single transaction.
+      requestBody:
+        $ref: "#/components/requestBodies/IdOrCode"
+      responses:
+        "200":
+          $ref: "#/components/responses/Deleted"
+
+  /api/v1/secret/list:
+    post:
+      tags: [Secrets]
+      summary: List secrets without plaintext values
+      description: |
+        Lists secrets matching the optional `environmentId` / `folderId` filters,
+        narrowed by the caller's active `user_role_bindings` (v7+). Plaintext
+        values are not returned.
+
+        Requires `secret:list`. Narrowing chain:
+        `secret → folder → environment → project → organization`. A binding
+        at any of these scopes automatically extends visibility to its
+        descendants:
+
+        - `platform_admin`: returns all matching secrets.
+        - Caller with `secret:list` at `(secret, S)`: returns `S` if it
+          matches the filters.
+        - Caller with `secret:list` at `(folder, F)`: returns all secrets
+          under `F` (cascading).
+        - Caller with `secret:list` at `(environment, E)` and
+          `environmentId == E`: returns all secrets under `E`.
+        - Caller with `secret:list` at `(project, P)` that owns the resolved
+          environment, or at `(organization, O)` that owns `P`: returns all
+          matching secrets in the resolved environment (cascading).
+        - Caller with no active binding: returns an empty list.
+
+        See `design/DESIGN.md` §"List 接口按 caller 权限收窄（v7）".
+      requestBody:
+        $ref: "#/components/requestBodies/SecretList"
+      responses:
+        "200":
+          $ref: "#/components/responses/SecretList"
+
+  /api/v1/secret/search:
+    post:
+      tags: [Secrets]
+      summary: Search secrets by key without plaintext values
+      description: |
+        Search secrets by `key` (case-insensitive substring) under the optional
+        `environmentId` / `folderId` filters, narrowed by the caller's active
+        `user_role_bindings` (v7+). Requires `secret:search` (one permission
+        tier above `secret:list`).
+
+        The narrowing rules are identical to `/api/v1/secret/list`, but the
+        permission code is `secret:search` instead of `secret:list`. The
+        Redis secret cache is **not** consulted for this endpoint (cache
+        cannot be narrowed per-caller); results come directly from PostgreSQL.
+
+        See `design/DESIGN.md` §"List 接口按 caller 权限收窄（v7）".
+      requestBody:
+        $ref: "#/components/requestBodies/SecretSearch"
+      responses:
+        "200":
+          $ref: "#/components/responses/SecretList"
+
+  /api/v1/secret/create:
+    post:
+      tags: [Secrets]
+      summary: Create secret key/value
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SecretUpsertRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Secret"
+
+  /api/v1/secret/info:
+    post:
+      tags: [Secrets]
+      summary: Get secret metadata without plaintext value
+      requestBody:
+        $ref: "#/components/requestBodies/ID"
+      responses:
+        "200":
+          $ref: "#/components/responses/Secret"
+
+  /api/v1/secret/reveal:
+    post:
+      tags: [Secrets]
+      summary: Reveal secret plaintext value
+      requestBody:
+        $ref: "#/components/requestBodies/ID"
+      responses:
+        "200":
+          $ref: "#/components/responses/Secret"
+
+  /api/v1/secret/update:
+    post:
+      tags: [Secrets]
+      summary: Update secret key/value
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/IDRequest"
+                - $ref: "#/components/schemas/SecretUpsertRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Secret"
+
+  /api/v1/secret/delete:
+    post:
+      tags: [Secrets]
+      summary: Delete secret
+      requestBody:
+        $ref: "#/components/requestBodies/ID"
+      responses:
+        "200":
+          $ref: "#/components/responses/Deleted"
+
+  /api/v1/secret/path/info:
+    post:
+      tags: [Secrets]
+      summary: Get secret metadata by org.proj.env.folder.KEY path
+      description: |
+        Resolves a 4-level code path to the secret metadata via a single 5-table
+        join. RBAC still applies (`secret:read`). Does not return the plaintext
+        `value` field. The path is `org_code.project_code.env_code.folder_code.KEY`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SecretPathRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Secret"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/secret/path/reveal:
+    post:
+      tags: [Secrets]
+      summary: Reveal secret plaintext by org.proj.env.folder.KEY path
+      description: |
+        Resolves a 4-level code path to the secret, then runs the standard reveal
+        flow (decrypt + reveal audit). RBAC still applies (`secret:reveal`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SecretPathRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Secret"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/search/global:
+    post:
+      tags: [Search]
+      summary: Global search across org / project / env / folder / secret
+      description: |
+        Cross-resource keyword search. Matched fields (per resource type):
+
+        - org / project / env / folder: `code`, `name`, `comment`
+        - secret: `key`, `comment`, plus decrypted `value`
+
+        The search runs entirely against Redis with 5 concurrent goroutines
+        (one per resource type). The DB is not hit on the hot path; the cache
+        is warmed at startup. Per-type result counts are capped by `limit`
+        (default 50, max 200).
+
+        RBAC: each candidate is filtered by the corresponding `:read` permission
+        for the current user. The user only sees resources within their scope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GlobalSearchRequest"
+            examples:
+              keywordOnly:
+                value:
+                  keyword: aaa
+              withTypeLimit:
+                value:
+                  keyword: database
+                  types: ["secret", "env"]
+                  limit: 20
+      responses:
+        "200":
+          description: Aggregated matches per resource type.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/GlobalSearchResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/v1/audit/list:
+    post:
+      tags: [Audit]
+      summary: List audit records
+      description: |
+        Lists audit records. **Not narrowed by caller's `user_role_bindings`
+        in v7**: `resource_type` is polymorphic across 6 ancestry paths
+        (organization / project / environment / folder / secret /
+        env_template), each requiring a case-by-case join to the
+        corresponding resource table. To audit a specific resource, pass
+        `resourceType` + `resourceId` and rely on the existing
+        `audit:read` permission check; full list narrowing is on the
+        roadmap (P1). See `design/todo.md` §"v7 不做的项（留 todo）".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/PageRequest"
+                - type: object
+                  properties:
+                    resourceType:
+                      type: string
+                    resourceId:
+                      type: string
+                      format: uuid
+      responses:
+        "200":
+          $ref: "#/components/responses/AuditList"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  requestBodies:
+    ID:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/IDRequest"
+    IdOrCode:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/IdOrCodeRequest"
+    UpdateByIdOrCode:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/UpdateIdOrCodeRequest"
+    CreateEntity:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CreateEntityRequest"
+    CreateChildEntity:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CreateChildEntityRequest"
+    UpdateEntity:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/UpdateEntityRequest"
+    SecretList:
+      required: true
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/PageRequest"
+              - $ref: "#/components/schemas/SecretFilter"
+    SecretSearch:
+      required: true
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/PageRequest"
+              - $ref: "#/components/schemas/SecretFilter"
+              - type: object
+                properties:
+                  keyword:
+                    type: string
+                    example: DATABASE
+
+  responses:
+    Success:
+      description: Success.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Response"
+    BadRequest:
+      description: Bad request.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Response"
+          example:
+            code: 1002
+            msg: invalid request
+            data: null
+    Forbidden:
+      description: Permission denied.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Response"
+          example:
+            code: 1403
+            msg: permission denied
+            data: null
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Response"
+          example:
+            code: 1404
+            msg: record not found
+            data: null
+    Entity:
+      description: Entity response.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Response"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Entity"
+    Deleted:
+      description: Deleted response.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Response"
+              - type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      deleted:
+                        type: boolean
+                        example: true
+    OrganizationList:
+      description: Organization list.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OrganizationListResponse"
+    ProjectList:
+      description: Project list.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ProjectListResponse"
+    EnvironmentList:
+      description: Environment list.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/EnvironmentListResponse"
+    EnvironmentTemplateList:
+      description: Environment template list (org-scoped read-only summary).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/EnvironmentTemplateListResponse"
+    EnvironmentTemplate:
+      description: Environment template detail.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Response"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/EnvironmentTemplate"
+    FolderList:
+      description: Folder list.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/FolderListResponse"
+    Secret:
+      description: Secret response.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Response"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Secret"
+    SecretList:
+      description: Secret list.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/SecretListResponse"
+    AuditList:
+      description: Audit record list.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AuditListResponse"
+
+  schemas:
+    Response:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        msg:
+          type: string
+          example: success
+        data:
+          nullable: true
+
+    IDRequest:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          format: uuid
+
+    IdOrCodeRequest:
+      type: object
+      properties:
+        parentId:
+          type: string
+          format: uuid
+          description: |
+            Required when using code. For /api/v1/project/* this is the org id; for
+            /api/v1/env/* this is the project id; for /api/v1/folder/* this is the
+            environment id; for /api/v1/env/template/* this is the org id.
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+          pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+        description: id and code are mutually exclusive, one is required
+
+    UpdateIdOrCodeRequest:
+      type: object
+      required: [name]
+      properties:
+        parentId:
+          type: string
+          format: uuid
+          description: |
+            Required when using code. For /api/v1/project/* this is the org id; for
+            /api/v1/env/* this is the project id; for /api/v1/folder/* this is the
+            environment id.
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+          pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+        name:
+          type: string
+        comment:
+          type: string
+        description: id and code are mutually exclusive, one is required for update
+
+    PageRequest:
+      type: object
+      properties:
+        pageNum:
+          type: integer
+          minimum: 1
+          default: 1
+          example: 1
+        pageSize:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+          example: 20
+
+    PageResp:
+      type: object
+      required: [pageNum, pageSize, total, list]
+      properties:
+        pageNum:
+          type: integer
+          example: 1
+        pageSize:
+          type: integer
+          example: 20
+        total:
+          type: integer
+          format: int64
+          example: 1
+        list:
+          type: array
+          items: {}
+
+    CreateEntityRequest:
+      type: object
+      required: [code, name]
+      properties:
+        code:
+          type: string
+          pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+          example: org-a
+        name:
+          type: string
+          example: Organization A
+        comment:
+          type: string
+          example: description
+
+    CreateChildEntityRequest:
+      allOf:
+        - $ref: "#/components/schemas/CreateEntityRequest"
+        - type: object
+          required: [parentId]
+          properties:
+            parentId:
+              type: string
+              format: uuid
+              description: |
+                Parent resource id. For /api/v1/project/create this is the org id; for
+                /api/v1/env/create this is the project id.
+
+    CreateFolderRequest:
+      type: object
+      required: [level, parentId, code, name]
+      properties:
+        level:
+          type: integer
+          enum: [1, 2]
+          description: |
+            1 = top-level folder (parent is the environment).
+            2 = sub-folder (parent is another folder, which must be `level=1`).
+        parentId:
+          type: string
+          format: uuid
+          description: |
+            For `level=1`: the environment id (the folder's direct parent).
+            For `level=2`: the parent folder id (must be a `level=1` folder in the
+            same environment). The environment is inferred from the parent on the
+            server side, so the client does not need to pass it.
+        code:
+          type: string
+          pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+          example: globals
+        name:
+          type: string
+          example: Globals
+        comment:
+          type: string
+
+    EnvSpec:
+      type: object
+      required: [code, name]
+      properties:
+        code:
+          type: string
+          pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+          example: dev
+        name:
+          type: string
+          example: Development
+        comment:
+          type: string
+          example: shared dev env
+      description: |
+        Inline spec used in /api/v1/project/create to declare an environment to create.
+        The matching `environment_templates` row is upserted on first write only; subsequent
+        project creates with the same code will NOT overwrite the template's name/comment.
+
+    UpdateEntityRequest:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+          example: org-a
+        name:
+          type: string
+        comment:
+          type: string
+
+    Entity:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        parentId:
+          type: string
+          format: uuid
+          description: |
+            Direct parent's id. Omitted for top-level entities (organizations).
+            Set to org_id for projects, project_id for environments,
+            environment_id for folders.
+        code:
+          type: string
+          pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+        name:
+          type: string
+        comment:
+          type: string
+        createdBy:
+          type: string
+          example: dev-user
+        createdByLabel:
+          type: string
+          example: Dev User
+        updatedBy:
+          type: string
+          example: dev-user
+        updatedByLabel:
+          type: string
+          example: Dev User
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    UserInfo:
+      type: object
+      properties:
+        userId:
+          type: string
+        name:
+          type: string
+
+    DevTokenRequest:
+      type: object
+      properties:
+        userId:
+          type: string
+          example: dev-user
+        name:
+          type: string
+          example: Dev User
+        expiresInSeconds:
+          type: integer
+          example: 3600
+
+    DevToken:
+      type: object
+      properties:
+        tokenType:
+          type: string
+          example: Bearer
+        token:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+
+    SecretFilter:
+      type: object
+      description: |
+        Filter for /api/v1/secret/list and /api/v1/secret/search. Only `folderId`
+        and `environmentId` are accepted — `orgId` and `projectId` were removed
+        because they correspond to "list every secret in the org/project" which
+        is a security-tier operation and shouldn't be exposed through a regular
+        list endpoint. Exactly one of `folderId` or `environmentId` is required.
+      properties:
+        environmentId:
+          type: string
+          format: uuid
+          description: List secrets in this env (across all folders).
+        folderId:
+          type: string
+          format: uuid
+          description: List secrets in this specific folder.
+          type: string
+          format: uuid
+
+    SecretPathRequest:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+          description: |
+            The 4-level code path to the secret in the form
+            `org_code.project_code.env_code.folder_code.KEY`. Must contain
+            exactly 5 dot-separated, non-empty segments.
+          pattern: "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Z][A-Z0-9_]*$"
+          example: o1.p1.dev.globals.DATABASE_URL
+
+    SecretUpsertRequest:
+      type: object
+      required: [folderId, key, value]
+      properties:
+        folderId:
+          type: string
+          format: uuid
+        key:
+          type: string
+          pattern: "^[A-Z][A-Z0-9_]*$"
+          example: DATABASE_URL
+        value:
+          type: string
+          example: postgres://user:password@host:5432/db
+        comment:
+          type: string
+
+    Secret:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        orgId:
+          type: string
+          format: uuid
+        orgCode:
+          type: string
+        projectId:
+          type: string
+          format: uuid
+        projectCode:
+          type: string
+        environmentId:
+          type: string
+          format: uuid
+        environmentCode:
+          type: string
+        folderId:
+          type: string
+          format: uuid
+        folderCode:
+          type: string
+        key:
+          type: string
+        path:
+          type: string
+          example: org-a.project-a.dev.globals.DATABASE_URL
+        value:
+          type: string
+          description: Only returned by /api/v1/secret/reveal.
+        comment:
+          type: string
+        createdBy:
+          type: string
+          example: dev-user
+        createdByLabel:
+          type: string
+          example: Dev User
+        updatedBy:
+          type: string
+          example: dev-user
+        updatedByLabel:
+          type: string
+          example: Dev User
+        version:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    GlobalSearchRequest:
+      type: object
+      required: [keyword]
+      properties:
+        keyword:
+          type: string
+          minLength: 1
+          description: Substring to match. Case-insensitive.
+          example: aaa
+        types:
+          type: array
+          items:
+            type: string
+            enum: [org, project, env, folder, secret]
+          description: |
+            Subset of resource types to search. Empty = all 5 types.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 50
+          description: Per-type result cap.
+
+    GlobalSearchResult:
+      type: object
+      properties:
+        orgs:
+          type: array
+          items: { $ref: "#/components/schemas/GlobalSearchHit" }
+        projects:
+          type: array
+          items: { $ref: "#/components/schemas/GlobalSearchHit" }
+        envs:
+          type: array
+          items: { $ref: "#/components/schemas/GlobalSearchHit" }
+        folders:
+          type: array
+          items: { $ref: "#/components/schemas/GlobalSearchHit" }
+        secrets:
+          type: array
+          items: { $ref: "#/components/schemas/GlobalSearchHit" }
+
+    GlobalSearchHit:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        name:
+          type: string
+        comment:
+          type: string
+        matchField:
+          type: string
+          description: |
+            Which field matched the keyword: `code` / `name` / `comment` / `value`
+            (the latter only for secret type).
+        key:
+          type: string
+          description: Only set for secret hits.
+        path:
+          type: string
+          description: Only set for secret hits.
+        folderId:
+          type: string
+          format: uuid
+          description: Only set for secret hits.
+        envId:
+          type: string
+          format: uuid
+          description: Set for env / folder / secret hits.
+        projectId:
+          type: string
+          format: uuid
+          description: Set for project / env / folder / secret hits.
+        orgId:
+          type: string
+          format: uuid
+          description: Set for org / project / env / folder / secret hits.
+
+    AuditRecord:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        actor:
+          type: string
+        resourceType:
+          type: string
+        resourceId:
+          type: string
+          format: uuid
+        action:
+          type: string
+        encryptedValue:
+          type: object
+        createdAt:
+          type: string
+          format: date-time
+
+    OrganizationListResponse:
+      allOf:
+        - $ref: "#/components/schemas/Response"
+        - type: object
+          properties:
+            data:
+              allOf:
+                - $ref: "#/components/schemas/PageResp"
+                - type: object
+                  properties:
+                    list:
+                      type: array
+                      items:
+                        $ref: "#/components/schemas/Entity"
+
+    ProjectListResponse:
+      allOf:
+        - $ref: "#/components/schemas/Response"
+        - type: object
+          properties:
+            data:
+              allOf:
+                - $ref: "#/components/schemas/PageResp"
+                - type: object
+                  properties:
+                    list:
+                      type: array
+                      items:
+                        $ref: "#/components/schemas/Entity"
+
+    EnvironmentListResponse:
+      allOf:
+        - $ref: "#/components/schemas/Response"
+        - type: object
+          properties:
+            data:
+              allOf:
+                - $ref: "#/components/schemas/PageResp"
+                - type: object
+                  properties:
+                    list:
+                      type: array
+                      items:
+                        $ref: "#/components/schemas/Entity"
+
+    EnvironmentTemplate:
+      type: object
+      required: [id, orgId, code, name, createdBy, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        orgId:
+          type: string
+          format: uuid
+        code:
+          type: string
+          pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+        name:
+          type: string
+        comment:
+          type: string
+        createdBy:
+          type: string
+        createdByLabel:
+          type: string
+        updatedBy:
+          type: string
+        updatedByLabel:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    EnvironmentTemplateListResponse:
+      allOf:
+        - $ref: "#/components/schemas/Response"
+        - type: object
+          properties:
+            data:
+              allOf:
+                - $ref: "#/components/schemas/PageResp"
+                - type: object
+                  properties:
+                    list:
+                      type: array
+                      items:
+                        $ref: "#/components/schemas/EnvironmentTemplate"
+
+    FolderListResponse:
+      allOf:
+        - $ref: "#/components/schemas/Response"
+        - type: object
+          properties:
+            data:
+              allOf:
+                - $ref: "#/components/schemas/PageResp"
+                - type: object
+                  properties:
+                    list:
+                      type: array
+                      items:
+                        $ref: "#/components/schemas/Entity"
+
+    SecretListResponse:
+      allOf:
+        - $ref: "#/components/schemas/Response"
+        - type: object
+          properties:
+            data:
+              allOf:
+                - $ref: "#/components/schemas/PageResp"
+                - type: object
+                  properties:
+                    list:
+                      type: array
+                      items:
+                        $ref: "#/components/schemas/Secret"
+
+    AuditListResponse:
+      allOf:
+        - $ref: "#/components/schemas/Response"
+        - type: object
+          properties:
+            data:
+              allOf:
+                - $ref: "#/components/schemas/PageResp"
+                - type: object
+                  properties:
+                    list:
+                      type: array
+                      items:
+                        $ref: "#/components/schemas/AuditRecord"
