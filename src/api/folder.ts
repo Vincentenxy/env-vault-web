@@ -1,3 +1,4 @@
+import type { AxiosRequestConfig } from 'axios'
 import type { Folder, FolderLevel } from '@/types/folder'
 import type { PageRequest, PageResp, Uuid } from '@/types/api'
 import { http } from './http'
@@ -14,8 +15,11 @@ export type ListFoldersRequest = PageRequest &
     | { environmentId?: never; folderParentId: Uuid }
   )
 
-export function listFolders(req: ListFoldersRequest): Promise<PageResp<Folder>> {
-  return http.post('/folder/list', req)
+export function listFolders(
+  req: ListFoldersRequest,
+  config?: AxiosRequestConfig,
+): Promise<PageResp<Folder>> {
+  return http.post('/folder/list', req, config)
 }
 
 /**
@@ -30,6 +34,46 @@ export interface CreateFolderRequest {
   name: string
   comment?: string
 }
-export function createFolder(req: CreateFolderRequest): Promise<Folder> {
-  return http.post('/folder/create', req)
+export function createFolder(
+  req: CreateFolderRequest,
+  config?: AxiosRequestConfig,
+): Promise<Folder> {
+  return http.post('/folder/create', req, config)
+}
+
+/**
+ * POST /api/v1/folder/update
+ *  - id/code 二选一;按 code 更新时必须同时传 parentId(env id)
+ *  - name 必填
+ *  - code 创建后不可改,前端不传
+ */
+export interface UpdateFolderRequest {
+  id?: Uuid
+  code?: string
+  parentId?: Uuid
+  name: string
+  comment?: string
+}
+export function updateFolder(
+  req: UpdateFolderRequest,
+  config?: AxiosRequestConfig,
+): Promise<Folder> {
+  return http.post('/folder/update', req, config)
+}
+
+/**
+ * POST /api/v1/folder/delete
+ * 软删 folder **及其下所有 secret**,单事务。
+ *  - id/code 二选一;按 code 删除时必须同时传 parentId(env id)
+ */
+export interface DeleteFolderRequest {
+  id?: Uuid
+  code?: string
+  parentId?: Uuid
+}
+export function deleteFolder(
+  req: DeleteFolderRequest,
+  config?: AxiosRequestConfig,
+): Promise<{ deleted: boolean }> {
+  return http.post('/folder/delete', req, config)
 }
