@@ -152,16 +152,20 @@ env-vault-web/
     │   ├── dashboard/
     │   │   └── DashboardView.vue    # 占位
     │   ├── organization/
+    │   │   └── OrganizationListView.vue
     │   ├── project/
-    │   ├── environment/
+    │   │   └── ProjectListView.vue
+    │   ├── env/
+    │   │   └── EnvListView.vue
     │   ├── folder/
+    │   │   └── FolderListView.vue
     │   ├── secret/
-    │   ├── audit/
-    │   ├── rbac/
-    │   ├── error/
-    │   │   ├── ForbiddenView.vue
-    │   │   └── NotFoundView.vue
-    │   └── README.md                # 视图层占位说明(本期仅放占位)
+    │   │   └── SecretListView.vue
+    │   ├── audit/                   # 后续
+    │   ├── rbac/                    # 后续
+    │   └── error/
+    │       ├── ForbiddenView.vue
+    │       └── NotFoundView.vue
     ├── App.vue
     ├── main.ts
     └── env.d.ts
@@ -256,17 +260,13 @@ env-vault-web/
 - `headers`: `Content-Type: application/json`、`x-request-id` 由拦截器补 UUID。
 - 拦截器链:
   1. **请求拦截**:从 `useAuthStore` 读 `token`,如有则注入 `Authorization: Bearer <token>`。统一补 `x-request-id`。
-  2. **响应拦截**:
-     - HTTP 非 2xx → 走错误分支。
-     - HTTP 2xx 但 `data.code !== 0` → 走业务错误分支(`code` 走 `constants/error-code.ts` 映射)。
-     - 成功:返回 `data.data`,Axios 包装被剥掉一层,业务代码只看到 `data`。
-  3. **业务错误**:
-     - `1401` → 跳 `/login`,清 token。
-     - `1403` → 跳 `/forbidden`。
-     - `1404` → 业务抛出 `NotFoundError`,由调用方决定 UI。
-     - `1409` → 业务抛出 `ConflictError`,由调用方决定 UI。
-     - `1503` → 全局 toast "服务暂不可用"。
-     - 其它 → 全局 toast,文案来自 `data.msg`。
+  2. **响应拦截**(统一 envelope 流程,详见 §7.4):
+     - 应用内所有 HTTP 响应体都是 `{code, msg, data}` envelope,与 HTTP 状态码无关。
+     - `code: 0` → 业务成功,剥到 `data.data` 后返回;`list: null` 会被归一为 `[]`。
+     - `code: 其他` → 业务失败,统一抛 `ApiError`,文案取 `data.msg`(已对用户可读)。
+     - 非 envelope 响应(网络断开 / nginx 5xx / 网关错误)→ 统一兜底为 `ApiError`,`code: -1`。
+- 业务错误**不再按具体码做差异化 UI 跳转**(`1401` 跳登录 / `1403` 跳 forbidden / `1409` 提示级联等)——
+  后续如果需要,在 `composables/use-api-call.ts`(`withApiCall`)内集中扩展,**不要散落到 view**。
 
 ### 7.2 API 函数风格
 
@@ -290,16 +290,38 @@ export function listOrganizations(req: PageRequest): Promise<PageResp<Organizati
 ### 7.3 错误类型
 
 ```ts
-// types/api.ts(本期占位)
+// types/api.ts
 export class ApiError extends Error {
-  code: number
-  httpStatus: number
-  requestId?: string
+  readonly code: number
+  readonly httpStatus: number
+  readonly requestId?: string
   constructor(opts: { code: number; httpStatus: number; msg: string; requestId?: string }) { ... }
 }
-export class NotFoundError extends ApiError { /* 1404 */ }
-export class ConflictError extends ApiError { /* 1409 */ }
 ```
+
+`ApiError` 是拦截器抛出的唯一错误类型;`message` 直接来自后端 `msg`(已对用户可读)。调用方用 `e instanceof ApiError ? e.message : '兜底文案'` 取文案。
+
+### 7.4 响应协议(简化的"code 二元化"模型)
+
+**所有 `/api/v1/*` 接口的 HTTP 响应体都是 `{code, msg, data}` envelope,与 HTTP 状态码无关**。前端只识别两种情况:
+
+| body.code | 含义 | 拦截器处理 | 调用方见到 |
+| --- | --- | --- | --- |
+| `0` | 业务成功 | 返回 `data.data`;`list: null` 归一为 `list: []` | 直接拿到的就是 `data` |
+| 其他 | 业务失败 | 抛 `ApiError`,`message` 取 `data.msg` | catch 后展示 `e.message` |
+
+错误码的完整常量表见 `constants/error-code.ts`,但**前端当前不基于具体码做差异化 UI**,所有非 0 都走同一路径("展示 msg")。后续如果某个码需要特殊处理(例如 `1401` 自动跳登录),在 `withApiCall` 内集中扩展。
+
+应用内 envelope 之外的两类兜底:
+
+- **2xx 但 body 不是 envelope**:协议异常,统一抛 `ApiError`,`code: -1`,`msg: '服务器返回了非预期格式'`。
+- **网络断开 / nginx 5xx / 网关错误**(无 envelope):统一抛 `ApiError`,`code: -1`,`msg` 取 axios 的 `error.message` 兜底(`'网络异常,请稍后重试'`)。
+
+约定:
+
+- **成功响应**:`code: 0` 时 `data` 是真实载荷,`msg` 通常为空串,前端不读取。
+- **失败响应**:`code !== 0` 时 `data` 通常为 `null`,展示给用户的文案就是 `data.msg`。
+- **静默失败**:请求配置 `silent: true` 时跳过全局 toast(给启动期 `refreshMe` / 静默轮询等场景使用)。
 
 ## 8. TypeScript 类型系统
 
@@ -396,10 +418,39 @@ export interface ParsedSecretPath {
 
 ## 10. 统一响应与错误处理
 
-- 全局只有一个 `ElMessage` 出口,封装在 `utils/toast.ts`,所有 store / view 通过 `toast.error(msg)` 调用,避免到处 import Element Plus。
+### 10.1 处理原则
+
+- 拦截器已经把所有 `code !== 0` 归一为 `ApiError`,业务代码只需要 `try { ... } catch (e) { ElMessage.error(e instanceof ApiError ? e.message : '兜底') }`。
+- **不做基于具体错误码的差异化 UI**:所有非 0 码都走"展示 msg"路径。鉴权失效、权限不足等场景的统一处理由路由守卫负责(token 不存在 → 跳登录),不依赖后端错误码。
+- 错误码常量在 `constants/error-code.ts` 内集中维护,作为"与后端契约的参考"。后续如需差异化,在 `withApiCall` 集中扩展。
+
+### 10.2 列表分页约定(基于 `total` 的归一)
+
+后端约定分页接口 `PageResp<T>` 在 `total: 0` 时 `list` 字段为 `[]`。store / view 端按以下规则取值:
+
+```ts
+// stores/<resource>.ts — fetchList
+const resp = await withApiCall(() => listXxx(merged))
+// 业务上 total>0 才有数据;list 为 null 时兜底为 []
+items.value = (resp.total > 0 ? resp.list : null) ?? []
+total.value = resp.total
+```
+
+判读流程:
+
+1. **先看 `total`**:`total > 0` 才认为有数据可展示;`total === 0` 直接当作空集合。
+2. **`list` 兜底**:如果 `list` 是 `null`(后端历史路径上会下发),用 `[]` 兜底,避免下游 `.map()` / `.length` 抛 `TypeError`。
+3. 拦截器在协议层也会做一次 `list: null → list: []` 的归一,store 层的判断是**业务层兜底**,两者不冲突。
+
+绕开 store 直接调 `listXxx` 的 view(如 `FolderListView`)也按相同规则处理。
+
+### 10.3 UI 行为
+
+- 全局只有一个 `ElMessage` 出口,封装在 `utils/notify.ts`,所有 store / view 通过 `notify.error(msg)` 调用,避免到处 import Element Plus。
 - 列表加载失败展示 `ErrorState` 组件,提供"重试"按钮,点击重新调 `store.action`。
-- 表单提交失败:后端返回字段级错误时(`code: 1002` 且 `data` 含字段错误),统一映射到 Element Plus Form 的 field error。
-- 跳转 1403 时,记录来源路由到 `sessionStorage`,登录后或被授权后回跳。
+- 表单提交失败:后端下发的 `msg` 直接展示给用户(已对用户可读);字段级错误(`code: 1002` 且 `data` 含字段错误)由调用方按需映射到 Element Plus Form field error。
+- 空列表不视为错误:任何 `total === 0` / `items.length === 0` 都展示空态,不再触发 toast。
+- 跳转登录由路由守卫统一处理(token 不存在 / 路由标记 `requiresAuth` 但未登录),不依赖后端 1401 通知。
 
 ## 11. Secret 路径访问
 
@@ -500,9 +551,12 @@ VITE_APP_TITLE=EnvVault
 | --- | --- | --- |
 | API 前缀 | `/api/v1` | `VITE_API_BASE = /api/v1` |
 | 字段命名 | camelCase | camelCase,直接使用 |
-| 列表分页 | `{ pageNum, pageSize, total, list }` | `PageResp<T>` 一一对应 |
-| 统一响应 | `{ code, msg, data }` | 拦截器剥到 `data`,业务只见到 `data` |
-| 错误码 | 1002 / 1401 / 1403 / 1404 / 1409 / 1500 / 1503 | 在 `constants/error-code.ts` 内集中常量 |
+| 列表分页 | `{ pageNum, pageSize, total, list }`,空页 `list` 可能为 `null` | `PageResp<T>` 一一对应,store / view 按 `(total > 0 ? list : null) ?? []` 取值 |
+| 统一响应 | `{ code, msg, data }`(所有 HTTP 响应都是 envelope) | 拦截器剥到 `data.data`,业务只见到 `data` |
+| 错误模型 | 简化的"code 二元化" | `code: 0` 成功;其他都失败,统一抛 `ApiError`,展示 `msg` |
+| 业务 code | `0` 成功,`-1` 业务通用失败;`1002/1401/1403/1404/1409/1500/1503` 已知码 | `constants/error-code.ts` 内集中常量;**当前不基于具体码做差异化 UI** |
+| 鉴权失败 | `code: 1401` 或 HTTP 401 | 路由守卫统一处理(token 不存在 / 过期 → 跳 `/login`) |
+| 非 envelope 错误 | 网络断开 / nginx 5xx / 网关 | 拦截器兜底为 `ApiError`,`code: -1`,`msg` 取 axios error |
 | Secret 列表 | 不返回明文 | `SecretMeta` 不含 `value` 字段 |
 | Secret 明文 | `/secret/reveal` 与 `/secret/path/reveal` | `useSecretStore.reveal(id)` / `revealByPath(path)`,仅弹窗内持有 |
 | 审计 | `action` 枚举 | 前端仅做展示,不做触发 |

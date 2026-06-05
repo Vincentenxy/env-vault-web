@@ -1,6 +1,6 @@
 import axios, { type AxiosInstance, type AxiosRequestConfig, type InternalAxiosRequestConfig } from 'axios'
-import { ApiError, ConflictError, NotFoundError } from '@/types/api'
-import { ErrorCode, type ErrorCodeValue } from '@/constants/error-code'
+import { ApiError } from '@/types/api'
+import { ErrorCode } from '@/constants/error-code'
 import { tokenStore } from '@/utils/token'
 import { notify } from '@/utils/notify'
 
@@ -12,10 +12,12 @@ import { notify } from '@/utils/notify'
  *  - 自动补 x-request-id(UUID)
  *
  * 响应拦截:
- *  - 业务信封 {code, msg, data} 剥到 data
- *  - code !== 0 走错误码 → 抛出 ApiError 子类,并通过 notify 提示用户
- *  - HTTP 错误同样归一为 ApiError 并提示
- *  - 请求配置里带 `silent: true` 时跳过提示(给静默失败场景用,例如启动期 refreshMe)
+ *  - 应用内所有 HTTP 响应体都是 `{code, msg, data}` envelope,与 HTTP 状态码无关
+ *  - `code: 0` → 业务成功,剥到 `data.data` 后返回
+ *  - `code: 其他` → 业务失败,抛 `ApiError`(code/msg/httpStatus/requestId)
+ *  - 非 envelope(网络 / nginx 5xx / 网关错误等中间件层错误)→ 统一兜底为 `ApiError`(code: GenericError)
+ *  - 成功响应的非数组型 `data.list = null` 会被归一为 `[]`,store / view 不必再 `?? []`
+ *  - 请求配置里带 `silent: true` 时跳过 toast(给静默失败场景用)
  */
 
 const baseURL = import.meta.env.VITE_API_BASE || '/api/v1'
@@ -62,39 +64,28 @@ function isEnvelope(value: unknown): value is Envelope<unknown> {
   )
 }
 
-function buildErrorFromEnvelope(
-  envelope: Envelope<unknown>,
-  httpStatus: number,
-  requestId: string | undefined,
-): ApiError {
-  const common = { code: envelope.code, httpStatus, msg: envelope.msg, requestId }
-  switch (envelope.code) {
-    case ErrorCode.NotFound:
-      return new NotFoundError(common)
-    case ErrorCode.Conflict:
-      return new ConflictError(common)
-    default:
-      return new ApiError(common)
+/**
+ * 把分页响应的 `list: null` 归一为 `list: []`,避免下游 `.map()` 抛 TypeError。
+ * 仅识别"形如 PageResp 的对象"(同时含 list 字段),其它形状不碰。
+ */
+function normalizePageList(data: any): any {
+  if (data && typeof data === 'object' && 'list' in data) {
+    if (data.list === null || data.list === undefined) {
+      data.list = []
+    }
   }
+  return data
 }
 
 /**
- * 把业务错误码映射成对用户友好的中文提示。
- * 后端 `msg` 字段往往直接来自 Go 内部错误信息,不一定适合直接展示;
- * 这里只对常见码做兜底,其余情况优先用后端 msg。
+ * 把后端 `msg` 转成对用户友好的文案。
+ *
+ * 当前策略:后端 `msg` 已经可读,直接透传;只有 `msg` 为空时给个兜底。
+ * 之前按错误码做的差异化映射已移除(前端不再基于具体码做 UI 分流)。
  */
 function friendlyMessage(err: ApiError): string {
-  const map: Record<ErrorCodeValue, string> = {
-    [ErrorCode.GenericError]: '请求失败,请稍后重试',
-    [ErrorCode.BadRequest]: '请求参数有误',
-    [ErrorCode.Unauthorized]: '登录已过期,请重新登录',
-    [ErrorCode.Forbidden]: '没有访问权限',
-    [ErrorCode.NotFound]: '资源不存在或已被删除',
-    [ErrorCode.Conflict]: '操作冲突,请刷新后重试',
-    [ErrorCode.Internal]: '服务异常,请稍后重试',
-    [ErrorCode.ServiceUnavailable]: '服务暂不可用,请稍后重试',
-  }
-  return map[err.code as ErrorCodeValue] ?? err.message
+  if (err.message) return err.message
+  return '请求失败,请稍后重试'
 }
 
 function notifyApiError(err: ApiError): void {
@@ -104,35 +95,59 @@ function notifyApiError(err: ApiError): void {
 http.interceptors.response.use(
   (response) => {
     const data = response.data
-    if (isEnvelope(data)) {
-      if (data.code === 0) {
-        return data.data
-      }
-      const err = buildErrorFromEnvelope(data, response.status, response.headers['x-request-id'])
-      if (!response.config.silent) {
-        notifyApiError(err)
-      }
+    const requestId = response.headers['x-request-id'] as string | undefined
+
+    if (!isEnvelope(data)) {
+      // 2xx 但非 envelope:协议异常,统一兜底
+      const err = new ApiError({
+        code: ErrorCode.GenericError,
+        httpStatus: response.status,
+        msg: '服务器返回了非预期格式',
+        requestId,
+      })
+      if (!response.config.silent) notifyApiError(err)
       throw err
     }
-    return data
+
+    if (data.code === ErrorCode.Success) {
+      return normalizePageList(data.data)
+    }
+
+    // 业务失败:code !== 0 统一抛 ApiError,展示后端 msg
+    const err = new ApiError({
+      code: data.code,
+      httpStatus: response.status,
+      msg: data.msg || '请求失败',
+      requestId,
+    })
+    if (!response.config.silent) notifyApiError(err)
+    throw err
   },
   (error) => {
-    const data = error?.response?.data
-    const err = isEnvelope(data)
-      ? buildErrorFromEnvelope(
-          data,
-          error.response.status,
-          error.response.headers?.['x-request-id'],
-        )
-      : new ApiError({
-          code: ErrorCode.GenericError,
-          httpStatus: error?.response?.status ?? 0,
-          msg: error?.message ?? 'request failed',
-          requestId: error?.response?.headers?.['x-request-id'],
-        })
-    if (!error?.config?.silent) {
-      notifyApiError(err)
+    const response = error?.response
+    const requestId = response?.headers?.['x-request-id'] as string | undefined
+    const httpStatus = response?.status ?? 0
+    const data = response?.data
+
+    let err: ApiError
+    if (isEnvelope(data)) {
+      // 应用内 4xx/5xx 也带 envelope:走业务失败流程
+      err = new ApiError({
+        code: data.code,
+        httpStatus,
+        msg: data.msg || '请求失败',
+        requestId,
+      })
+    } else {
+      // 真正的传输层错误(网络断开 / nginx 5xx / CORS / timeout 等)
+      err = new ApiError({
+        code: ErrorCode.GenericError,
+        httpStatus,
+        msg: error?.message || '网络异常,请稍后重试',
+        requestId,
+      })
     }
+    if (!error?.config?.silent) notifyApiError(err)
     throw err
   },
 )

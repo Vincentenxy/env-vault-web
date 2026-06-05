@@ -4,17 +4,21 @@ import { useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import {
   ArrowRight,
+  CircleClose,
   Delete,
   Edit,
+  Files,
+  MoreFilled,
   Plus,
   Position,
   Refresh,
+  Right,
   Search,
   View,
 } from '@element-plus/icons-vue'
 import { useProjectStore } from '@/stores/project'
 import { useOrganizationStore } from '@/stores/organization'
-import { ApiError, ConflictError, NotFoundError } from '@/types/api'
+import { ApiError } from '@/types/api'
 import { formatDateTime } from '@/utils/format'
 import { usePermission } from '@/composables/use-permission'
 import { Permission } from '@/constants/permission'
@@ -36,6 +40,17 @@ const searchKeyword = ref('')
 
 // ==================== 列表 ====================
 const orgOptions = computed<Organization[]>(() => orgStore.items)
+
+/** 卡片网格的最终数据:在 store.items 基础上叠加前端关键字过滤 */
+const filteredProjects = computed<Project[]>(() => {
+  const kw = searchKeyword.value.trim().toLowerCase()
+  if (!kw) return projectStore.items
+  return projectStore.items.filter(
+    (p) =>
+      p.code.toLowerCase().includes(kw) ||
+      p.name.toLowerCase().includes(kw),
+  )
+})
 
 async function onRefresh(): Promise<void> {
   if (!selectedOrgId.value) return
@@ -271,17 +286,6 @@ async function onDeleteConfirm(): Promise<void> {
       deleteDialogVisible.value = false
     }
   } catch (e) {
-    if (e instanceof ConflictError) {
-      forceChecked.value = true
-      ElMessage.warning('该项目下存在活跃子资源,请确认级联删除')
-      return
-    }
-    if (e instanceof NotFoundError) {
-      ElMessage.warning('项目已不存在,刷新列表')
-      deleteDialogVisible.value = false
-      await onRefresh()
-      return
-    }
     const msg = e instanceof ApiError ? e.message : '删除失败'
     ElMessage.error(msg)
   } finally {
@@ -289,15 +293,27 @@ async function onDeleteConfirm(): Promise<void> {
   }
 }
 
-function onRowAction(action: 'view' | 'edit' | 'delete' | 'goEnvs', row: Project): void {
-  if (action === 'view') openView(row)
-  else if (action === 'edit') openEdit(row)
-  else if (action === 'goEnvs') {
+// ==================== 卡片操作 ====================
+type CardAction = 'view' | 'edit' | 'delete' | 'goEnvs'
+
+function onCardEnter(row: Project): void {
+  router.push({
+    name: 'ProjectDetail',
+    params: { projectId: row.id },
+    query: { orgId: selectedOrgId.value },
+  })
+}
+
+function onCardMenuCommand(command: CardAction, row: Project): void {
+  if (command === 'view') openView(row)
+  else if (command === 'edit') openEdit(row)
+  else if (command === 'delete') openDelete(row)
+  else if (command === 'goEnvs') {
     router.push({
       path: '/app/envs',
       query: { orgId: selectedOrgId.value, projectId: row.id },
     })
-  } else openDelete(row)
+  }
 }
 
 onMounted(async () => {
@@ -377,75 +393,72 @@ watch(
       </div>
     </header>
 
-    <div class="project-page__surface">
-      <el-table
-        v-loading="projectStore.loading"
-        :data="projectStore.items"
-        class="project-page__table"
-        empty-text="该项目下暂无项目"
-      >
-        <el-table-column prop="code" label="Code" min-width="160">
-          <template #default="{ row }">
-            <span class="project-page__code">{{ row.code }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="name" label="名称" min-width="160" />
-        <el-table-column prop="comment" label="说明" min-width="220" show-overflow-tooltip>
-          <template #default="{ row }">
-            <span class="project-page__comment">{{ row.comment || '—' }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="createdByLabel" label="创建人" min-width="120">
-          <template #default="{ row }">
-            <span class="project-page__muted">
-              {{ row.createdByLabel || row.createdBy }}
+    <div v-loading="projectStore.loading" class="project-page__grid-wrap">
+      <div v-if="filteredProjects.length === 0" class="project-page__empty">
+        <el-icon class="project-page__empty-icon"><CircleClose /></el-icon>
+        <p v-if="!selectedOrgId">请先选择组织</p>
+        <p v-else-if="!searchKeyword">该组织下暂无项目,点击右上角「新建项目」开始</p>
+        <p v-else>没有匹配 "{{ searchKeyword }}" 的项目</p>
+      </div>
+      <div v-else class="project-page__grid">
+        <article
+          v-for="row in filteredProjects"
+          :key="row.id"
+          class="project-card"
+          @click="onCardEnter(row)"
+        >
+          <div class="project-card__top">
+            <div class="project-card__icon">
+              <el-icon><Files /></el-icon>
+            </div>
+            <el-dropdown
+              trigger="click"
+              placement="bottom-end"
+              class="project-card__menu"
+              @click.stop
+              @command="(cmd: CardAction) => onCardMenuCommand(cmd, row)"
+            >
+              <el-button
+                text
+                circle
+                size="small"
+                :icon="MoreFilled"
+                class="project-card__menu-trigger"
+                @click.stop
+              />
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item :icon="View" command="view">查看详情</el-dropdown-item>
+                  <el-dropdown-item :icon="Edit" command="edit">编辑</el-dropdown-item>
+                  <el-dropdown-item :icon="Position" command="goEnvs">环境管理</el-dropdown-item>
+                  <el-dropdown-item divided :icon="Delete" command="delete">删除</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </div>
+          <div class="project-card__body">
+            <h3 class="project-card__name" :title="row.name">{{ row.name }}</h3>
+            <code class="project-card__code">{{ row.code }}</code>
+            <p class="project-card__desc">{{ row.comment || '—' }}</p>
+          </div>
+          <footer class="project-card__foot">
+            <span class="project-card__meta">
+              {{ row.createdByLabel || row.createdBy }} · {{ formatDateTime(row.createdAt) }}
             </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="创建时间" min-width="160">
-          <template #default="{ row }">
-            <span class="project-page__muted">{{ formatDateTime(row.createdAt) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="320" fixed="right">
-          <template #default="{ row }">
             <el-button
-              link
+              class="project-card__enter"
               type="primary"
-              :icon="View"
-              @click="onRowAction('view', row as Project)"
+              size="small"
+              @click.stop="onCardEnter(row)"
             >
-              查看
+              进入
+              <el-icon class="el-icon--right"><Right /></el-icon>
             </el-button>
-            <el-button
-              link
-              type="primary"
-              :icon="Edit"
-              @click="onRowAction('edit', row as Project)"
-            >
-              编辑
-            </el-button>
-            <el-button
-              link
-              type="primary"
-              :icon="Position"
-              @click="onRowAction('goEnvs', row as Project)"
-            >
-              环境
-            </el-button>
-            <el-button
-              link
-              type="danger"
-              :icon="Delete"
-              @click="onRowAction('delete', row as Project)"
-            >
-              删除
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+          </footer>
+        </article>
+      </div>
 
-      <div class="project-page__pager">
+      <div v-if="filteredProjects.length > 0" class="project-page__pager">
         <el-pagination
           background
           layout="total, prev, pager, next, sizes"
@@ -561,7 +574,7 @@ watch(
       </template>
       <el-descriptions v-if="viewTarget" :column="1" border>
         <el-descriptions-item label="Code">
-          <span class="project-page__code">{{ viewTarget.code }}</span>
+          <span class="project-card__code">{{ viewTarget.code }}</span>
         </el-descriptions-item>
         <el-descriptions-item label="名称">{{ viewTarget.name }}</el-descriptions-item>
         <el-descriptions-item label="说明">
@@ -667,56 +680,49 @@ watch(
 
 <style lang="scss" scoped>
 .project-page {
-  max-width: 1200px;
+  max-width: 1280px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 20px;
 
-  &__surface {
+  &__grid-wrap {
+    min-height: 240px;
+  }
+
+  &__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px;
+  }
+
+  &__empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 80px 24px;
     background: var(--v-surface-bg);
-    border: 1px solid var(--v-surface-border);
+    border: 1px dashed var(--v-surface-border);
     border-radius: var(--v-radius-lg);
-    overflow: hidden;
-    box-shadow: var(--v-shadow-sm);
-  }
+    color: var(--v-text-tertiary);
 
-  &__table {
-    width: 100%;
-  }
-
-  &__code {
-    font-family: var(--el-font-family-monospace, ui-monospace, SFMono-Regular, monospace);
-    font-size: 13px;
-    color: var(--v-text-primary);
-    background: var(--v-surface-bg-subtle);
-    padding: 2px 8px;
-    border-radius: var(--v-radius-sm);
-  }
-
-  &__comment {
-    color: var(--v-text-secondary);
-  }
-
-  &__muted {
-    color: var(--v-text-secondary);
-    font-size: 13px;
-  }
-
-  &__row-trigger {
-    color: var(--v-text-tertiary) !important;
-
-    &:hover {
-      color: var(--v-text-primary) !important;
-      background: var(--v-surface-row-hover) !important;
+    p {
+      margin: 0;
+      font-size: 14px;
     }
+  }
+
+  &__empty-icon {
+    font-size: 32px;
+    margin-bottom: 8px;
+    opacity: 0.6;
   }
 
   &__pager {
     display: flex;
     justify-content: flex-end;
-    padding: 12px 16px;
-    border-top: 1px solid var(--v-divider);
+    margin-top: 20px;
   }
 
   &__id {
@@ -785,6 +791,158 @@ watch(
       background: rgba(220, 38, 38, 0.1);
       color: var(--v-color-danger);
     }
+  }
+}
+
+// ==================== 项目卡片 ====================
+.project-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 18px 14px;
+  background: var(--v-surface-bg);
+  border: 1px solid var(--v-surface-border);
+  border-radius: var(--v-radius-lg);
+  cursor: pointer;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+  overflow: hidden;
+  min-height: 168px;
+
+  &::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: linear-gradient(135deg, rgba(124, 58, 237, 0.04), rgba(79, 70, 229, 0));
+    opacity: 0;
+    transition: opacity 0.18s ease;
+    pointer-events: none;
+  }
+
+  &:hover {
+    transform: translateY(-2px);
+    border-color: var(--el-color-primary-light-5);
+    box-shadow: var(--v-shadow-md, 0 8px 20px rgba(15, 23, 42, 0.08));
+
+    &::before {
+      opacity: 1;
+    }
+
+    .project-card__enter {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .project-card__menu-trigger {
+      opacity: 1;
+    }
+  }
+
+  &__top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  &__icon {
+    width: 38px;
+    height: 38px;
+    border-radius: var(--v-radius-md);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, rgba(124, 58, 237, 0.12), rgba(79, 70, 229, 0.12));
+    color: var(--el-color-primary);
+    font-size: 20px;
+    flex-shrink: 0;
+  }
+
+  &__menu {
+    position: relative;
+    z-index: 1;
+  }
+
+  &__menu-trigger {
+    color: var(--v-text-tertiary) !important;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+
+    &:hover {
+      color: var(--v-text-primary) !important;
+      background: var(--v-surface-row-hover) !important;
+    }
+  }
+
+  &__body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    position: relative;
+    z-index: 1;
+  }
+
+  &__name {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--v-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &__code {
+    align-self: flex-start;
+    font-family: var(--el-font-family-monospace, ui-monospace, SFMono-Regular, monospace);
+    font-size: 12px;
+    color: var(--v-text-secondary);
+    background: var(--v-surface-bg-subtle);
+    padding: 2px 8px;
+    border-radius: var(--v-radius-sm);
+  }
+
+  &__desc {
+    margin: 4px 0 0;
+    font-size: 13px;
+    color: var(--v-text-secondary);
+    line-height: 1.5;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    min-height: 2.6em;
+  }
+
+  &__foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--v-divider);
+    position: relative;
+    z-index: 1;
+  }
+
+  &__meta {
+    font-size: 12px;
+    color: var(--v-text-tertiary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+  }
+
+  &__enter {
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 0.18s ease, transform 0.18s ease;
+    flex-shrink: 0;
   }
 }
 

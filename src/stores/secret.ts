@@ -6,11 +6,15 @@ import {
   listSecrets,
   createSecret,
   revealSecret,
+  updateSecret,
+  batchCreateSecrets,
   type ListSecretsRequest,
   type CreateSecretRequest,
   type RevealSecretRequest,
+  type UpdateSecretRequest,
+  type BatchCreateSecretsRequest,
 } from '@/api/secret'
-import { withAuthError } from '@/composables/use-api-call'
+import { withApiCall } from '@/composables/use-api-call'
 
 /**
  * 当前 secret 列表的"查询上下文":
@@ -40,8 +44,9 @@ export const useSecretStore = defineStore('secret', () => {
     const merged = { pageNum: req.pageNum ?? 1, pageSize: req.pageSize ?? 20, ...req }
     lastQuery.value = merged
     try {
-      const resp = await withAuthError(() => listSecrets(merged))
-      items.value = resp.list
+      const resp = await withApiCall(() => listSecrets(merged))
+      // 业务上 total>0 才有数据;list 为 null 时兜底为 []
+      items.value = (resp.total > 0 ? resp.list : null) ?? []
       total.value = resp.total
       return resp
     } finally {
@@ -50,7 +55,7 @@ export const useSecretStore = defineStore('secret', () => {
   }
 
   async function create(req: CreateSecretRequest): Promise<SecretMeta> {
-    const created = await withAuthError(() => createSecret(req))
+    const created = await withApiCall(() => createSecret(req))
     // 创建到当前上下文时刷新第一页
     if (context.value && context.value.kind === 'folder' && context.value.parent === req.folderId) {
       await fetchList({
@@ -75,7 +80,54 @@ export const useSecretStore = defineStore('secret', () => {
    * 不写入 items(列表不带 value,避免泄露)。
    */
   async function fetchReveal(req: RevealSecretRequest): Promise<SecretReveal> {
-    return withAuthError(() => revealSecret(req))
+    return withApiCall(() => revealSecret(req))
+  }
+
+  /**
+   * 更新 secret。请求体里只携带真正需要变更的字段:
+   *  - value 不传 → 服务端保持原 value
+   *  - comment 始终可改(允许清空为 '')
+   *  - key 不可改(API 层未暴露 key 字段)
+   * 返回最新的 SecretMeta,并在本地 items 中就地替换对应行,
+   * 让版本号 / 更新时间等元数据立即反映到列表。
+   */
+  async function update(req: UpdateSecretRequest): Promise<SecretMeta> {
+    const updated = await withApiCall(() => updateSecret(req))
+    const idx = items.value.findIndex((i) => i.id === updated.id)
+    if (idx >= 0) {
+      const next = items.value.slice()
+      next[idx] = updated
+      items.value = next
+    }
+    return updated
+  }
+
+  /**
+   * 批量创建 secret。后端会按 env 拆分,一条 secretList 项可以拆出多条 secret
+   * (每个 env 一条)。响应是 data: null,成功时 store 仅返回 null。
+   * 刷新策略:按当前 list 上下文(folder 或 env)拉第一页,本批的 folder 不一定和当前
+   * 选中 folder 一致,所以不强行按 folderId 命中。
+   */
+  async function batchCreate(req: BatchCreateSecretsRequest): Promise<null> {
+    await withApiCall(() => batchCreateSecrets(req))
+    if (context.value) {
+      if (context.value.kind === 'folder') {
+        const ctx = context.value
+        await fetchList({
+          folderId: ctx.parent,
+          pageNum: 1,
+          pageSize: lastQuery.value.pageSize ?? 20,
+        })
+      } else if (context.value.kind === 'env') {
+        const ctx = context.value
+        await fetchList({
+          environmentId: ctx.parent,
+          pageNum: 1,
+          pageSize: lastQuery.value.pageSize ?? 20,
+        })
+      }
+    }
+    return null
   }
 
   function clear(): void {
@@ -93,6 +145,8 @@ export const useSecretStore = defineStore('secret', () => {
     fetchList,
     create,
     fetchReveal,
+    update,
+    batchCreate,
     clear,
   }
 })

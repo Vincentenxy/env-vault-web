@@ -4,9 +4,13 @@ import type { RouteRecordRaw } from 'vue-router'
  * 路由表。本期实际接入的页面:
  *  - /login(开发自测登录)
  *  - /app/organizations(组织管理)
- *  - /app/projects(项目管理)
+ *  - /app/projects(项目列表 - 卡片网格)
+ *  - /app/projects/:projectId(项目详情:env 多选 + 目录树 + Secrets/Folder Tab)
+ *  - /app/envs(环境管理)
+ *  - /app/secrets(密钥管理)
  *
- * 后续业务模块按 README §5 增量补齐。
+ * 注:原 /app/folders 已合并到 /app/projects/:projectId,目录管理与密钥的浏览、
+ * 创建、删除都在项目详情页内完成。
  */
 export const routes: RouteRecordRaw[] = [
   {
@@ -34,16 +38,16 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: '项目管理', requiresAuth: true },
       },
       {
+        path: 'projects/:projectId',
+        name: 'ProjectDetail',
+        component: () => import('@/views/project/ProjectDetailView.vue'),
+        meta: { title: '项目详情', requiresAuth: true },
+      },
+      {
         path: 'envs',
         name: 'EnvList',
         component: () => import('@/views/env/EnvListView.vue'),
         meta: { title: '环境管理', requiresAuth: true },
-      },
-      {
-        path: 'folders',
-        name: 'FolderList',
-        component: () => import('@/views/folder/FolderListView.vue'),
-        meta: { title: '目录管理', requiresAuth: true },
       },
       {
         path: 'secrets',

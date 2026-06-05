@@ -7,11 +7,17 @@ import { http } from './http'
  * POST /api/v1/folder/list
  * environmentId 与 folderParentId 二选一:
  *  - environmentId: 列 env 下的 level=1 folder
- *  - folderParentId: 列该 folder 下的 level=2 folder
+ *    - includeSubfolders=true 时,响应每条 L1 携带 subfolders 数组(L2,单层)
+ *    - includeSubfolders=false(或省略)时,响应只含 L1,subfolders 为 []
+ *  - folderParentId: 列该 folder 下的 level=2 folder(只查单层)
  */
 export type ListFoldersRequest = PageRequest &
   (
-    | { environmentId: Uuid; folderParentId?: never }
+    | {
+        environmentId: Uuid
+        folderParentId?: never
+        includeSubfolders?: boolean
+      }
     | { environmentId?: never; folderParentId: Uuid }
   )
 

@@ -14,7 +14,7 @@ import {
   type DeleteOrganizationRequest,
   type DeleteOrganizationResponse,
 } from '@/api/organization'
-import { withAuthError } from '@/composables/use-api-call'
+import { withApiCall } from '@/composables/use-api-call'
 
 /**
  * 组织 store。
@@ -32,8 +32,9 @@ export const useOrganizationStore = defineStore('organization', () => {
     const merged = { pageNum: req.pageNum ?? 1, pageSize: req.pageSize ?? 20, ...req }
     lastQuery.value = merged
     try {
-      const resp = await withAuthError(() => listOrganizations(merged))
-      items.value = resp.list
+      const resp = await withApiCall(() => listOrganizations(merged))
+      // 业务上 total>0 才有数据;list 为 null 时兜底为 []
+      items.value = (resp.total > 0 ? resp.list : null) ?? []
       total.value = resp.total
       return resp
     } finally {
@@ -42,7 +43,7 @@ export const useOrganizationStore = defineStore('organization', () => {
   }
 
   async function create(req: CreateOrganizationRequest): Promise<Organization> {
-    const created = await withAuthError(() => createOrganization(req))
+    const created = await withApiCall(() => createOrganization(req))
     // 重新拉第一页,简单可靠
     await fetchList({ pageNum: 1, pageSize: lastQuery.value.pageSize ?? 20 })
     return created
@@ -53,7 +54,7 @@ export const useOrganizationStore = defineStore('organization', () => {
    * 不写入 items(避免 list 分页态污染);调用方按需 setCurrent。
    */
   async function fetchOne(req: OrganizationLookup): Promise<Organization> {
-    return withAuthError(() => getOrganization(req))
+    return withApiCall(() => getOrganization(req))
   }
 
   /**
@@ -61,7 +62,7 @@ export const useOrganizationStore = defineStore('organization', () => {
    * 调用方按需走 fetchList 刷新。
    */
   async function update(req: UpdateOrganizationRequest): Promise<Organization> {
-    const updated = await withAuthError(() => updateOrganization(req))
+    const updated = await withApiCall(() => updateOrganization(req))
     const idx = items.value.findIndex((o) => o.id === updated.id)
     if (idx >= 0) items.value[idx] = updated
     return updated
@@ -74,7 +75,7 @@ export const useOrganizationStore = defineStore('organization', () => {
    * 本地 view 同步:仅在 items 中命中时移除并 total-1。
    */
   async function remove(req: DeleteOrganizationRequest): Promise<DeleteOrganizationResponse> {
-    const result = await withAuthError(() => deleteOrganization(req))
+    const result = await withApiCall(() => deleteOrganization(req))
     const targetId = 'id' in req && req.id ? req.id : null
     const targetCode = 'code' in req && req.code ? req.code : null
     const before = items.value.length

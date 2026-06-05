@@ -6,7 +6,6 @@ import {
   Connection,
   Files,
   Folder,
-  FolderOpened,
   Key,
   Moon,
   Sunny,
@@ -35,7 +34,6 @@ const navItems: NavItem[] = [
   { index: '/app/organizations', label: '组织管理', icon: Folder, group: 'WORKSPACE' },
   { index: '/app/projects', label: '项目管理', icon: Files, group: 'WORKSPACE' },
   { index: '/app/envs', label: '环境管理', icon: Connection, group: 'RESOURCES' },
-  { index: '/app/folders', label: '目录管理', icon: FolderOpened, group: 'RESOURCES' },
   { index: '/app/secrets', label: '密钥管理', icon: Key, group: 'RESOURCES' },
 ]
 
@@ -45,7 +43,10 @@ const activeMenu = computed<string>(() => {
   // 用 matched 最后一段的 path 拿精确路径(避免 split/slice 算错层数)。
   // 注意:`/app` 这种父级路径会匹配不到任何 navItem,fallback 到空串。
   const last = route.matched[route.matched.length - 1]
-  return last?.path ?? route.path
+  const matchedPath = last?.path ?? route.path
+  // 项目详情(/app/projects/:projectId)归属"项目管理"
+  if (matchedPath.startsWith('/app/projects')) return '/app/projects'
+  return matchedPath
 })
 
 /** 当前激活的导航项(供面包屑渲染) */

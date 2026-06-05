@@ -1,27 +1,14 @@
-import { ApiError } from '@/types/api'
-import { useAuthStore } from '@/stores/auth'
-import { router } from '@/router'
-
 /**
- * 把 store 内的 API 调用包一层,统一处理 1401(token 失效):
- *  - 清空 token / currentUser
- *  - 跳到 /login 并把当前路径作为 redirect
- *  - 然后把原始错误继续抛给调用方
+ * API 调用的统一包装层。
  *
- * 其它错误码(code 1403 / 1404 / 1409 / -1)原样抛出,由 store / view 自行决定。
+ * **当前职责**:透传。拦截器已经把所有非 0 码归一为 `ApiError` 并展示 `msg`,
+ * store / view 不需要再二次包装,直接 `await apiFn()` 即可。
+ *
+ * 保留这个文件的原因:
+ *  - 调用方不感知 store / composable 边界,统一走同一入口,后续如果需要
+ *    集中加"基于具体 code 的差异化处理"(例如 `code: 1401` → 跳登录),
+ *    只需要在这里扩展,不需要改 6 个 store。
  */
-export async function withAuthError<T>(fn: () => Promise<T>): Promise<T> {
-  try {
-    return await fn()
-  } catch (e) {
-    if (e instanceof ApiError && e.code === 1401) {
-      const auth = useAuthStore()
-      auth.logout()
-      const current = router.currentRoute.value
-      if (current.name !== 'Login') {
-        await router.replace({ name: 'Login', query: { redirect: current.fullPath } })
-      }
-    }
-    throw e
-  }
+export async function withApiCall<T>(fn: () => Promise<T>): Promise<T> {
+  return fn()
 }

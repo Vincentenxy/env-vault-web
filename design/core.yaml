@@ -726,6 +726,64 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/secret/path/batchReveal:
+    post:
+      tags: [Secrets]
+      summary: Batch reveal secrets by folder path and optional key list
+      description: |
+        Resolves a 4-level code path to a folder, then reveals the plaintext of every
+        secret under it in one round-trip. Designed for SDK / K8s integrations that
+        need to pull several keys (e.g. `DATABASE_URL`, `API_KEY`, `REDIS_URL`) at
+        once without making N serial `/secret/path/reveal` calls.
+
+        - `path`: 4-segment code path of the folder (`org_code.project_code.env_code.folder_code`).
+        - `keys`: optional list of secret keys to reveal. Empty / omitted = all secrets in the folder.
+
+        RBAC still applies (`secret:reveal`) with the v7 cascade narrowing chain
+        (`secret → folder → environment → project → organization`). The endpoint
+        reuses the same `user_read_scopes` CTE as `ListSecrets` / `SearchSecrets`,
+        so a binding at any of these scopes automatically extends visibility to
+        the folder.
+
+        Behavior:
+
+        - No pagination / no upper bound (a folder can have arbitrarily many secrets;
+          this is a deliberate trade-off, see `design/todo.md` §"v8").
+        - `list` is ordered by secret `key` ASC.
+        - Each item's `value` field is the plaintext (same as `/secret/reveal`).
+        - `notFound` is the set of request keys that did not match any secret in
+          the folder. Only present when `keys` is non-empty; absent when `keys` is
+          omitted / empty (no comparison possible).
+        - **One** audit record is written per call, with `action="reveal_batch"`,
+          `resource_type="folder"`, `resource_id=<folder.id>`, and
+          `encrypted_value=jsonb(["KEY1", "KEY2", ...])` recording the keys that
+          were actually revealed (request keys when supplied, otherwise the
+          keys that hit). If no key matches, no audit is written.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SecretPathBatchRevealRequest"
+      responses:
+        "200":
+          description: Batch reveal response.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/SecretPathBatchRevealResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/search/global:
     post:
       tags: [Search]
@@ -803,6 +861,82 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/AuditList"
+
+  /api/v1/tree/get:
+    post:
+      tags: [Tree]
+      summary: Get the visible resource tree (org → project → env → folder)
+      description: |
+        Assembles a hierarchical view of the resources the caller can see,
+        cascading down 4 levels: organization → project → environment → folder
+        (including level-1 and level-2 folders). The tree is built in the
+        following order:
+
+        1. Read cached tree snapshots from Redis (if present) for each level.
+        2. Fall back to PostgreSQL `ListAll*ForTree` calls when the cache
+           is missing or empty.
+        3. Re-assemble the in-memory tree, apply caller's RBAC narrowing
+           (`org:read` / `project:read` / `env:read` / `folder:read`),
+           and prune the depth to `maxDepth`.
+
+        RBAC: there is no dedicated `tree:read` permission. Visibility is
+        controlled by the 4 `:read` codes (`org:read` / `project:read` /
+        `env:read` / `folder:read`). A user with no binding on any of
+        these scopes gets an empty `roots` array (no 403). This matches
+        the v7 "implicit empty list" semantics used by `List*` endpoints.
+
+        `maxDepth` levels:
+
+        - 1 = only `organization`
+        - 2 = + `project`
+        - 3 = + `environment`
+        - 4 = + `folder` (default; includes both level-1 and level-2 folders)
+
+        Out-of-range or zero `maxDepth` is normalized to 4 server-side.
+
+        `includeOrphans` controls what to do with nodes whose parent is
+        not visible to the caller (e.g. an `env` whose parent `project`
+        is hidden, but the env is bound to a higher-scope `org_admin`).
+        When `false` (default), orphan nodes are dropped and counted in
+        `stats.dropped`. When `true`, orphans are attached to a virtual
+        root and counted in `stats.orphans`.
+
+        `source` in the response is `"cache"` if the tree was fully
+        served from Redis snapshots, `"database"` if any level fell
+        back to DB, or `"mixed"`. Debug / metrics only; clients can
+        ignore it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TreeRequest"
+            examples:
+              default:
+                value: {}
+              withMaxDepth:
+                value:
+                  maxDepth: 2
+              includeOrphans:
+                value:
+                  maxDepth: 4
+                  includeOrphans: true
+      responses:
+        "200":
+          description: Resource tree response.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ResourceTreeResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/BadRequest"
 
 components:
   securitySchemes:
@@ -1077,13 +1211,28 @@ components:
 
     PageResp:
       type: object
-      required: [pageNum, pageSize, total, list]
+      description: |
+        Paginated response wrapper. Shape depends on whether the result has data:
+
+        - **Empty data** (`list.length === 0`): `{ "total": 0, "list": [] }` —
+          `pageNum` / `pageSize` are **omitted**.
+        - **Non-empty data**: `{ "pageNum": 1, "pageSize": 20, "total": N, "list": [...] }`.
+
+        `pageNum` / `pageSize` are non-required for the same reason: when
+        `list` is empty the server uses `omitempty` to drop them, and clients
+        should not need to do `pageNum === undefined` defensive checks on
+        empty-data responses. See `design/DESIGN.md`「分页响应 - 空数据形态」.
+      required: [total, list]
       properties:
         pageNum:
           type: integer
+          description: |
+            Page number. **Omitted on empty-data responses.**
           example: 1
         pageSize:
           type: integer
+          description: |
+            Page size. **Omitted on empty-data responses.**
           example: 20
         total:
           type: integer
@@ -1091,6 +1240,8 @@ components:
           example: 1
         list:
           type: array
+          description: |
+            Always a JSON array; on empty data it is `[]` (never `null`).
           items: {}
 
     CreateEntityRequest:
@@ -1288,6 +1439,54 @@ components:
           pattern: "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Z][A-Z0-9_]*$"
           example: o1.p1.dev.globals.DATABASE_URL
 
+    SecretPathBatchRevealRequest:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+          description: |
+            4-level code path of the folder in the form
+            `org_code.project_code.env_code.folder_code` (no KEY segment).
+            Must contain exactly 4 dot-separated, non-empty segments.
+          pattern: "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"
+          example: o1.p1.dev.globals
+        keys:
+          type: array
+          description: |
+            Optional list of secret keys to reveal. Empty / omitted = reveal every
+            secret in the folder (no pagination, no upper bound).
+          items:
+            type: string
+            pattern: "^[A-Z][A-Z0-9_]*$"
+          example: ["DATABASE_URL", "API_KEY"]
+
+    SecretPathBatchRevealResponse:
+      type: object
+      required: [path, list]
+      properties:
+        path:
+          type: string
+          description: The folder path the request was resolved against (echoed back).
+          example: o1.p1.dev.globals
+        list:
+          type: array
+          description: |
+            Revealed secrets ordered by `key` ASC. Each item follows the same
+            `Secret` schema as `/secret/reveal` / `/secret/path/reveal`, with
+            `value` populated to the plaintext.
+          items:
+            $ref: "#/components/schemas/Secret"
+        notFound:
+          type: array
+          description: |
+            Request keys that did not match any secret in the folder (in request
+            order). Only present when the request supplied a non-empty `keys`
+            list; absent when `keys` was empty / omitted (no comparison possible).
+          items:
+            type: string
+          example: ["MISSING_KEY"]
+
     SecretUpsertRequest:
       type: object
       required: [folderId, key, value]
@@ -1338,7 +1537,10 @@ components:
           example: org-a.project-a.dev.globals.DATABASE_URL
         value:
           type: string
-          description: Only returned by /api/v1/secret/reveal.
+          description: |
+            Plaintext value. Only returned by `/api/v1/secret/reveal`,
+            `/api/v1/secret/path/reveal`, and items in the `list` array of
+            `/api/v1/secret/path/batchReveal` responses.
         comment:
           type: string
         createdBy:
@@ -1601,3 +1803,156 @@ components:
                       type: array
                       items:
                         $ref: "#/components/schemas/AuditRecord"
+
+    TreeNodeType:
+      type: string
+      description: |
+        Identifies a node's resource category. Avoids the need for clients
+        to guess from id prefixes.
+      enum: [organization, project, environment, folder]
+      example: folder
+
+    TreeRequest:
+      type: object
+      description: |
+        `maxDepth` controls how many levels the returned tree descends to:
+
+        - 1 = organization
+        - 2 = + project
+        - 3 = + environment
+        - 4 = + folder (default; includes both level-1 and level-2 folders)
+
+        Out-of-range or zero `maxDepth` is normalized to 4 server-side.
+      properties:
+        includeOrphans:
+          type: boolean
+          default: false
+          description: |
+            When `true`, nodes whose parent is not visible to the caller
+            (e.g. an env whose parent project is hidden, but the env is
+            bound at a higher scope) are attached to a virtual root and
+            counted in `stats.orphans`. When `false` (default), such
+            nodes are dropped and counted in `stats.dropped`.
+        maxDepth:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 4
+          default: 4
+          description: |
+            Maximum depth of the returned tree. Out-of-range or zero
+            values are normalized to 4 server-side.
+      example:
+        maxDepth: 4
+        includeOrphans: false
+
+    TreeNode:
+      type: object
+      description: |
+        Tree node DTO. Audit fields (createdBy / updatedBy / at) are
+        intentionally omitted; use the corresponding `info` endpoint to
+        fetch them. `children` is always a (possibly empty) array so
+        clients can call `children.map(...)` without null checks.
+      required: [id, type, code, name, children]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          $ref: "#/components/schemas/TreeNodeType"
+        level:
+          type: integer
+          format: int32
+          enum: [1, 2]
+          description: "Only present for `type: folder`. 1 = top-level, 2 = child."
+        parentId:
+          type: string
+          format: uuid
+          description: |
+            Parent node id. Top-level `organization` nodes have no
+            `parentId`; for `type: folder` with `level: 1` the parent
+            is the environment id; for `level: 2` the parent is the
+            level-1 folder id.
+        code:
+          type: string
+          example: globals
+        name:
+          type: string
+          example: Globals
+        comment:
+          type: string
+          description: Optional human-readable comment.
+        children:
+          type: array
+          description: |
+            Child nodes (always a JSON array, possibly empty). Order
+            follows the underlying resource's natural ordering.
+          items:
+            $ref: "#/components/schemas/TreeNode"
+
+    TreeStats:
+      type: object
+      description: |
+        Statistics about the assembled tree. Useful for debugging
+        narrowing behavior and for surfacing "you have N hidden items"
+        hints in the UI.
+      required: [organizations, projects, environments, folders, dropped, orphans]
+      properties:
+        organizations:
+          type: integer
+          format: int32
+          description: Caller-visible organization nodes included in the tree.
+        projects:
+          type: integer
+          format: int32
+          description: Caller-visible project nodes included in the tree.
+        environments:
+          type: integer
+          format: int32
+          description: Caller-visible environment nodes included in the tree.
+        folders:
+          type: integer
+          format: int32
+          description: Caller-visible folder nodes (sum of level-1 + level-2) included in the tree.
+        dropped:
+          type: integer
+          format: int32
+          description: |
+            Nodes that were dropped because their parent is not visible
+            to the caller AND `includeOrphans` was `false` (default).
+        orphans:
+          type: integer
+          format: int32
+          description: |
+            Nodes that were attached to a virtual root because their
+            parent is not visible to the caller AND `includeOrphans`
+            was `true`. Only meaningful when `includeOrphans` is enabled.
+
+    ResourceTreeResponse:
+      type: object
+      required: [roots, stats, generatedAt, source]
+      properties:
+        roots:
+          type: array
+          description: |
+            Top-level (`organization`) nodes of the assembled tree.
+            May be empty if the caller has no visible organizations.
+          items:
+            $ref: "#/components/schemas/TreeNode"
+        stats:
+          $ref: "#/components/schemas/TreeStats"
+        generatedAt:
+          type: string
+          format: date-time
+          description: |
+            Server-side timestamp of when this tree was assembled.
+            Used by the client to detect stale caches.
+        source:
+          type: string
+          enum: [cache, database, mixed]
+          description: |
+            Where the tree was assembled from. Debug / metrics only;
+            clients can ignore this field.
+            - `cache`: fully served from Redis snapshots.
+            - `database`: at least one level fell back to DB.
+            - `mixed`: some levels came from cache, some from DB.

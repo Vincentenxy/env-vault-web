@@ -20,7 +20,7 @@ import {
 import { useEnvStore } from '@/stores/env'
 import { useOrganizationStore } from '@/stores/organization'
 import { useProjectStore } from '@/stores/project'
-import { ApiError, ConflictError, NotFoundError } from '@/types/api'
+import { ApiError } from '@/types/api'
 import { formatDateTime } from '@/utils/format'
 import { getProjectOrgId } from '@/utils/project'
 import { usePermission } from '@/composables/use-permission'
@@ -255,17 +255,6 @@ async function onDeleteConfirm(): Promise<void> {
       deleteDialogVisible.value = false
     }
   } catch (e) {
-    if (e instanceof ConflictError) {
-      forceChecked.value = true
-      ElMessage.warning('该环境下存在活跃子资源,请确认级联删除')
-      return
-    }
-    if (e instanceof NotFoundError) {
-      ElMessage.warning('环境已不存在,刷新列表')
-      deleteDialogVisible.value = false
-      await onRefresh()
-      return
-    }
     const msg = e instanceof ApiError ? e.message : '删除失败'
     ElMessage.error(msg)
   } finally {
@@ -273,13 +262,13 @@ async function onDeleteConfirm(): Promise<void> {
   }
 }
 
-// ==================== 跳转到目录管理 ====================
+// ==================== 跳转到项目详情(目录与密钥在项目详情页内浏览) ====================
 function goToFolders(row: Environment): void {
   router.push({
-    path: '/app/folders',
+    name: 'ProjectDetail',
+    params: { projectId: selectedProjectId.value },
     query: {
       orgId: selectedOrgId.value,
-      projectId: selectedProjectId.value,
       envId: row.id,
     },
   })

@@ -15,7 +15,7 @@ import {
   type DeleteProjectRequest,
   type DeleteProjectResponse,
 } from '@/api/project'
-import { withAuthError } from '@/composables/use-api-call'
+import { withApiCall } from '@/composables/use-api-call'
 
 /**
  * 项目 store。
@@ -36,8 +36,9 @@ export const useProjectStore = defineStore('project', () => {
     const merged = { pageNum: req.pageNum ?? 1, pageSize: req.pageSize ?? 20, ...req }
     lastQuery.value = merged
     try {
-      const resp = await withAuthError(() => listProjects(merged))
-      items.value = resp.list
+      const resp = await withApiCall(() => listProjects(merged))
+      // 业务上 total>0 才有数据;list 为 null 时兜底为 []
+      items.value = (resp.total > 0 ? resp.list : null) ?? []
       total.value = resp.total
       return resp
     } finally {
@@ -46,7 +47,7 @@ export const useProjectStore = defineStore('project', () => {
   }
 
   async function create(req: CreateProjectRequest): Promise<Project> {
-    const created = await withAuthError(() => createProject(req))
+    const created = await withApiCall(() => createProject(req))
     // 若创建到当前列表所属 org,刷新第一页
     if (currentOrgId.value === req.parentId) {
       await fetchList({
@@ -63,14 +64,14 @@ export const useProjectStore = defineStore('project', () => {
    * 不写入 items(避免 list 分页态污染);调用方按需 setCurrent。
    */
   async function fetchOne(req: ProjectLookup): Promise<Project> {
-    return withAuthError(() => getProject(req))
+    return withApiCall(() => getProject(req))
   }
 
   /**
    * 更新 project 后,若命中当前 page 视图则就地替换;未命中则仅返回 updated。
    */
   async function update(req: UpdateProjectRequest): Promise<Project> {
-    const updated = await withAuthError(() => updateProject(req))
+    const updated = await withApiCall(() => updateProject(req))
     const idx = items.value.findIndex((o) => o.id === updated.id)
     if (idx >= 0) items.value[idx] = updated
     return updated
@@ -82,7 +83,7 @@ export const useProjectStore = defineStore('project', () => {
    * - 后端 force=true:级联软删 env→folder→secret,需 project:force_delete 权限
    */
   async function remove(req: DeleteProjectRequest): Promise<DeleteProjectResponse> {
-    const result = await withAuthError(() => deleteProject(req))
+    const result = await withApiCall(() => deleteProject(req))
     const targetId = 'id' in req && req.id ? req.id : null
     const targetCode = 'code' in req && req.code ? req.code : null
     const before = items.value.length

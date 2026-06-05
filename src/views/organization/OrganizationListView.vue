@@ -15,7 +15,7 @@ import {
   View,
 } from '@element-plus/icons-vue'
 import { useOrganizationStore } from '@/stores/organization'
-import { ApiError, ConflictError, NotFoundError } from '@/types/api'
+import { ApiError } from '@/types/api'
 import { formatDateTime } from '@/utils/format'
 import { usePermission } from '@/composables/use-permission'
 import { Permission } from '@/constants/permission'
@@ -182,17 +182,6 @@ async function onDeleteConfirm(): Promise<void> {
       deleteDialogVisible.value = false
     }
   } catch (e) {
-    if (e instanceof ConflictError) {
-      forceChecked.value = true
-      ElMessage.warning('该组织下存在活跃子资源,请确认级联删除')
-      return
-    }
-    if (e instanceof NotFoundError) {
-      ElMessage.warning('组织已不存在,刷新列表')
-      deleteDialogVisible.value = false
-      await onRefresh()
-      return
-    }
     const msg = e instanceof ApiError ? e.message : '删除失败'
     ElMessage.error(msg)
   } finally {

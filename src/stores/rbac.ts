@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { getMyPermissions } from '@/api/rbac'
-import { withAuthError } from '@/composables/use-api-call'
+import { withApiCall } from '@/composables/use-api-call'
 import type { Scope } from '@/types/rbac'
 import { scopeKey } from '@/types/rbac'
 import type { PermissionCode } from '@/constants/permission'
@@ -42,7 +42,7 @@ export const useRbacStore = defineStore('rbac', () => {
     const ongoing = inflight.value.get(key)
     if (ongoing) return ongoing
 
-    const task = withAuthError(() => getMyPermissions(scope))
+    const task = withApiCall(() => getMyPermissions(scope))
       .then((codes) => {
         const set = new Set(codes)
         cache.value.set(key, set)

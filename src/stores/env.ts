@@ -15,7 +15,7 @@ import {
   type DeleteEnvironmentRequest,
   type DeleteEnvironmentResponse,
 } from '@/api/env'
-import { withAuthError } from '@/composables/use-api-call'
+import { withApiCall } from '@/composables/use-api-call'
 
 /**
  * 环境 store。
@@ -36,8 +36,9 @@ export const useEnvStore = defineStore('env', () => {
     const merged = { pageNum: req.pageNum ?? 1, pageSize: req.pageSize ?? 20, ...req }
     lastQuery.value = merged
     try {
-      const resp = await withAuthError(() => listEnvironments(merged))
-      items.value = resp.list
+      const resp = await withApiCall(() => listEnvironments(merged))
+      // 业务上 total>0 才有数据;list 为 null 时兜底为 []
+      items.value = (resp.total > 0 ? resp.list : null) ?? []
       total.value = resp.total
       return resp
     } finally {
@@ -46,7 +47,7 @@ export const useEnvStore = defineStore('env', () => {
   }
 
   async function create(req: CreateEnvironmentRequest): Promise<Environment> {
-    const created = await withAuthError(() => createEnvironment(req))
+    const created = await withApiCall(() => createEnvironment(req))
     // 命中当前 project 时刷新第一页
     if (currentProjectId.value === req.parentId) {
       await fetchList({
@@ -63,14 +64,14 @@ export const useEnvStore = defineStore('env', () => {
    * 不写入 items(避免 list 分页态污染)。
    */
   async function fetchOne(req: EnvironmentLookup): Promise<Environment> {
-    return withAuthError(() => getEnvironment(req))
+    return withApiCall(() => getEnvironment(req))
   }
 
   /**
    * 更新 env 后,若命中当前 page 视图则就地替换;未命中则仅返回 updated。
    */
   async function update(req: UpdateEnvironmentRequest): Promise<Environment> {
-    const updated = await withAuthError(() => updateEnvironment(req))
+    const updated = await withApiCall(() => updateEnvironment(req))
     const idx = items.value.findIndex((e) => e.id === updated.id)
     if (idx >= 0) items.value[idx] = updated
     return updated
@@ -82,7 +83,7 @@ export const useEnvStore = defineStore('env', () => {
    * - 后端 force=true:级联软删 folder→secret,需 env:force_delete 权限
    */
   async function remove(req: DeleteEnvironmentRequest): Promise<DeleteEnvironmentResponse> {
-    const result = await withAuthError(() => deleteEnvironment(req))
+    const result = await withApiCall(() => deleteEnvironment(req))
     const targetId = 'id' in req && req.id ? req.id : null
     const before = items.value.length
     items.value = items.value.filter((e) => (targetId ? e.id !== targetId : true))

@@ -10,6 +10,7 @@ import {
   ArrowRight,
   CircleClose,
   CopyDocument,
+  Edit,
   Hide,
   Key,
   Plus,
@@ -18,7 +19,6 @@ import {
   View,
 } from '@element-plus/icons-vue'
 import { useSecretStore } from '@/stores/secret'
-import { useFolderStore } from '@/stores/folder'
 import { useEnvStore } from '@/stores/env'
 import { useOrganizationStore } from '@/stores/organization'
 import { useProjectStore } from '@/stores/project'
@@ -26,19 +26,18 @@ import { ApiError } from '@/types/api'
 import { formatDateTime, maskSecret } from '@/utils/format'
 import { getProjectOrgId } from '@/utils/project'
 import { getEnvProjectId } from '@/utils/env'
-import { getFolderEnvId } from '@/utils/folder'
 import { usePermission } from '@/composables/use-permission'
 import { Permission } from '@/constants/permission'
+import { listFolders } from '@/api/folder'
+import type { CascaderOption, CascaderValue } from 'element-plus'
 import type { Organization } from '@/types/organization'
 import type { Project } from '@/types/project'
 import type { Environment } from '@/types/env'
-import type { Folder } from '@/types/folder'
 import type { SecretMeta } from '@/types/secret'
-import type { CreateSecretRequest } from '@/api/secret'
+import type { CreateSecretRequest, UpdateSecretRequest } from '@/api/secret'
 
 const route = useRoute()
 const secretStore = useSecretStore()
-const folderStore = useFolderStore()
 const envStore = useEnvStore()
 const orgStore = useOrganizationStore()
 const projectStore = useProjectStore()
@@ -58,17 +57,74 @@ const projectOptions = computed<Project[]>(() =>
 const envOptions = computed<Environment[]>(() =>
   envStore.items.filter((e) => getEnvProjectId(e) === selectedProjectId.value),
 )
-/** 选中 env 下的 level=1 folder(folder 才是 secret 的载体) */
-const folderOptions = computed<Folder[]>(() =>
-  folderStore.items.filter(
-    (f) => getFolderEnvId(f) === selectedEnvId.value && f.level === 1,
-  ),
+
+// ==================== folder 树(L1 + 同步取 L2)================
+//
+// Secret 可以挂在 L1 或 L2 下,所以选择器必须是树形两级。
+// folder/list 用 includeSubfolders=true 一次拿到 L1 + 各自的 L2,
+// 后续 cascader 展开时直接从 childrenById 查表,不再发请求。
+// 数据走本地维护(同 ProjectDetailView 模式),不走 folderStore,
+// 避免和其他页面共享同一份 items 时互相覆盖。
+/** 当前 env 下的 level=1 folder */
+const rootFolders = ref<{ id: string; name: string; code: string }[]>([])
+/** folderId(L1) -> 它的 L2 children(从响应里随 L1 一起带回) */
+const childrenById = ref<Map<string, { id: string; name: string; code: string }[]>>(new Map())
+
+/** cascader 的根级 options(L1);L2 走 lazyLoad */
+const folderCascaderOptions = computed<CascaderOption[]>(() =>
+  rootFolders.value.map((f) => {
+    const l2 = childrenById.value.get(f.id)
+    if (!l2) {
+      // 未展开过:不传 children,让 cascader 触发 lazyLoad
+      return { value: f.id, label: `${f.name} (${f.code})`, leaf: false }
+    }
+    return {
+      value: f.id,
+      label: `${f.name} (${f.code})`,
+      leaf: false,
+      children: l2.map((c) => ({
+        value: c.id,
+        label: `${c.name} (${c.code})`,
+        leaf: true,
+      })),
+    }
+  }),
 )
+
+/** cascader 配置(顶部选择器 + 创建弹窗共用) */
+const cascaderProps = {
+  lazy: true,
+  checkStrictly: true,
+  emitPath: false,
+  lazyLoad(
+    node: { level: number; value: CascaderValue },
+    resolve: (nodes: CascaderOption[]) => void,
+  ) {
+    // level === 0 时是根 L1 被展开,从 childrenById 同步取 L2
+    if (node.level >= 1) {
+      resolve([])
+      return
+    }
+    if (node.value === undefined || node.value === null) {
+      resolve([])
+      return
+    }
+    const l2 = childrenById.value.get(String(node.value))
+    resolve(
+      (l2 ?? []).map((c) => ({
+        value: c.id,
+        label: `${c.name} (${c.code})`,
+        leaf: true,
+      })),
+    )
+  },
+}
 
 /** folder 选中时按 folder 拉,否则按 env 拉 */
 const listMode = computed<'env' | 'folder'>(() => (selectedFolderId.value ? 'folder' : 'env'))
 
 // ==================== 列表 ====================
+
 async function refreshCurrent(): Promise<void> {
   if (!selectedEnvId.value) return
   const req =
@@ -98,7 +154,8 @@ function onOrgChange(orgId: string): void {
   selectedFolderId.value = ''
   secretStore.clear()
   envStore.clear()
-  folderStore.clear()
+  rootFolders.value = []
+  childrenById.value = new Map()
   if (!orgId) return
   projectStore.fetchList({ orgId, pageNum: 1, pageSize: 100 }).catch(() => undefined)
 }
@@ -109,7 +166,8 @@ async function onProjectChange(projectId: string): Promise<void> {
   selectedFolderId.value = ''
   secretStore.clear()
   envStore.clear()
-  folderStore.clear()
+  rootFolders.value = []
+  childrenById.value = new Map()
   if (!projectId) return
   await envStore.fetchList({ projectId, pageNum: 1, pageSize: 100 }).catch(() => undefined)
 }
@@ -118,15 +176,35 @@ async function onEnvChange(envId: string): Promise<void> {
   selectedEnvId.value = envId
   selectedFolderId.value = ''
   secretStore.clear()
-  folderStore.clear()
+  rootFolders.value = []
+  childrenById.value = new Map()
   if (!envId) return
-  // 拉 level=1 folder 供用户选择
-  await folderStore
-    .fetchList({ environmentId: envId, pageNum: 1, pageSize: 100 })
-    .catch((e: unknown) => {
-      const msg = e instanceof ApiError ? e.message : '加载失败'
-      ElMessage.error(msg)
+  // 一次拿到 L1 + 各自的 L2 children
+  try {
+    const resp = await listFolders({
+      environmentId: envId,
+      includeSubfolders: true,
+      pageNum: 1,
+      pageSize: 100,
     })
+    const list = (resp.total > 0 ? resp.list : null) ?? []
+    rootFolders.value = list.map((f) => ({ id: f.id, name: f.name, code: f.code }))
+    const map = new Map<string, { id: string; name: string; code: string }[]>()
+    for (const l1 of list) {
+      const children = (l1.subfolders ?? []).map((c) => ({
+        id: c.id,
+        name: c.name,
+        code: c.code,
+      }))
+      if (children.length > 0) {
+        map.set(l1.id, children)
+      }
+    }
+    childrenById.value = map
+  } catch (e) {
+    const msg = e instanceof ApiError ? e.message : '加载失败'
+    ElMessage.error(msg)
+  }
   // 默认按 env 视图拉(展示该 env 下所有 secret)
   try {
     await secretStore.fetchList({
@@ -140,9 +218,11 @@ async function onEnvChange(envId: string): Promise<void> {
   }
 }
 
-function onFolderChange(folderId: string): void {
-  selectedFolderId.value = folderId
-  if (!folderId) {
+function onFolderChange(folderId: CascaderValue | null | undefined): void {
+  // cascader 在 emitPath:false 下 v-model 是单值,可能是 string / number / null
+  const fid = folderId === null || folderId === undefined ? '' : String(folderId)
+  selectedFolderId.value = fid
+  if (!fid) {
     // 切回 env 视图
     secretStore.clear()
     if (selectedEnvId.value) {
@@ -160,11 +240,20 @@ function onFolderChange(folderId: string): void {
     return
   }
   secretStore
-    .fetchList({ folderId, pageNum: 1, pageSize: secretStore.lastQuery.pageSize ?? 20 })
+    .fetchList({ folderId: fid, pageNum: 1, pageSize: secretStore.lastQuery.pageSize ?? 20 })
     .catch((e: unknown) => {
       const msg = e instanceof ApiError ? e.message : '加载失败'
       ElMessage.error(msg)
     })
+}
+
+/** 检查一个 folderId 是否在当前已知的 L1 + L2 集合里(用于 route.query 预设) */
+function isKnownFolder(id: string): boolean {
+  if (rootFolders.value.some((f) => f.id === id)) return true
+  for (const l2 of childrenById.value.values()) {
+    if (l2.some((c) => c.id === id)) return true
+  }
+  return false
 }
 
 function onPageChange(pageNum: number, pageSize: number): void {
@@ -305,6 +394,93 @@ function onRowAction(action: 'reveal', row: SecretMeta): void {
   if (action === 'reveal') void openReveal(row)
 }
 
+// ==================== 编辑(Update) ====================
+//
+// key(code)不可修改 — 在 folder 内是稳定标识,改名需要走 create+delete 流程。
+// value 留空表示不轮换;comment 始终参与更新(可清空)。
+const editDialogVisible = ref(false)
+const editSubmitting = ref(false)
+const editFormRef = ref<FormInstance>()
+const editTarget = ref<SecretMeta | null>(null)
+
+const editForm = reactive<{
+  id: string
+  key: string
+  value: string
+  comment: string
+  valueVisible: boolean
+}>({
+  id: '',
+  key: '',
+  value: '',
+  comment: '',
+  valueVisible: false,
+})
+
+const editRules: FormRules<{ id: string; key: string; value: string; comment: string }> = {
+  id: [{ required: true, message: '缺少 secret id', trigger: 'change' }],
+  key: [
+    { required: true, message: '缺少 key', trigger: 'change' },
+    {
+      pattern: /^[A-Z][A-Z0-9_]*$/,
+      message: '仅大写字母、数字、下划线,且以字母开头',
+      trigger: 'change',
+    },
+  ],
+  value: [
+    // 编辑场景下 value 留空是合法的(表示不轮换),所以不强制必填;
+    // 但要兜一个长度上限,避免误粘贴超长串。
+    { max: 8192, message: '长度不能超过 8192', trigger: 'blur' },
+  ],
+  comment: [{ max: 256, message: '长度不能超过 256', trigger: 'blur' }],
+}
+
+function resetEditForm(): void {
+  editForm.id = ''
+  editForm.key = ''
+  editForm.value = ''
+  editForm.comment = ''
+  editForm.valueVisible = false
+  editFormRef.value?.clearValidate()
+}
+
+function openEdit(row: SecretMeta): void {
+  editTarget.value = row
+  editForm.id = row.id
+  editForm.key = row.key
+  // value 不预填 — 留空表示不轮换,避免误把原值覆盖
+  editForm.value = ''
+  editForm.comment = row.comment ?? ''
+  editForm.valueVisible = false
+  editFormRef.value?.clearValidate()
+  editDialogVisible.value = true
+}
+
+async function onEditSubmit(): Promise<void> {
+  if (!editFormRef.value) return
+  const valid = await editFormRef.value.validate().catch(() => false)
+  if (!valid) return
+  editSubmitting.value = true
+  try {
+    // 只有当用户实际填了 value 时,才把 value 放进请求体(留空 = 保留原值)
+    const req: UpdateSecretRequest = {
+      id: editForm.id,
+      comment: editForm.comment ?? '',
+    }
+    if (editForm.value.length > 0) {
+      req.value = editForm.value
+    }
+    await secretStore.update(req)
+    ElMessage.success('更新成功')
+    editDialogVisible.value = false
+  } catch (e) {
+    const msg = e instanceof ApiError ? e.message : '更新失败'
+    ElMessage.error(msg)
+  } finally {
+    editSubmitting.value = false
+  }
+}
+
 onMounted(async () => {
   if (orgStore.items.length === 0) {
     try {
@@ -328,7 +504,7 @@ onMounted(async () => {
         await onProjectChange(presetProjectId)
         if (presetEnvId && envStore.items.some((e) => e.id === presetEnvId)) {
           await onEnvChange(presetEnvId)
-          if (presetFolderId && folderStore.items.some((f) => f.id === presetFolderId)) {
+          if (presetFolderId && isKnownFolder(presetFolderId)) {
             onFolderChange(presetFolderId)
           }
         }
@@ -440,22 +616,16 @@ watch(
             </span>
           </el-option>
         </el-select>
-        <el-select
+        <el-cascader
           v-model="selectedFolderId"
           placeholder="目录(可选)"
           class="page-header__picker"
-          filterable
+          :options="folderCascaderOptions"
+          :props="cascaderProps"
           clearable
           :disabled="!selectedEnvId"
           @change="onFolderChange"
-        >
-          <el-option
-            v-for="f in folderOptions"
-            :key="f.id"
-            :label="`${f.name} (${f.code})`"
-            :value="f.id"
-          />
-        </el-select>
+        />
         <el-input
           v-model="searchKeyword"
           placeholder="按 key 筛选"
@@ -469,7 +639,7 @@ watch(
         <el-button
           type="primary"
           :icon="Plus"
-          :disabled="!selectedEnvId || folderOptions.length === 0"
+          :disabled="!selectedEnvId || rootFolders.length === 0"
           @click="openCreate"
         >
           新建密钥
@@ -485,7 +655,7 @@ watch(
         :empty-text="
           !selectedEnvId
             ? '请先选择环境'
-            : !selectedFolderId && folderOptions.length === 0
+            : !selectedFolderId && rootFolders.length === 0
               ? '该环境下尚无 folder,请先在目录管理页创建'
               : '暂无密钥'
         "
@@ -525,8 +695,17 @@ watch(
             <span class="secret-page__muted">{{ formatDateTime(row.updatedAt) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="120" fixed="right">
+        <el-table-column label="操作" width="180" fixed="right">
           <template #default="{ row }">
+            <el-button
+              link
+              type="primary"
+              :icon="Edit"
+              :disabled="!has(Permission.SecretUpdate)"
+              @click="openEdit(row as SecretMeta)"
+            >
+              编辑
+            </el-button>
             <el-button
               link
               type="primary"
@@ -581,20 +760,14 @@ watch(
         label-position="top"
       >
         <el-form-item label="所属 folder" prop="folderId">
-          <el-select
+          <el-cascader
             v-model="createForm.folderId"
-            placeholder="选择 folder"
+            placeholder="选择 folder(支持顶级或子目录)"
             style="width: 100%"
-            filterable
-            :disabled="folderOptions.length === 0"
-          >
-            <el-option
-              v-for="f in folderOptions"
-              :key="f.id"
-              :label="`${f.name} (${f.code})`"
-              :value="f.id"
-            />
-          </el-select>
+            :options="folderCascaderOptions"
+            :props="cascaderProps"
+            :disabled="rootFolders.length === 0"
+          />
         </el-form-item>
         <el-form-item label="Key" prop="key">
           <el-input
@@ -706,6 +879,69 @@ watch(
         <el-button @click="revealDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <!-- 编辑密钥 -->
+    <el-dialog
+      v-model="editDialogVisible"
+      width="560px"
+      :close-on-click-modal="false"
+      @closed="resetEditForm"
+    >
+      <template #header>
+        <div class="secret-page__dialog-header">
+          <span class="secret-page__dialog-icon secret-page__dialog-icon--edit">
+            <el-icon><Edit /></el-icon>
+          </span>
+          <span>编辑密钥</span>
+        </div>
+      </template>
+      <el-form
+        ref="editFormRef"
+        :model="editForm"
+        :rules="editRules"
+        label-position="top"
+      >
+        <el-form-item label="Key" prop="key">
+          <el-input
+            v-model="editForm.key"
+            disabled
+            :prefix-icon="Key"
+            placeholder="key 在 folder 内是稳定标识,不可修改"
+          />
+        </el-form-item>
+        <el-form-item label="Value" prop="value">
+          <el-input
+            v-model="editForm.value"
+            :type="editForm.valueVisible ? 'textarea' : 'password'"
+            :rows="editForm.valueVisible ? 4 : 1"
+            placeholder="留空表示不轮换现有值;填写后会覆盖并 version+1"
+            show-password
+          />
+          <div class="secret-page__form-hint">
+            留空 = 保留原值;需要修改时才填写。
+          </div>
+        </el-form-item>
+        <el-form-item label="说明" prop="comment">
+          <el-input
+            v-model="editForm.comment"
+            type="textarea"
+            :rows="2"
+            placeholder="可清空"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editDialogVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="editSubmitting"
+          @click="onEditSubmit"
+        >
+          保存
+          <el-icon class="el-icon--right"><ArrowRight /></el-icon>
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -805,6 +1041,18 @@ watch(
       background: rgba(37, 99, 235, 0.1);
       color: var(--v-color-info);
     }
+
+    &--edit {
+      background: rgba(245, 158, 11, 0.12);
+      color: var(--v-color-warning);
+    }
+  }
+
+  &__form-hint {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--v-text-tertiary);
+    line-height: 1.5;
   }
 
   &__reveal {
