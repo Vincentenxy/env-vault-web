@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { SecretMeta, SecretReveal } from '@/types/secret'
+import type { SecretEntry, SecretGroup, SecretReveal } from '@/types/secret'
 import type { PageRequest, PageResp, Uuid } from '@/types/api'
 import {
   listSecrets,
@@ -28,13 +28,13 @@ type SecretContext = { kind: 'env'; parent: Uuid } | { kind: 'folder'; parent: U
  * 列表按 (env | folder) 分桶。切 env 或切 folder 时重新拉取。
  */
 export const useSecretStore = defineStore('secret', () => {
-  const items = ref<SecretMeta[]>([])
+  const items = ref<SecretGroup[]>([])
   const total = ref(0)
   const loading = ref(false)
   const context = ref<SecretContext | null>(null)
   const lastQuery = ref<PageRequest>({ pageNum: 1, pageSize: 20 })
 
-  async function fetchList(req: ListSecretsRequest): Promise<PageResp<SecretMeta>> {
+  async function fetchList(req: ListSecretsRequest): Promise<PageResp<SecretGroup>> {
     loading.value = true
     if ('environmentId' in req && req.environmentId) {
       context.value = { kind: 'env', parent: req.environmentId }
@@ -54,7 +54,7 @@ export const useSecretStore = defineStore('secret', () => {
     }
   }
 
-  async function create(req: CreateSecretRequest): Promise<SecretMeta> {
+  async function create(req: CreateSecretRequest): Promise<SecretEntry> {
     const created = await withApiCall(() => createSecret(req))
     // 创建到当前上下文时刷新第一页
     if (context.value && context.value.kind === 'folder' && context.value.parent === req.folderId) {
@@ -88,17 +88,10 @@ export const useSecretStore = defineStore('secret', () => {
    *  - value 不传 → 服务端保持原 value
    *  - comment 始终可改(允许清空为 '')
    *  - key 不可改(API 层未暴露 key 字段)
-   * 返回最新的 SecretMeta,并在本地 items 中就地替换对应行,
-   * 让版本号 / 更新时间等元数据立即反映到列表。
+   * 返回最新的 SecretEntry;不主动刷新 items(单条变更不至于需要全表重拉)。
    */
-  async function update(req: UpdateSecretRequest): Promise<SecretMeta> {
+  async function update(req: UpdateSecretRequest): Promise<SecretEntry> {
     const updated = await withApiCall(() => updateSecret(req))
-    const idx = items.value.findIndex((i) => i.id === updated.id)
-    if (idx >= 0) {
-      const next = items.value.slice()
-      next[idx] = updated
-      items.value = next
-    }
     return updated
   }
 

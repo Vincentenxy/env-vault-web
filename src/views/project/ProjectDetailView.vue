@@ -10,17 +10,17 @@ import {
 import {
   ArrowLeft,
   ArrowRight,
+  Check,
   CircleClose,
-  Connection,
   CopyDocument,
   Delete,
   Document,
   Edit,
   Folder as FolderIcon,
-  FolderOpened,
   Hide,
   InfoFilled,
   Key as KeyIcon,
+  Lock,
   Plus,
   Refresh,
   View,
@@ -34,9 +34,9 @@ import { formatDateTime, maskSecret } from '@/utils/format'
 import { getEnvProjectId } from '@/utils/env'
 import { usePermission } from '@/composables/use-permission'
 import { Permission } from '@/constants/permission'
-import { listFolders, createFolder, deleteFolder, updateFolder } from '@/api/folder'
+import { listFoldersByProject, createFolder, deleteFolder, updateFolder } from '@/api/folder'
 import type { Environment } from '@/types/env'
-import type { Folder, FolderLevel } from '@/types/folder'
+import type { FolderLevel, FolderNode } from '@/types/folder'
 import type { Project } from '@/types/project'
 import type { SecretMeta } from '@/types/secret'
 import type {
@@ -74,144 +74,133 @@ async function loadProject(): Promise<void> {
   }
 }
 
-// ==================== env 多选 ====================
+// ==================== env 列表(只用作"列头"展示)================
 const envOptions = computed<Environment[]>(() =>
   envStore.items.filter((e) => getEnvProjectId(e) === projectId.value),
 )
-/** 已勾选要展示的 env 列表 */
-const checkedEnvIds = ref<string[]>([])
 
-/** 一个 env 的本地 folder 树:L1 + 已懒加载的 L2 */
-interface EnvTree {
-  loading: boolean
-  roots: Folder[]
-  /** L1.id -> L2 children(已加载过的) */
-  childrenById: Map<string, Folder[]>
-  /** 哪些 L1 节点目前展开了(显示其 L2) */
-  expandedIds: Set<string>
-}
-/** envId -> 该 env 下的 folder 树 */
-const treesByEnv = ref<Map<string, EnvTree>>(new Map())
+// ==================== folder 树(来自 /folder/listByProject)================
+//
+// 旧版本:每个 env 一棵树(treesByEnv),顶部多选 env 控制显示哪些树。
+// 新版本:一次拿整个 project 下的 folder 树,每个节点带 envList,
+// 客户端把它扁平化成表格(env 列上打勾),不再需要 per-env 数据。
+const folderTree = ref<FolderNode[]>([])
+const folderTreeLoading = ref(false)
 
-function ensureEnvTree(envId: string): EnvTree {
-  let t = treesByEnv.value.get(envId)
-  if (!t) {
-    t = {
-      loading: false,
-      roots: [],
-      childrenById: new Map(),
-      expandedIds: new Set(),
-    }
-    const next = new Map(treesByEnv.value)
-    next.set(envId, t)
-    treesByEnv.value = next
+/** 当前选中的 folder 节点(扁平表行 / 详情都看它) */
+const selectedFolderNode = ref<FolderNode | null>(null)
+
+/** 视图模式:list = 列表 + 默认折叠 L2;detail = 全屏展示详情 */
+type ViewMode = 'list' | 'detail'
+const viewMode = ref<ViewMode>('list')
+
+/** L1 行展开状态 —— 默认全部折叠,点箭头展开/收起 */
+const expandedRowIds = ref<Set<string>>(new Set())
+
+function toggleRowExpand(folderId: string): void {
+  if (expandedRowIds.value.has(folderId)) {
+    expandedRowIds.value.delete(folderId)
+  } else {
+    expandedRowIds.value.add(folderId)
   }
-  return t
+  expandedRowIds.value = new Set(expandedRowIds.value)
 }
 
-async function loadEnvRoots(envId: string): Promise<void> {
-  const tree = ensureEnvTree(envId)
-  // 已加载过的 env 不再重拉(刷新按钮另走)
-  if (tree.roots.length > 0 || tree.loading) return
-  tree.loading = true
-  // 触发响应式
-  treesByEnv.value = new Map(treesByEnv.value)
-  try {
-    // includeSubfolders: true → 一次拿到 L1 + 各自的 L2 children
-    const resp = await listFolders({
-      environmentId: envId,
-      includeSubfolders: true,
-      pageNum: 1,
-      pageSize: 100,
-    })
-    const list = (resp.total > 0 ? resp.list : null) ?? []
-    tree.roots = list.map((f) => ({ ...f, level: 1 as const }))
-    // 把 L1 的 subfolders 同步写进 childrenById,展开/选中直接用
-    tree.childrenById.clear()
-    for (const l1 of list) {
-      const children = (l1.subfolders ?? []).map((c) => ({
-        ...c,
-        level: 2 as const,
-        environmentId: envId,
-      }))
-      if (children.length > 0) {
-        tree.childrenById.set(l1.id, children)
+/** 扁平化后的所有 folder 节点(L1 始终展示;L2 仅在父 L1 展开后才出现) */
+interface FlatFolderRow {
+  node: FolderNode
+  /** 1 = L1,2 = L2 */
+  depth: 1 | 2
+  /** L2 的父 L1 code(展示用) */
+  parentCode?: string
+}
+const flatFolders = computed<FlatFolderRow[]>(() => {
+  const out: FlatFolderRow[] = []
+  for (const l1 of folderTree.value) {
+    out.push({ node: l1, depth: 1 })
+    // 默认折叠:仅当 L1 在 expandedRowIds 中时,才把它的 L2 children 渲染出来
+    if (expandedRowIds.value.has(l1.id)) {
+      for (const l2 of l1.subFolders ?? []) {
+        out.push({ node: l2, depth: 2, parentCode: l1.code })
       }
+    }
+  }
+  return out
+})
+
+/** 按 id 在整棵 tree 里递归找节点 */
+function findFolderNode(
+  list: FolderNode[],
+  id: string,
+): { node: FolderNode; parent: FolderNode | null } | null {
+  for (const n of list) {
+    if (n.id === id) return { node: n, parent: null }
+    if (n.subFolders?.length) {
+      const r = findFolderNode(n.subFolders, id)
+      if (r) return { node: r.node, parent: r.parent ?? n }
+    }
+  }
+  return null
+}
+
+/** 拉取整个项目的 folder 树(新接口一次拿全) */
+async function loadFolderTree(): Promise<void> {
+  if (!projectId.value) return
+  folderTreeLoading.value = true
+  try {
+    const resp = await listFoldersByProject({ projectId: projectId.value })
+    folderTree.value = resp.folderList ?? []
+    // 校验:之前选中的节点如果不在新树里,清掉
+    if (
+      selectedFolderNode.value &&
+      !findFolderNode(folderTree.value, selectedFolderNode.value.id)
+    ) {
+      selectedFolderNode.value = null
+      activeTab.value = 'secrets'
     }
   } catch (e) {
     const msg = e instanceof ApiError ? e.message : '加载目录失败'
     ElMessage.error(msg)
   } finally {
-    tree.loading = false
-    treesByEnv.value = new Map(treesByEnv.value)
+    folderTreeLoading.value = false
   }
 }
 
-/** 整棵 env tree 重新拉取(L1 + 全部 L2)。用于 create/delete folder 后的刷新。 */
-async function refreshEnvTree(envId: string): Promise<void> {
-  const tree = ensureEnvTree(envId)
-  tree.roots = []
-  tree.childrenById.clear()
-  tree.expandedIds.clear()
-  await loadEnvRoots(envId)
-}
-
-function onToggleExpand(envId: string, folder: Folder): void {
-  // L2 children 已随 L1 一起加载,展开/折叠不再发请求
-  const tree = ensureEnvTree(envId)
-  if (tree.expandedIds.has(folder.id)) {
-    tree.expandedIds.delete(folder.id)
-  } else {
-    tree.expandedIds.add(folder.id)
-  }
-  treesByEnv.value = new Map(treesByEnv.value)
-}
-
-async function onCheckedEnvsChange(ids: string[]): Promise<void> {
-  // 新勾选的 env 自动加载 root folders
-  for (const envId of ids) {
-    if (!treesByEnv.value.has(envId) || treesByEnv.value.get(envId)!.roots.length === 0) {
-      void loadEnvRoots(envId)
-    }
-  }
-  // 取消勾选时,若当前选中的 folder 属于该 env,清空选中
-  if (selectedFolder.value && !ids.includes(selectedFolder.value.environmentId)) {
-    selectedFolder.value = null
-    activeTab.value = 'secrets'
-  }
-}
-
-// ==================== 选中 ====================
-/** 当前选中的 folder(同时只能选一个,横跨所有 env) */
-const selectedFolder = ref<Folder | null>(null)
-
-async function onSelectFolder(envId: string, folder: Folder): Promise<void> {
-  selectedFolder.value = folder
-  // 切到选中的 env,确保对应树存在
-  ensureEnvTree(envId)
-  // 切换 folder 时,默认回到 Secrets tab,并按当前 folder 拉 secret
+function onTreeNodeClick(node: FolderNode): void {
+  selectedFolderNode.value = node
+  // 切到 info tab,展示详情;同时按需刷新 secret
   activeTab.value = 'secrets'
-  await loadSecretsOfCurrent()
+  viewMode.value = 'detail'
+  void loadSecretsOfCurrent()
 }
 
-/** breadcrumb: env > L1 > [L2] */
-const breadcrumb = computed<Array<{ id: string; name: string; type: 'env' | 'folder' }>>(() => {
-  if (!selectedFolder.value) return []
-  const result: Array<{ id: string; name: string; type: 'env' | 'folder' }> = []
-  const envId = selectedFolder.value.environmentId
-  const env = envOptions.value.find((e) => e.id === envId)
-  if (env) result.push({ id: env.id, name: env.name, type: 'env' })
-  if (selectedFolder.value.level === 2) {
-    const tree = treesByEnv.value.get(envId)
-    const parent = tree?.roots.find((f) => f.id === selectedFolder.value!.parentId)
-    if (parent) result.push({ id: parent.id, name: parent.name, type: 'folder' })
+function onFlatRowClick(row: FlatFolderRow): void {
+  selectedFolderNode.value = row.node
+  activeTab.value = 'secrets'
+  viewMode.value = 'detail'
+  void loadSecretsOfCurrent()
+}
+
+function onBackToList(): void {
+  viewMode.value = 'list'
+}
+
+function isFolderInEnv(node: FolderNode, envId: string): boolean {
+  return node.envList?.some((b) => b.id === envId) ?? false
+}
+
+/** 给 detail-panel 用的面包屑:project → [L1] → [L2] */
+const folderBreadcrumb = computed<Array<{ id: string; name: string; kind: 'l1' | 'l2' }>>(() => {
+  if (!selectedFolderNode.value) return []
+  const found = findFolderNode(folderTree.value, selectedFolderNode.value.id)
+  if (!found) return []
+  const out: Array<{ id: string; name: string; kind: 'l1' | 'l2' }> = []
+  // 父是 L1
+  if (found.parent) {
+    out.push({ id: found.parent.id, name: found.parent.name, kind: 'l1' })
   }
-  result.push({
-    id: selectedFolder.value.id,
-    name: selectedFolder.value.name,
-    type: 'folder',
-  })
-  return result
+  out.push({ id: found.node.id, name: found.node.name, kind: 'l2' })
+  return out
 })
 
 // ==================== Tab ====================
@@ -220,13 +209,13 @@ const activeTab = ref<TabKey>('secrets')
 
 // ==================== Secret 列表 ====================
 async function loadSecretsOfCurrent(): Promise<void> {
-  if (!selectedFolder.value) {
+  if (!selectedFolderNode.value) {
     secretStore.clear()
     return
   }
   try {
     await secretStore.fetchList({
-      folderId: selectedFolder.value.id,
+      folderId: selectedFolderNode.value.id,
       pageNum: 1,
       pageSize: secretStore.lastQuery.pageSize ?? 20,
     })
@@ -237,9 +226,9 @@ async function loadSecretsOfCurrent(): Promise<void> {
 }
 
 function onSecretPageChange(pageNum: number, pageSize: number): void {
-  if (!selectedFolder.value) return
+  if (!selectedFolderNode.value) return
   secretStore
-    .fetchList({ folderId: selectedFolder.value.id, pageNum, pageSize })
+    .fetchList({ folderId: selectedFolderNode.value.id, pageNum, pageSize })
     .catch((e: unknown) => {
       const msg = e instanceof ApiError ? e.message : '加载失败'
       ElMessage.error(msg)
@@ -247,22 +236,63 @@ function onSecretPageChange(pageNum: number, pageSize: number): void {
 }
 
 // ==================== 创建 folder ====================
+/**
+ * 新的入参格式(对齐 rbac 反馈):
+ *  - level=1: 不传 parentCode;envList 至少 1 项
+ *  - level=2: 必传 parentCode(父 L1 folder 的 code);envList 至少 1 项
+ *
+ * 弹窗里所有字段都可改,点击"+ 顶级 / + 子目录"只是预填。
+ * 创建成功后,所有命中的 env 树都刷新,level=2 场景下父 L1 自动展开。
+ */
 const createFolderDialogVisible = ref(false)
 const createFolderSubmitting = ref(false)
 const createFolderFormRef = ref<FormInstance>()
-const createFolderTarget = ref<{
-  envId: string
-  level: FolderLevel
-  parentId: string
-} | null>(null)
 
-const createFolderForm = reactive<{ code: string; name: string; comment: string }>({
+const createFolderForm = reactive<{
+  level: FolderLevel
+  envList: string[]
+  parentCode: string
+  code: string
+  name: string
+  comment: string
+}>({
+  level: 1,
+  envList: [],
+  parentCode: '',
   code: '',
   name: '',
   comment: '',
 })
 
 const createFolderRules: FormRules<typeof createFolderForm> = {
+  level: [{ required: true, message: '请选择级别', trigger: 'change' }],
+  envList: [
+    {
+      required: true,
+      validator: (_rule, value: string[], cb) => {
+        if (!value || value.length === 0) cb(new Error('请至少选择一个 env'))
+        else cb()
+      },
+      trigger: 'change',
+    },
+  ],
+  parentCode: [
+    {
+      validator: (_rule, value: string, cb) => {
+        if (createFolderForm.level === 2 && !value.trim()) {
+          cb(new Error('level=2 时必须填写父级 code'))
+        } else {
+          cb()
+        }
+      },
+      trigger: 'blur',
+    },
+    {
+      pattern: /^[a-z0-9]+(-[a-z0-9]+)*$/,
+      message: '仅小写字母、数字、中横线',
+      trigger: 'blur',
+    },
+  ],
   code: [
     { required: true, message: '请输入 code', trigger: 'blur' },
     {
@@ -279,48 +309,72 @@ const createFolderRules: FormRules<typeof createFolderForm> = {
   comment: [{ max: 256, message: '长度不能超过 256', trigger: 'blur' }],
 }
 
+const PRESET_FOLDERS: Array<{ code: string; name: string }> = [
+  { code: 'globals', name: 'Globals' },
+  { code: 'services', name: 'Services' },
+  { code: 'infra', name: 'Infrastructure' },
+]
+
 function resetCreateFolderForm(): void {
+  createFolderForm.level = 1
+  createFolderForm.envList = []
+  createFolderForm.parentCode = ''
   createFolderForm.code = ''
   createFolderForm.name = ''
   createFolderForm.comment = ''
   createFolderFormRef.value?.clearValidate()
 }
 
-function openCreateRootFolder(envId: string): void {
-  createFolderTarget.value = { envId, level: 1, parentId: envId }
+function fillFromPreset(preset: (typeof PRESET_FOLDERS)[number]): void {
+  createFolderForm.code = preset.code
+  createFolderForm.name = preset.name
+}
+
+/**
+ * 顶级 + 按钮:envList 预填当前 project 的所有 env(L1 默认铺满)。
+ * 用户在弹窗里可以删减。
+ */
+function openCreateRootFolder(): void {
   resetCreateFolderForm()
+  createFolderForm.level = 1
+  createFolderForm.envList = envOptions.value.map((e) => e.id)
   createFolderDialogVisible.value = true
 }
 
-function openCreateChildFolder(envId: string, parent: Folder): void {
-  createFolderTarget.value = { envId, level: 2, parentId: parent.id }
+/**
+ * L1 folder 上 + 按钮:parentCode 预填该 folder.code,envList 预填该 folder 实际所在的 env。
+ * 用户在弹窗里可以扩缩(典型场景:把同一个子目录同时铺到其它 env 下)。
+ */
+function openCreateChildFolder(parent: FolderNode): void {
   resetCreateFolderForm()
+  createFolderForm.level = 2
+  // parent.envList 是 FolderEnvBinding[];createFolderForm.envList 只需 env id
+  createFolderForm.envList = parent.envList.map((b) => b.id)
+  createFolderForm.parentCode = parent.code
   createFolderDialogVisible.value = true
 }
 
 async function onCreateFolderSubmit(): Promise<void> {
-  if (!createFolderFormRef.value || !createFolderTarget.value) return
+  if (!createFolderFormRef.value) return
   const valid = await createFolderFormRef.value.validate().catch(() => false)
   if (!valid) return
   createFolderSubmitting.value = true
   try {
-    const t = createFolderTarget.value
     await createFolder({
-      level: t.level,
-      parentId: t.parentId,
+      level: createFolderForm.level,
       code: createFolderForm.code,
       name: createFolderForm.name,
+      envList: [...createFolderForm.envList],
+      parentCode:
+        createFolderForm.level === 2
+          ? createFolderForm.parentCode.trim()
+          : undefined,
       comment: createFolderForm.comment || undefined,
     })
     ElMessage.success('创建成功')
     createFolderDialogVisible.value = false
-    // 刷新整棵 env 树,再把父 L1 自动展开(L2 新建场景)
-    await refreshEnvTree(t.envId)
-    if (t.level === 2) {
-      const refreshed = ensureEnvTree(t.envId)
-      refreshed.expandedIds.add(t.parentId)
-      treesByEnv.value = new Map(treesByEnv.value)
-    }
+    // 新数据模型下,一次 listByProject 拿全,直接全量刷新
+    await loadFolderTree()
   } catch (e) {
     const msg = e instanceof ApiError ? e.message : '创建失败'
     ElMessage.error(msg)
@@ -330,10 +384,10 @@ async function onCreateFolderSubmit(): Promise<void> {
 }
 
 // ==================== 删除 folder ====================
-async function onDeleteFolder(envId: string, folder: Folder): Promise<void> {
+async function onDeleteFolder(folder: FolderNode): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      `确定要删除目录 "${folder.name} (${folder.code})" 吗?\n该目录及其下所有密钥都会被软删除。`,
+      `确定要删除目录 "${folder.name} (${folder.code})" 吗?\n该目录及其下所有密钥(覆盖 envList 中所有 env)都会被软删除。`,
       '删除目录',
       { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
     )
@@ -344,11 +398,12 @@ async function onDeleteFolder(envId: string, folder: Folder): Promise<void> {
     await deleteFolder({ id: folder.id })
     ElMessage.success('删除成功')
     // 选中被删 → 清空
-    if (selectedFolder.value?.id === folder.id) {
-      selectedFolder.value = null
+    if (selectedFolderNode.value?.id === folder.id) {
+      selectedFolderNode.value = null
+      activeTab.value = 'secrets'
     }
-    // 整棵 env 树重新拉取,确保父 L1 和兄弟 L2 数据一致
-    await refreshEnvTree(envId)
+    // 全量刷新 folder 树
+    await loadFolderTree()
   } catch (e) {
     const msg = e instanceof ApiError ? e.message : '删除失败'
     ElMessage.error(msg)
@@ -362,7 +417,6 @@ async function onDeleteFolder(envId: string, folder: Folder): Promise<void> {
 const editFolderDialogVisible = ref(false)
 const editFolderSubmitting = ref(false)
 const editFolderFormRef = ref<FormInstance>()
-const editFolderTarget = ref<Folder | null>(null)
 
 const editFolderForm = reactive<{
   id: string
@@ -400,8 +454,7 @@ function resetEditFolderForm(): void {
   editFolderFormRef.value?.clearValidate()
 }
 
-function openEditFolder(folder: Folder): void {
-  editFolderTarget.value = folder
+function openEditFolder(folder: FolderNode): void {
   editFolderForm.id = folder.id
   editFolderForm.code = folder.code
   editFolderForm.name = folder.name
@@ -416,42 +469,15 @@ async function onEditFolderSubmit(): Promise<void> {
   if (!valid) return
   editFolderSubmitting.value = true
   try {
-    const updated = await updateFolder({
+    await updateFolder({
       id: editFolderForm.id,
       name: editFolderForm.name.trim(),
       comment: editFolderForm.comment?.trim() || undefined,
     })
     ElMessage.success('更新成功')
     editFolderDialogVisible.value = false
-    // 同步本地 treesByEnv 中对应 folder 的 name/comment
-    if (selectedFolder.value && selectedFolder.value.id === updated.id) {
-      selectedFolder.value = {
-        ...selectedFolder.value,
-        name: updated.name,
-        comment: updated.comment,
-        updatedAt: updated.updatedAt,
-        updatedBy: updated.updatedBy,
-        updatedByLabel: updated.updatedByLabel,
-      }
-    }
-    const tree = ensureEnvTree(updated.environmentId)
-    if (updated.level === 1) {
-      const idx = tree.roots.findIndex((f) => f.id === updated.id)
-      if (idx >= 0) {
-        tree.roots[idx] = { ...tree.roots[idx], ...updated, level: 1 as const }
-      }
-    } else {
-      // L2:在某个 L1 的 childrenById 里
-      for (const [parentId, children] of tree.childrenById.entries()) {
-        const idx = children.findIndex((f) => f.id === updated.id)
-        if (idx >= 0) {
-          children[idx] = { ...children[idx], ...updated, level: 2 as const }
-          tree.childrenById.set(parentId, children)
-          break
-        }
-      }
-    }
-    treesByEnv.value = new Map(treesByEnv.value)
+    // 全量刷新(简单可靠)
+    await loadFolderTree()
   } catch (e) {
     const msg = e instanceof ApiError ? e.message : '更新失败'
     ElMessage.error(msg)
@@ -462,21 +488,26 @@ async function onEditFolderSubmit(): Promise<void> {
 
 // ==================== 批量创建 secret ====================
 //
-// 一张表只属于一个 folder,下面多行 [key, value-per-env, comment]。
-// value 列数 = 上方 env 多选里勾选的环境数,表头用 env.code 标识(envCode = value map 的 key)。
-// 打开时快照 envCode 列表,关闭前 env 多选变化也不会影响已开的对话框。
+// 适配新数据模型:
+//  - 旧:从顶部 env 多选 + per-env 树里收集 folder
+//  - 新:直接读 `selectedFolderNode` 的 envList → 作为 value 列的列头
+//         picked folder = 当前选中的 node
+//         env 列与 L1 实际挂载的 env 一一对应,无需反查
+
 const batchCreateDialogVisible = ref(false)
 const batchCreateSubmitting = ref(false)
 const batchCreateFormRef = ref<FormInstance>()
-/** 打开对话框时由上方 env 多选快照,作为 value 列的列头 */
+/** 打开对话框时由 selectedFolderNode.envList 快照,作为 value 列的列头(envCode) */
 const batchCreateEnvCodes = ref<string[]>([])
 
 interface BatchSecretRow {
-  /** v-for 的稳定 key,加这个是因为 row.key 在用户编辑过程中可能为空 */
   uid: string
   key: string
   comment: string
-  /** envCode -> 明文 value。空字符串表示"不为该 env 创建 secret" */
+  /**
+   * envCode -> 该 env 下的 value。**空字符串 = 不为该 env 创建**(实现成
+   * "默认每个 env 都上传,留空就跳过"的语义)。
+   */
   values: Record<string, string>
 }
 
@@ -492,62 +523,27 @@ const batchCreateRules: FormRules<{ folderId: string }> = {
   folderId: [{ required: true, message: '请选择目录', trigger: 'change' }],
 }
 
-/**
- * 列出当前已勾选 env 下的所有 L1 folder,按 code 去重(同名 folder 跨 env 只展示一次)。
- * 不区分 env —— UI 上只暴露 folder 名字,具体每个 env 的 folderId 在提交时按
- * picked folder 的 name/code 在每个 env 的 tree 里反查得出。
- */
-const batchCreateFolderOptions = computed<Folder[]>(() => {
-  const seen = new Set<string>()
-  const result: Folder[] = []
-  for (const envId of checkedEnvIds.value) {
-    const tree = treesByEnv.value.get(envId)
-    if (!tree) continue
-    for (const l1 of tree.roots) {
-      if (!seen.has(l1.code)) {
-        seen.add(l1.code)
-        result.push(l1)
-      }
-    }
+/** batch create 的可选 folder:所有 L1 + L2(批量 secret 可挂在任意层级 folder 下)
+ *  旧版只取 folderTree 顶层导致 L2 folder 详情面板点新建会"所选目录无效"。 */
+const batchCreateFolderOptions = computed<FolderNode[]>(() => {
+  const out: FolderNode[] = []
+  for (const l1 of folderTree.value) {
+    out.push(l1)
+    if (l1.subFolders?.length) out.push(...l1.subFolders)
   }
-  return result
+  return out
 })
 
-/**
- * 给定 picked folder(L1),在每个 checked env 的 tree 里按 name/code 反查对应的 folderId。
- * 返回:
- *  - envFolderIdMap: envCode -> folderId(查到的)
- *  - envFolderMissing: 查不到的 envCode 列表
- */
-function resolveEnvFolderIds(picked: Folder): {
-  envFolderIdMap: Record<string, string>
-  envFolderMissing: string[]
-} {
-  const envFolderIdMap: Record<string, string> = {}
-  const envFolderMissing: string[] = []
-  for (const envId of checkedEnvIds.value) {
-    const env = envOptions.value.find((e) => e.id === envId)
-    if (!env) continue
-    const tree = treesByEnv.value.get(envId)
-    if (!tree) {
-      envFolderMissing.push(env.code)
-      continue
-    }
-    let resolved: string | undefined
-    for (const l1 of tree.roots) {
-      if (l1.name === picked.name || l1.code === picked.code) {
-        resolved = l1.id
-        break
-      }
-    }
-    if (resolved) envFolderIdMap[env.code] = resolved
-    else envFolderMissing.push(env.code)
-  }
-  return { envFolderIdMap, envFolderMissing }
-}
+/** 弹窗里展示的所属 folder(只读,当前页面已选中的那个,不能改) */
+const batchCreateSelectedFolder = computed<{ name: string; code: string } | null>(() => {
+  const id = batchCreateForm.folderId
+  if (!id) return null
+  return batchCreateFolderOptions.value.find((f) => f.id === id) ?? null
+})
 
 function makeEmptyBatchRow(): BatchSecretRow {
   const values: Record<string, string> = {}
+  // 给每个 env code 预填空串(不勾 = 空字符串)
   for (const envCode of batchCreateEnvCodes.value) {
     values[envCode] = ''
   }
@@ -560,21 +556,19 @@ function makeEmptyBatchRow(): BatchSecretRow {
 }
 
 function openBatchCreateSecret(): void {
-  if (!selectedFolder.value) {
+  if (!selectedFolderNode.value) {
     ElMessage.warning('请先选择一个目录')
     return
   }
-  if (checkedEnvIds.value.length === 0) {
-    ElMessage.warning('请先勾选至少一个环境')
+  // env 列头 = 当前选中 folder 的 envList(每条带 code,就是 column header)
+  batchCreateEnvCodes.value = selectedFolderNode.value.envList
+    .map((b) => envOptions.value.find((e) => e.id === b.id)?.code)
+    .filter((c): c is string => !!c)
+  if (batchCreateEnvCodes.value.length === 0) {
+    ElMessage.warning('当前目录尚未挂载到任何环境,无法批量创建 secret')
     return
   }
-  // 快照 envCodes(关弹窗前 env 多选变化不影响当前弹窗)
-  batchCreateEnvCodes.value = checkedEnvIds.value
-    .map((id) => envOptions.value.find((e) => e.id === id)?.code)
-    .filter((c): c is string => !!c)
-  // 默认预填当前选中的 folder
-  batchCreateForm.folderId = selectedFolder.value.id
-  // 起始 1 行(用户可加)
+  batchCreateForm.folderId = selectedFolderNode.value.id
   batchCreateForm.rows = [makeEmptyBatchRow()]
   batchCreateFormRef.value?.clearValidate()
   batchCreateDialogVisible.value = true
@@ -596,7 +590,8 @@ async function onBatchCreateSubmit(): Promise<void> {
   const valid = await batchCreateFormRef.value.validate().catch(() => false)
   if (!valid) return
 
-  // 行级校验:key 必填 + 格式 + 互不重复
+  // 行级校验:key 必填 + 格式 + 互不重复;每行至少有一个 env 填了非空 value;
+  // 每个非空 value 长度兜底。
   const seen = new Set<string>()
   for (let i = 0; i < batchCreateForm.rows.length; i++) {
     const row = batchCreateForm.rows[i]
@@ -622,15 +617,13 @@ async function onBatchCreateSubmit(): Promise<void> {
         return
       }
     }
-    // comment 长度兜底
     if ((row.comment ?? '').length > 256) {
       ElMessage.error(`第 ${i + 1} 行说明长度不能超过 256`)
       return
     }
   }
 
-  // 跨 env 解析 folderId:picked folder 只对应一个 L1 名字,
-  // 每个 env 在该名字下可能/没有同名 folder,反查不到则跳过该 env。
+  // picked folder:从 batchCreateForm.folderId 反查
   const picked = batchCreateFolderOptions.value.find(
     (f) => f.id === batchCreateForm.folderId,
   )
@@ -638,29 +631,12 @@ async function onBatchCreateSubmit(): Promise<void> {
     ElMessage.error('所选目录无效,请重新选择')
     return
   }
-  const { envFolderIdMap, envFolderMissing } = resolveEnvFolderIds(picked)
-
-  // 反查不到的 env 给用户最后一次确认机会
-  if (envFolderMissing.length > 0) {
-    try {
-      await ElMessageBox.confirm(
-        `以下环境未找到同名目录 "${picked.name}",将为这些环境跳过创建:\n${envFolderMissing.join(', ')}`,
-        '部分环境跳过',
-        { type: 'warning', confirmButtonText: '继续创建', cancelButtonText: '取消' },
-      )
-    } catch {
-      return // 取消
-    }
-  }
-
-  // 至少要有一个 env 能创建
-  if (Object.keys(envFolderIdMap).length === 0) {
-    ElMessage.error('所有勾选环境都未找到同名目录,无可创建的目标')
-    return
-  }
 
   batchCreateSubmitting.value = true
   try {
+    // picked.envList 是 FolderEnvBinding[];同一逻辑 folder 在不同 env 下
+    // folderId 不同,上送时必须按 env code 查到对应的 env 专属 folderId。
+    const envBindingByCode = new Map(picked.envList.map((b) => [b.code, b]))
     const req: BatchCreateSecretsRequest = {
       secretList: batchCreateForm.rows.map((row) => {
         const item: BatchSecretItem = {
@@ -668,12 +644,12 @@ async function onBatchCreateSubmit(): Promise<void> {
         }
         const trimmedComment = row.comment?.trim()
         if (trimmedComment) item.comment = trimmedComment
-        // 遍历所有已快照的 envCode,把"value 非空 + folderId 存在"的挂上去
+        // 每个 env 都按 code 上送(空 value 也传空串,让后端决定如何处理 —— 不在客户端"跳过"任何 env)
         for (const envCode of batchCreateEnvCodes.value) {
-          const value = row.values[envCode]
-          const folderId = envFolderIdMap[envCode]
-          if (value && folderId) {
-            item[envCode] = { folderId, value }
+          const value = row.values[envCode] ?? ''
+          const binding = envBindingByCode.get(envCode)
+          if (binding) {
+            item[envCode] = { folderId: binding.folderId, value }
           }
         }
         return item
@@ -821,13 +797,10 @@ async function onEditSecretSubmit(): Promise<void> {
 
 // ==================== 整体刷新 ====================
 async function refreshAll(): Promise<void> {
-  // 刷新已勾选的所有 env 的目录树
-  const envs = [...checkedEnvIds.value]
-  for (const envId of envs) {
-    await refreshEnvTree(envId)
-  }
-  // 当前选中的 folder 可能已不在新数据里,清空
-  selectedFolder.value = null
+  // 新数据模型:一次刷新整棵 folder 树
+  await loadFolderTree()
+  selectedFolderNode.value = null
+  activeTab.value = 'secrets'
   secretStore.clear()
 }
 
@@ -861,14 +834,8 @@ onMounted(async () => {
     ElMessage.error(msg)
   }
 
-  // 默认勾选第一个 env(若存在)
-  if (envOptions.value.length > 0 && checkedEnvIds.value.length === 0) {
-    const first = envOptions.value[0]
-    if (first) {
-      checkedEnvIds.value = [first.id]
-      await loadEnvRoots(first.id)
-    }
-  }
+  // 新数据模型:一次拉全 project 下的 folder 树
+  await loadFolderTree()
 })
 
 // project 切换 → rbac scope
@@ -896,366 +863,366 @@ watch(
         </div>
       </div>
       <div class="proj-header__actions">
-        <el-button :icon="Refresh" :disabled="checkedEnvIds.length === 0" @click="refreshAll">
+        <el-button :icon="Refresh" :disabled="!projectId" @click="refreshAll">
           刷新
         </el-button>
       </div>
     </header>
 
-    <!-- env 多选 -->
-    <section class="env-bar">
-      <span class="env-bar__label">
-        <el-icon><Connection /></el-icon>
-        环境
-      </span>
-      <div v-if="envOptions.length === 0" class="env-bar__empty">
-        当前项目还没有环境,请到「环境管理」页创建。
-      </div>
-      <el-checkbox-group
-        v-else
-        v-model="checkedEnvIds"
-        class="env-bar__group"
-        @change="(v: (string | number | boolean)[]) => onCheckedEnvsChange(v.map(String))"
-      >
-        <el-checkbox
-          v-for="e in envOptions"
-          :key="e.id"
-          :value="e.id"
-          class="env-bar__chip"
-          border
-        >
-          {{ e.name }}
-          <span class="env-bar__chip-code">{{ e.code }}</span>
-        </el-checkbox>
-      </el-checkbox-group>
-    </section>
-
-    <!-- 主体:左侧目录(按 env 分组) + 右侧详情 -->
-    <div v-if="checkedEnvIds.length === 0" class="proj-detail__hint">
+    <div v-if="envOptions.length === 0" class="proj-detail__hint">
       <el-icon><CircleClose /></el-icon>
-      <span>请勾选至少一个环境,以浏览其下的目录和密钥。</span>
+      <span>当前项目还没有环境,请到「环境管理」页创建。</span>
     </div>
 
-    <div v-else class="proj-detail__body">
-      <!-- 左栏:多 env 分组目录树 -->
-      <aside class="tree-panel">
-        <div
-          v-for="envId in checkedEnvIds"
-          :key="envId"
-          class="env-tree"
-        >
-          <header class="env-tree__head">
-            <span class="env-tree__name">
-              <el-icon><Connection /></el-icon>
-              {{ envOptions.find((e) => e.id === envId)?.name ?? envId }}
-            </span>
+    <template v-else>
+      <!-- =============== LIST 视图(默认)=============== -->
+      <div v-show="viewMode === 'list'" class="proj-detail__body proj-detail__body--list">
+        <main v-loading="folderTreeLoading" class="folder-list">
+          <header class="folder-list__head">
+            <div>
+              <h2 class="folder-list__title">目录</h2>
+              <p class="folder-list__desc">
+                L1 顶级目录 + L2 子目录,按 env 列打勾;点击行查看详情。
+              </p>
+            </div>
             <el-button
-              size="small"
-              link
               type="primary"
+              size="small"
               :icon="Plus"
-              @click="openCreateRootFolder(envId)"
+              :disabled="envOptions.length === 0"
+              @click="openCreateRootFolder"
             >
               新建顶级
             </el-button>
           </header>
-          <div v-loading="ensureEnvTree(envId).loading" class="env-tree__body">
-            <div
-              v-if="ensureEnvTree(envId).roots.length === 0 && !ensureEnvTree(envId).loading"
-              class="env-tree__empty"
-            >
-              暂无顶级目录
-            </div>
-            <ul v-else class="tree">
-              <li v-for="f in ensureEnvTree(envId).roots" :key="f.id">
-                <div
-                  class="tree__row"
-                  :class="{ 'is-selected': selectedFolder?.id === f.id }"
-                  @click="onSelectFolder(envId, f)"
-                >
-                  <el-icon
-                    class="tree__toggle"
-                    :class="{ 'is-expanded': ensureEnvTree(envId).expandedIds.has(f.id) }"
-                    @click.stop="onToggleExpand(envId, f)"
+          <el-table
+            :data="flatFolders"
+            class="folder-list__table"
+            :empty-text="
+              folderTree.length === 0
+                ? '该项目下暂无目录,点击上方「新建顶级」创建'
+                : '暂无数据'
+            "
+            @row-click="onFlatRowClick"
+          >
+            <el-table-column prop="node.code" label="Code" min-width="200">
+              <template #default="{ row }">
+                <div class="folder-list__code-cell">
+                  <!-- L1 行的展开/收起按钮(挪到 Code 列里,避开独立列的列宽被压问题) -->
+                  <span
+                    v-if="row.depth === 1"
+                    class="folder-list__toggle"
+                    :class="{
+                      'is-disabled': !row.node.subFolders?.length,
+                      'is-expanded': expandedRowIds.has(row.node.id),
+                    }"
+                    @click.stop="row.node.subFolders?.length && toggleRowExpand(row.node.id)"
                   >
-                    <ArrowRight />
-                  </el-icon>
-                  <el-icon class="tree__icon">
-                    <FolderOpened v-if="ensureEnvTree(envId).expandedIds.has(f.id)" />
-                    <FolderIcon v-else />
-                  </el-icon>
-                  <span class="tree__name">{{ f.name }}</span>
-                  <span class="tree__code">{{ f.code }}</span>
+                    <span class="folder-list__toggle-icon">
+                      {{ expandedRowIds.has(row.node.id) ? '−' : '+' }}
+                    </span>
+                  </span>
+                  <!-- L2 行的占位:跟 toggle 同尺寸,让 L1/L2 的 folder icon 视觉对齐 -->
+                  <span v-else class="folder-list__toggle folder-list__toggle--placeholder" />
+                  <el-icon class="folder-list__code-icon"><FolderIcon /></el-icon>
+                  <span class="folder-list__code-text">{{ row.node.code }}</span>
                 </div>
-                <ul
-                  v-if="ensureEnvTree(envId).expandedIds.has(f.id)"
-                  class="tree tree--child"
-                >
-                  <li
-                    v-for="c in ensureEnvTree(envId).childrenById.get(f.id) ?? []"
-                    :key="c.id"
-                  >
-                    <div
-                      class="tree__row tree__row--child"
-                      :class="{ 'is-selected': selectedFolder?.id === c.id }"
-                      @click="onSelectFolder(envId, c)"
-                    >
-                      <el-icon class="tree__icon tree__icon--child">
-                        <FolderIcon />
-                      </el-icon>
-                      <span class="tree__name">{{ c.name }}</span>
-                      <span class="tree__code">{{ c.code }}</span>
-                    </div>
-                  </li>
-                  <li
-                    v-if="(ensureEnvTree(envId).childrenById.get(f.id)?.length ?? 0) === 0"
-                    class="tree__empty-child"
-                  >
-                    无子目录
-                  </li>
-                </ul>
-              </li>
-            </ul>
-          </div>
-        </div>
-      </aside>
-
-      <!-- 右栏:详情面板 -->
-      <main class="detail-panel">
-        <!-- 未选目录 -->
-        <section v-if="!selectedFolder" class="detail-empty">
-          <el-icon class="detail-empty__icon"><Document /></el-icon>
-          <h2>选择一个目录查看详情</h2>
-          <p>从左侧任意一个环境的目录树中点选目录,即可查看其下的密钥与基础信息。</p>
-        </section>
-
-        <!-- 选中目录后:Tab 切换 -->
-        <template v-else>
-          <!-- 面包屑 + Tab -->
-          <header class="detail-head">
-            <nav class="crumb">
-              <template v-for="(c, i) in breadcrumb" :key="c.id">
-                <el-icon v-if="i > 0" class="crumb__sep">
-                  <ArrowRight />
-                </el-icon>
-                <span
-                  class="crumb__item"
-                  :class="{
-                    'crumb__item--env': c.type === 'env',
-                    'crumb__item--current': i === breadcrumb.length - 1,
-                  }"
-                >
-                  <el-icon v-if="c.type === 'env'"><Connection /></el-icon>
-                  <el-icon v-else><FolderIcon /></el-icon>
-                  {{ c.name }}
-                </span>
               </template>
-            </nav>
-            <el-tabs v-model="activeTab" class="detail-tabs">
-              <el-tab-pane name="secrets">
-                <template #label>
-                  <span class="detail-tabs__label">
-                    <el-icon><KeyIcon /></el-icon>
-                    Secrets
-                  </span>
-                </template>
-              </el-tab-pane>
-              <el-tab-pane name="info">
-                <template #label>
-                  <span class="detail-tabs__label">
-                    <el-icon><InfoFilled /></el-icon>
-                    Folder 基础信息
-                  </span>
-                </template>
-              </el-tab-pane>
-            </el-tabs>
+            </el-table-column>
+            <el-table-column prop="node.name" label="名称" min-width="160" />
+            <el-table-column prop="node.comment" label="说明" min-width="200" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span class="muted">{{ row.node.comment || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="子目录" width="80" align="center">
+              <template #default="{ row }">
+                <el-tag
+                  v-if="row.depth === 1 && row.node.subFolders?.length"
+                  size="small"
+                  effect="plain"
+                  type="info"
+                >
+                  {{ row.node.subFolders.length }}
+                </el-tag>
+                <span v-else class="muted">—</span>
+              </template>
+            </el-table-column>
+            <el-table-column
+              v-for="env in envOptions"
+              :key="env.id"
+              :label="env.name"
+              min-width="90"
+              align="center"
+            >
+              <template #default="{ row }">
+                <el-icon
+                  v-if="isFolderInEnv(row.node, env.id)"
+                  class="env-check"
+                  :title="`已挂载到 ${env.name}`"
+                >
+                  <Check />
+                </el-icon>
+                <span v-else class="env-check__off" :title="`未挂载到 ${env.name}`">—</span>
+              </template>
+            </el-table-column>
+          </el-table>
+        </main>
+      </div>
+
+      <!-- =============== DETAIL 视图(选中某 folder 后切到这里,隐藏列表)=============== -->
+      <div
+        v-if="selectedFolderNode"
+        v-show="viewMode === 'detail'"
+        class="proj-detail__body proj-detail__body--detail"
+      >
+        <aside class="detail-panel detail-panel--full">
+          <!-- 返回按钮 -->
+          <header class="detail-back">
+            <el-button text :icon="ArrowLeft" @click="onBackToList">
+              返回目录列表
+            </el-button>
           </header>
 
-          <!-- Secrets Tab -->
-          <section v-show="activeTab === 'secrets'" class="tab-pane">
-            <div class="tab-pane__bar">
-              <div class="tab-pane__title">
-                当前目录密钥
-                <span class="tab-pane__count">{{ secretStore.total }}</span>
-              </div>
-              <div class="tab-pane__actions">
-                <el-button
-                  type="primary"
-                  size="small"
-                  :icon="Plus"
-                  :disabled="checkedEnvIds.length === 0"
-                  @click="openBatchCreateSecret"
-                >
-                  新建密钥
-                </el-button>
-              </div>
-            </div>
 
-            <el-table
-              v-loading="secretStore.loading"
-              :data="secretStore.items"
-              class="secret-table"
-              empty-text="该目录下还没有密钥,点击右上「新建密钥」开始"
-            >
-              <el-table-column prop="key" label="Key" min-width="220">
-                <template #default="{ row }">
-                  <span class="secret-key">
-                    <el-icon class="secret-key__icon"><KeyIcon /></el-icon>
-                    {{ row.key }}
+          <!-- 未选目录 -->
+          <section v-if="!selectedFolderNode" class="detail-empty">
+            <el-icon class="detail-empty__icon"><Document /></el-icon>
+            <h2>选择一个目录查看详情</h2>
+            <p>从上方目录树或目录列表中点选,即可查看其基础信息、env 挂载情况与子目录。</p>
+          </section>
+
+          <template v-else>
+            <header class="detail-head">
+              <nav class="crumb">
+                <span class="crumb__item crumb__item--root" @click="onTreeNodeClick(folderTree[0] ?? selectedFolderNode)">
+                  <el-icon><FolderIcon /></el-icon>
+                  {{ project?.name ?? '项目' }}
+                </span>
+                <template v-for="c in folderBreadcrumb" :key="c.id">
+                  <el-icon class="crumb__sep"><ArrowRight /></el-icon>
+                  <span
+                    class="crumb__item"
+                    :class="{
+                      'crumb__item--l1': c.kind === 'l1',
+                      'crumb__item--current': c.id === selectedFolderNode.id,
+                    }"
+                    @click="onTreeNodeClick(findFolderNode(folderTree, c.id)?.node ?? selectedFolderNode)"
+                  >
+                    {{ c.name }}
                   </span>
                 </template>
-              </el-table-column>
-              <el-table-column prop="comment" label="说明" min-width="220" show-overflow-tooltip>
-                <template #default="{ row }">
-                  <span class="muted">{{ row.comment || '—' }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="版本" width="80">
-                <template #default="{ row }">
-                  <el-tag size="small" effect="light" type="info">v{{ row.version }}</el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column label="更新时间" min-width="160">
-                <template #default="{ row }">
-                  <span class="muted">{{ formatDateTime(row.updatedAt) }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="操作" width="180" fixed="right">
-                <template #default="{ row }">
+              </nav>
+              <el-tabs v-model="activeTab" class="detail-tabs">
+                <el-tab-pane name="secrets">
+                  <template #label>
+                    <span class="detail-tabs__label">
+                      <el-icon><KeyIcon /></el-icon>
+                      Secrets
+                    </span>
+                  </template>
+                </el-tab-pane>
+                <el-tab-pane name="info">
+                  <template #label>
+                    <span class="detail-tabs__label">
+                      <el-icon><InfoFilled /></el-icon>
+                      Folder 基础信息
+                    </span>
+                  </template>
+                </el-tab-pane>
+              </el-tabs>
+            </header>
+
+            <!-- Info Tab -->
+            <section v-show="activeTab === 'info'" class="tab-pane">
+              <div class="tab-pane__bar">
+                <div class="tab-pane__title">
+                  {{ selectedFolderNode.name }}
+                  <el-tag
+                    :type="selectedFolderNode.subFolders ? 'primary' : 'info'"
+                    size="small"
+                    effect="light"
+                    class="tab-pane__level-tag"
+                  >
+                    L{{ selectedFolderNode.subFolders ? 1 : 2 }}
+                  </el-tag>
+                </div>
+                <div class="tab-pane__actions">
                   <el-button
-                    link
+                    v-if="!selectedFolderNode.subFolders?.length"
                     type="primary"
+                    size="small"
+                    :icon="Plus"
+                    @click="openCreateChildFolder(selectedFolderNode)"
+                  >
+                    新建子目录
+                  </el-button>
+                  <el-button
+                    type="primary"
+                    size="small"
                     :icon="Edit"
-                    :disabled="!has(Permission.SecretUpdate)"
-                    @click="openEditSecret(row as SecretMeta)"
+                    :disabled="!has(Permission.FolderUpdate)"
+                    @click="openEditFolder(selectedFolderNode)"
                   >
-                    编辑
+                    编辑目录
                   </el-button>
                   <el-button
-                    link
-                    type="primary"
-                    :icon="View"
-                    :disabled="!has(Permission.SecretReveal)"
-                    @click="openReveal(row as SecretMeta)"
+                    type="danger"
+                    size="small"
+                    :icon="Delete"
+                    @click="onDeleteFolder(selectedFolderNode)"
                   >
-                    查看值
+                    删除目录
                   </el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-
-            <div class="secret-pager">
-              <el-pagination
-                background
-                layout="total, prev, pager, next, sizes"
-                :total="secretStore.total"
-                :current-page="secretStore.lastQuery.pageNum ?? 1"
-                :page-size="secretStore.lastQuery.pageSize ?? 20"
-                :page-sizes="[10, 20, 50, 100]"
-                @current-change="
-                  (p: number) => onSecretPageChange(p, secretStore.lastQuery.pageSize ?? 20)
-                "
-                @size-change="(s: number) => onSecretPageChange(1, s)"
-              />
-            </div>
-          </section>
-
-          <!-- Folder 基础信息 Tab -->
-          <section v-show="activeTab === 'info'" class="tab-pane">
-            <div class="tab-pane__bar">
-              <div class="tab-pane__title">
-                {{ selectedFolder.name }}
-                <el-tag
-                  :type="selectedFolder.level === 1 ? 'primary' : 'info'"
-                  size="small"
-                  effect="light"
-                  class="tab-pane__level-tag"
-                >
-                  L{{ selectedFolder.level }}
-                </el-tag>
+                </div>
               </div>
-              <div class="tab-pane__actions">
-                <el-button
-                  v-if="selectedFolder.level === 1"
-                  type="primary"
-                  size="small"
-                  :icon="Plus"
-                  @click="openCreateChildFolder(selectedFolder.environmentId, selectedFolder)"
-                >
-                  新建子目录
-                </el-button>
-                <el-button
-                  type="primary"
-                  size="small"
-                  :icon="Edit"
-                  :disabled="!has(Permission.FolderUpdate)"
-                  @click="openEditFolder(selectedFolder)"
-                >
-                  编辑目录
-                </el-button>
-                <el-button
-                  type="danger"
-                  size="small"
-                  :icon="Delete"
-                  @click="onDeleteFolder(selectedFolder.environmentId, selectedFolder)"
-                >
-                  删除目录
-                </el-button>
-              </div>
-            </div>
 
-            <el-descriptions :column="2" border>
-              <el-descriptions-item label="Code">
-                <code class="mono">{{ selectedFolder.code }}</code>
-              </el-descriptions-item>
-              <el-descriptions-item label="层级">
-                L{{ selectedFolder.level }}
-              </el-descriptions-item>
-              <el-descriptions-item label="所属环境">
-                {{
-                  envOptions.find((e) => e.id === selectedFolder!.environmentId)?.name ??
-                  selectedFolder.environmentId
-                }}
-              </el-descriptions-item>
-              <el-descriptions-item label="父目录">
-                {{
-                  selectedFolder.level === 1
-                    ? '环境根'
-                    : (treesByEnv
-                        .get(selectedFolder.environmentId)
-                        ?.roots.find((f) => f.id === selectedFolder!.parentId)?.name ?? '—')
-                }}
-              </el-descriptions-item>
-              <el-descriptions-item label="创建人">
-                {{ selectedFolder.createdByLabel || selectedFolder.createdBy }}
-              </el-descriptions-item>
-              <el-descriptions-item label="创建时间">
-                {{ formatDateTime(selectedFolder.createdAt) }}
-              </el-descriptions-item>
-              <el-descriptions-item label="更新人">
-                {{ selectedFolder.updatedByLabel || selectedFolder.updatedBy }}
-              </el-descriptions-item>
-              <el-descriptions-item label="更新时间">
-                {{ formatDateTime(selectedFolder.updatedAt) }}
-              </el-descriptions-item>
-              <el-descriptions-item label="说明" :span="2">
-                {{ selectedFolder.comment || '—' }}
-              </el-descriptions-item>
-              <el-descriptions-item label="ID" :span="2">
-                <span class="mono mono--id">{{ selectedFolder.id }}</span>
-              </el-descriptions-item>
-            </el-descriptions>
-          </section>
-        </template>
-      </main>
-    </div>
+              <el-descriptions :column="2" border>
+                <el-descriptions-item label="Code">
+                  <code class="mono">{{ selectedFolderNode.code }}</code>
+                </el-descriptions-item>
+                <el-descriptions-item label="名称">
+                  {{ selectedFolderNode.name }}
+                </el-descriptions-item>
+                <el-descriptions-item label="层级">
+                  L{{ selectedFolderNode.subFolders ? 1 : 2 }}
+                </el-descriptions-item>
+                <el-descriptions-item label="挂载 env">
+                  <span v-if="selectedFolderNode.envList.length === 0" class="muted">—</span>
+                  <el-tag
+                    v-for="binding in selectedFolderNode.envList"
+                    :key="binding.id"
+                    size="small"
+                    effect="plain"
+                    class="env-tag"
+                    :title="`env 专属 folderId: ${binding.folderId}`"
+                  >
+                    {{ envOptions.find((e) => e.id === binding.id)?.name ?? binding.code }}
+                  </el-tag>
+                </el-descriptions-item>
+                <el-descriptions-item label="子目录" :span="2">
+                  <span v-if="!selectedFolderNode.subFolders?.length" class="muted">—</span>
+                  <span v-else>
+                    <el-tag
+                      v-for="c in selectedFolderNode.subFolders"
+                      :key="c.id"
+                      size="small"
+                      effect="plain"
+                      class="env-tag env-tag--clickable"
+                      @click="onTreeNodeClick(c)"
+                    >
+                      {{ c.name }} ({{ c.code }})
+                    </el-tag>
+                  </span>
+                </el-descriptions-item>
+                <el-descriptions-item label="说明" :span="2">
+                  {{ selectedFolderNode.comment || '—' }}
+                </el-descriptions-item>
+                <el-descriptions-item label="ID" :span="2">
+                  <span class="mono mono--id">{{ selectedFolderNode.id }}</span>
+                </el-descriptions-item>
+              </el-descriptions>
+            </section>
+
+            <!-- Secrets Tab -->
+            <section v-show="activeTab === 'secrets'" class="tab-pane">
+              <div class="tab-pane__bar">
+                <div class="tab-pane__title">
+                  当前目录密钥
+                  <span class="tab-pane__count">{{ secretStore.total }}</span>
+                </div>
+                <div class="tab-pane__actions">
+                  <el-button
+                    type="primary"
+                    size="small"
+                    :icon="Plus"
+                    :disabled="selectedFolderNode.envList.length === 0"
+                    @click="openBatchCreateSecret"
+                  >
+                    新建密钥
+                  </el-button>
+                </div>
+              </div>
+
+              <el-table
+                v-loading="secretStore.loading"
+                :data="secretStore.items"
+                class="secret-table"
+                empty-text="该目录下还没有密钥,点击右上「新建密钥」开始"
+              >
+                <el-table-column prop="key" label="Key" min-width="220">
+                  <template #default="{ row }">
+                    <span class="secret-key">
+                      <el-icon class="secret-key__icon"><KeyIcon /></el-icon>
+                      {{ row.key }}
+                    </span>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="comment" label="说明" min-width="220" show-overflow-tooltip>
+                  <template #default="{ row }">
+                    <span class="muted">{{ row.comment || '—' }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="版本" width="80">
+                  <template #default="{ row }">
+                    <el-tag size="small" effect="light" type="info">v{{ row.version }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="更新时间" min-width="160">
+                  <template #default="{ row }">
+                    <span class="muted">{{ formatDateTime(row.updatedAt) }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="180" fixed="right">
+                  <template #default="{ row }">
+                    <el-button
+                      link
+                      type="primary"
+                      :icon="Edit"
+                      :disabled="!has(Permission.SecretUpdate)"
+                      @click="openEditSecret(row as SecretMeta)"
+                    >
+                      编辑
+                    </el-button>
+                    <el-button
+                      link
+                      type="primary"
+                      :icon="View"
+                      :disabled="!has(Permission.SecretReveal)"
+                      @click="openReveal(row as SecretMeta)"
+                    >
+                      查看值
+                    </el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+
+              <div class="secret-pager">
+                <el-pagination
+                  background
+                  layout="total, prev, pager, next, sizes"
+                  :total="secretStore.total"
+                  :current-page="secretStore.lastQuery.pageNum ?? 1"
+                  :page-size="secretStore.lastQuery.pageSize ?? 20"
+                  :page-sizes="[10, 20, 50, 100]"
+                  @current-change="
+                    (p: number) => onSecretPageChange(p, secretStore.lastQuery.pageSize ?? 20)
+                  "
+                  @size-change="(s: number) => onSecretPageChange(1, s)"
+                />
+              </div>
+            </section>
+          </template>
+        </aside>
+      </div>
+    </template>
 
     <!-- 新建 folder Dialog -->
     <el-dialog
       v-model="createFolderDialogVisible"
-      width="480px"
+      width="560px"
       :close-on-click-modal="false"
-      :title="createFolderTarget?.level === 1 ? '新建顶级目录' : '新建子目录'"
+      :title="createFolderForm.level === 1 ? '新建顶级目录' : '新建子目录'"
     >
       <el-form
         ref="createFolderFormRef"
@@ -1263,11 +1230,70 @@ watch(
         :rules="createFolderRules"
         label-position="top"
       >
+        <el-form-item label="级别" prop="level">
+          <el-radio-group v-model="createFolderForm.level">
+            <el-radio-button :value="1">level=1 (env 下顶级)</el-radio-button>
+            <el-radio-button :value="2">level=2 (子目录)</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+
+        <el-form-item
+          v-if="createFolderForm.level === 2"
+          label="父级 code"
+          prop="parentCode"
+        >
+          <el-input
+            v-model="createFolderForm.parentCode"
+            placeholder="父 level=1 folder 的 code,例如 payment"
+          />
+        </el-form-item>
+
+        <el-form-item label="应用到 env" prop="envList">
+          <el-select
+            v-model="createFolderForm.envList"
+            multiple
+            collapse-tags
+            collapse-tags-tooltip
+            filterable
+            placeholder="选择要创建到的 env(可多选)"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="e in envOptions"
+              :key="e.id"
+              :label="`${e.name} (${e.code})`"
+              :value="e.id"
+            />
+          </el-select>
+          <div class="form-hint">
+            该 folder 会按 envList 在所选 env 下各自创建一份。
+            <span v-if="createFolderForm.level === 2">
+              对每个 env,后端会按 parentCode 找对应的 L1 父节点挂载。
+            </span>
+          </div>
+        </el-form-item>
+
         <el-form-item label="Code" prop="code">
           <el-input v-model="createFolderForm.code" placeholder="例如 globals / services" />
         </el-form-item>
         <el-form-item label="名称" prop="name">
           <el-input v-model="createFolderForm.name" placeholder="Globals" />
+        </el-form-item>
+        <el-form-item
+          v-if="!createFolderForm.code && createFolderForm.level === 1"
+          label="预设"
+        >
+          <div class="presets">
+            <el-button
+              v-for="p in PRESET_FOLDERS"
+              :key="p.code"
+              size="small"
+              plain
+              @click="fillFromPreset(p)"
+            >
+              {{ p.code }}
+            </el-button>
+          </div>
         </el-form-item>
         <el-form-item label="说明" prop="comment">
           <el-input v-model="createFolderForm.comment" type="textarea" :rows="2" />
@@ -1300,83 +1326,69 @@ watch(
         label-position="top"
       >
         <el-form-item label="所属目录" prop="folderId">
-          <el-select
-            v-model="batchCreateForm.folderId"
-            placeholder="选择 folder(本批所有 secret 都放进这个 folder)"
-            style="width: 100%"
-            :disabled="batchCreateFolderOptions.length === 0"
-          >
-            <el-option
-              v-for="f in batchCreateFolderOptions"
-              :key="f.id"
-              :value="f.id"
-              :label="`${f.name} (${f.code})`"
-            />
-          </el-select>
+          <!-- 当前页面已选中了 folder,弹窗内只展示、不可修改 -->
+          <div v-if="batchCreateSelectedFolder" class="proj-detail__folder-readonly">
+            <el-icon class="proj-detail__folder-icon"><FolderIcon /></el-icon>
+            <span class="proj-detail__folder-name">{{ batchCreateSelectedFolder.name }}</span>
+            <code class="proj-detail__folder-code">{{ batchCreateSelectedFolder.code }}</code>
+            <el-tag size="small" type="info" effect="plain" class="proj-detail__folder-locked">
+              <el-icon><Lock /></el-icon>
+              锁定
+            </el-tag>
+          </div>
+          <span v-else class="muted">未选择目录</span>
           <div class="form-hint">
             folder 名字在已勾选环境间共享;每个 env 下若找不到同名 folder,该 env 将跳过创建。
           </div>
+          <!-- folderId 仍要走表单校验,这里用隐藏 input 维持 v-model -->
+          <input type="hidden" :value="batchCreateForm.folderId" />
         </el-form-item>
 
         <div class="batch-form">
-          <!-- 表头 -->
-          <div class="batch-form__header" :style="{ '--env-cols': batchCreateEnvCodes.length }">
-            <div class="batch-form__cell batch-form__cell--head">Key</div>
-            <div
-              v-for="envCode in batchCreateEnvCodes"
-              :key="envCode"
-              class="batch-form__cell batch-form__cell--head batch-form__cell--env"
-              :title="envCode"
-            >
-              {{ envCode }}
-            </div>
-            <div class="batch-form__cell batch-form__cell--head batch-form__cell--comment">
-              说明
-            </div>
-            <div class="batch-form__cell batch-form__cell--head batch-form__cell--action"></div>
-          </div>
-          <!-- 行 -->
+          <!-- 行(card 样式):顶部 key+说明+删除,下方 env inputs 自动换行网格 -->
           <div
             v-for="(row, idx) in batchCreateForm.rows"
             :key="row.uid"
             class="batch-form__row"
-            :style="{ '--env-cols': batchCreateEnvCodes.length }"
           >
-            <div class="batch-form__cell">
+            <div class="batch-form__row-head">
               <el-input
                 v-model="row.key"
                 :placeholder="idx === 0 ? 'DATABASE_URL' : 'KEY'"
                 :prefix-icon="KeyIcon"
+                class="batch-form__key"
               />
-            </div>
-            <div
-              v-for="envCode in batchCreateEnvCodes"
-              :key="envCode"
-              class="batch-form__cell"
-            >
-              <el-input
-                v-model="row.values[envCode]"
-                type="password"
-                show-password
-                :placeholder="envCode"
-              />
-            </div>
-            <div class="batch-form__cell batch-form__cell--comment">
               <el-input
                 v-model="row.comment"
                 type="textarea"
                 :rows="1"
                 :autosize="{ minRows: 1, maxRows: 3 }"
-                placeholder="可选"
+                placeholder="说明(可选)"
+                class="batch-form__comment"
               />
-            </div>
-            <div class="batch-form__cell batch-form__cell--action">
               <el-button
                 :icon="Delete"
                 size="small"
                 :disabled="batchCreateForm.rows.length <= 1"
+                class="batch-form__action"
                 @click="removeBatchRow(row.uid)"
               />
+            </div>
+            <div class="batch-form__envs">
+              <div
+                v-for="envCode in batchCreateEnvCodes"
+                :key="envCode"
+                class="batch-form__env-cell"
+              >
+                <label class="batch-form__env-label">{{ envCode }}</label>
+                <el-input
+                  v-model="row.values[envCode]"
+                  type="password"
+                  show-password
+                  :placeholder="`${envCode} 的值(留空 = 跳过该 env)`"
+                  autocomplete="new-password"
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -1384,8 +1396,9 @@ watch(
         <div class="batch-form__footer">
           <el-button :icon="Plus" plain @click="addBatchRow">添加一行</el-button>
           <span class="batch-form__hint">
-            每行 = 一个密钥定义;key 在 folder 内唯一;value 列按 env 留空 = 不为该 env 创建;
-            同一 folder 在不同 env 下若重名,后端会按 env 拆分到各自的 folderId。
+            每行 = 一个密钥定义;key 在 folder 内唯一;每个 env 一个输入框,
+            留空也按 env code 上送(value 为空串),由后端决定如何处理。
+            输入框 ≥ 280px,env 多时自动换行。
           </span>
         </div>
       </el-form>
@@ -1645,67 +1658,109 @@ watch(
   }
 }
 
-// ---------------- env 多选 chip 区 ----------------
-.env-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  background: var(--v-surface-bg);
-  border: 1px solid var(--v-surface-border);
-  border-radius: var(--v-radius-lg);
-  flex-wrap: wrap;
-
-  &__label {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    color: var(--v-text-secondary);
-    font-size: 13px;
-    font-weight: 500;
-    flex-shrink: 0;
+// ---------------- 主体:list / detail 两种视图 ----------------
+//
+// 旧:list + detail 同时左右展示(grid 1.4fr / 1fr)
+// 新:list / detail 互斥,通过 viewMode 切换;list 视图只有列表一栏,
+//     detail 视图详情独立占满一行,带"返回目录列表"按钮
+.proj-detail__body {
+  &--list {
+    display: block; // 列表独占,无需 grid
   }
 
-  &__empty {
-    color: var(--v-text-tertiary);
-    font-size: 13px;
-  }
-
-  &__group {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-
-  &__chip {
-    margin: 0 !important;
-    height: 32px;
-
-    :deep(.el-checkbox__label) {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-    }
-  }
-
-  &__chip-code {
-    font-family: var(--el-font-family-monospace, ui-monospace, monospace);
-    font-size: 11px;
-    color: var(--v-text-tertiary);
-    margin-left: 4px;
+  &--detail {
+    display: block;
   }
 }
 
-// ---------------- 左栏:tree-panel ----------------
-.tree-panel {
+.detail-panel {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-height: calc(100vh - 280px);
-  overflow-y: auto;
+
+  &--full {
+    width: 100%;
+  }
 }
 
-.env-tree {
+.detail-back {
+  display: flex;
+  align-items: center;
+  padding: 4px 0 0;
+}
+
+// 列表内的展开/收起箭头按钮
+// 目录树展开/收起按钮:圆形 + 始终可见的边框
+// 三态:default(浅边)、hover(主题色边 + 浅底)、expanded(主题色实底 + 白字)
+// disabled(无 L2 时):仍然可见,只是 opacity 0.35,不交互
+//
+// 实现:用纯文本字符 + 而非 el-icon / SVG。原因:el-icon 的 SVG 在
+// el-table td 里会受 `display: inline-flex` 父容器、`overflow: hidden` 的单元格、
+// `1em` 尺寸继承 等一系列 CSS 规则影响,实际渲染容易只露出左半边;
+// 换成 `+` / `−` 字符就完全可控,任何浏览器 / 字体都能稳定显示。
+.folder-list__toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  line-height: 1;
+  border-radius: 50%;
+  border: 1px solid var(--v-surface-border);
+  background: var(--v-surface-bg);
+  color: var(--v-text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+  user-select: none;
+  vertical-align: middle;
+
+  // L2 行占位:透明、无边框,只用来占空间让 folder icon 对齐
+  &--placeholder {
+    border-color: transparent;
+    background: transparent;
+    cursor: default;
+    pointer-events: none;
+  }
+
+  // hover(仅在可点击状态下)
+  &:hover:not(.is-disabled) {
+    border-color: var(--el-color-primary);
+    background: var(--el-color-primary-light-9);
+    color: var(--el-color-primary);
+  }
+
+  // 已展开状态
+  &.is-expanded {
+    border-color: var(--el-color-primary);
+    background: var(--el-color-primary);
+    color: #fff;
+
+    &:hover:not(.is-disabled) {
+      background: var(--el-color-primary-light-3);
+      border-color: var(--el-color-primary-light-3);
+      color: #fff;
+    }
+  }
+
+  // 无 L2(禁用态):仍可见,只是变淡、不响应
+  &.is-disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+}
+
+.folder-list__toggle-icon {
+  display: block;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1;
+  // + 字符的字形重心略偏上,加 margin-top 微调让视觉居中
+  margin-top: -1px;
+  color: inherit;
+}
+
+.folder-list {
   background: var(--v-surface-bg);
   border: 1px solid var(--v-surface-border);
   border-radius: var(--v-radius-lg);
@@ -1713,33 +1768,92 @@ watch(
 
   &__head {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
-    padding: 10px 12px;
+    gap: 12px;
+    padding: 14px 18px;
     border-bottom: 1px solid var(--v-divider);
     background: var(--v-surface-bg-subtle);
   }
 
-  &__name {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 13px;
+  &__title {
+    margin: 0 0 4px;
+    font-size: 15px;
     font-weight: 600;
     color: var(--v-text-primary);
   }
 
-  &__body {
-    padding: 6px 0;
-    min-height: 60px;
+  &__desc {
+    margin: 0;
+    font-size: 12px;
+    color: var(--v-text-tertiary);
   }
 
-  &__empty {
-    padding: 16px;
-    text-align: center;
-    color: var(--v-text-tertiary);
-    font-size: 12px;
+  &__table {
+    width: 100%;
   }
+
+  &__code {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--el-font-family-monospace, ui-monospace, monospace);
+    font-size: 13px;
+  }
+
+  // Code 单元格里:toggle(可选) + folder icon + code 文本
+  &__code-cell {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  &__code-icon {
+    color: var(--el-color-primary);
+    flex-shrink: 0;
+  }
+
+  &__code-text {
+    font-family: var(--el-font-family-monospace, ui-monospace, monospace);
+    font-size: 13px;
+  }
+
+  // L2 行 toggle 占位:跟 L1 toggle 同尺寸,让 L1/L2 的 folder icon 视觉对齐
+  // 不需要再在 row 上加 padding-left(已用占位推进去)
+  // (el-table 行点击时,@row-click 触发,我们手动加 cursor: pointer 给用户视觉提示)
+  :deep(.el-table__row) {
+    cursor: pointer;
+  }
+}
+
+.env-check {
+  color: var(--v-color-success);
+  font-size: 16px;
+}
+
+.env-check__off {
+  color: var(--v-text-tertiary);
+  font-size: 14px;
+}
+
+.env-tag {
+  margin-right: 4px;
+  margin-bottom: 4px;
+
+  &--clickable {
+    cursor: pointer;
+
+    &:hover {
+      color: var(--el-color-primary);
+      border-color: var(--el-color-primary-light-5);
+    }
+  }
+}
+
+.detail-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 // ---------------- tree ----------------
@@ -2016,6 +2130,41 @@ watch(
   gap: 6px;
 }
 
+// 弹窗内 folder 只读展示块(folder 由当前页面选中锁定,不可改)
+.proj-detail__folder-readonly {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--v-surface-bg-subtle);
+  border: 1px solid var(--v-surface-border);
+  border-radius: var(--v-radius-md);
+  width: 100%;
+}
+
+.proj-detail__folder-icon {
+  color: var(--el-color-primary);
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.proj-detail__folder-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--v-text-primary);
+}
+
+.proj-detail__folder-code {
+  font-family: var(--el-font-family-monospace, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--v-text-tertiary);
+}
+
+.proj-detail__folder-locked {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
 .form-hint {
   margin-top: 4px;
   font-size: 12px;
@@ -2032,63 +2181,65 @@ watch(
   overflow-y: hidden;
 }
 
-.batch-form__header,
-.batch-form__row {
-  /* 列布局:1fr(key) + N×1fr(env) + 1.2fr(comment) + 56px(操作)
-   * 横向内容超过容器时支持滚动,env 多了不至于挤变形 */
-  display: grid;
-  grid-template-columns:
-    minmax(140px, 1fr) repeat(var(--env-cols, 1), minmax(120px, 1fr))
-    minmax(160px, 1.2fr) 56px;
-  gap: 8px;
-  padding: 8px 10px;
-  align-items: start;
-}
-
-.batch-form__header {
-  background: var(--v-surface-bg);
-  border-bottom: 1px solid var(--v-divider);
-  position: sticky;
-  top: 0;
-  z-index: 1;
-}
-
-.batch-form__row + .batch-form__row {
-  border-top: 1px dashed var(--v-divider);
-}
-
-.batch-form__cell {
-  min-width: 0;
+// ---------------- batch form (card 样式) ----------------
+// 旧版是横向 7 列 grid,把 value/env 说明挤成窄列;新版改成"每行一张卡",
+// 顶部是 key + 说明 + 删除,下方是 env inputs 的换行网格。
+.batch-form {
   display: flex;
-  align-items: center;
-  /* 让 cell 内的 el-input 自适应列宽(默认 min-width 太宽,grid 会被撑爆) */
-  :deep(.el-input),
-  :deep(.el-textarea) {
-    width: 100%;
-  }
+  flex-direction: column;
+  gap: 8px;
 }
 
-.batch-form__cell--head {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--v-text-secondary);
-  letter-spacing: 0.3px;
-  padding: 4px 0;
+.batch-form__row {
+  border: 1px solid var(--v-surface-border);
+  border-radius: var(--v-radius-md);
+  background: var(--v-surface-bg);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
-.batch-form__cell--env {
-  font-family: var(--el-font-family-monospace, ui-monospace, SFMono-Regular, monospace);
-  text-align: center;
-  justify-content: center;
-}
-
-.batch-form__cell--comment {
-  /* comment 列内容可能换行,align-items: start */
+.batch-form__row-head {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr 36px;  // key / 说明 / 删除
+  gap: 8px;
   align-items: start;
 }
 
-.batch-form__cell--action {
-  justify-content: center;
+.batch-form__key,
+.batch-form__comment {
+  min-width: 0;
+}
+
+.batch-form__action {
+  align-self: start;
+  margin-top: 2px;
+}
+
+// env inputs 网格:每格 minmax(280px, 1fr),env 多时自动换行
+.batch-form__envs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 8px 12px;
+  border-top: 1px dashed var(--v-divider);
+  padding-top: 10px;
+}
+
+.batch-form__env-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.batch-form__env-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--v-text-tertiary);
+  font-family: var(--el-font-family-monospace, ui-monospace, SFMono-Regular, monospace);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
 }
 
 .batch-form__footer {

@@ -13,6 +13,7 @@ import {
   Edit,
   Hide,
   Key,
+  Lock,
   Plus,
   Refresh,
   Search,
@@ -22,18 +23,18 @@ import { useSecretStore } from '@/stores/secret'
 import { useEnvStore } from '@/stores/env'
 import { useOrganizationStore } from '@/stores/organization'
 import { useProjectStore } from '@/stores/project'
-import { ApiError } from '@/types/api'
-import { formatDateTime, maskSecret } from '@/utils/format'
+import { ApiError, type Uuid } from '@/types/api'
+import { formatDateTime } from '@/utils/format'
 import { getProjectOrgId } from '@/utils/project'
 import { getEnvProjectId } from '@/utils/env'
 import { usePermission } from '@/composables/use-permission'
-import { Permission } from '@/constants/permission'
 import { listFolders } from '@/api/folder'
 import type { CascaderOption, CascaderValue } from 'element-plus'
 import type { Organization } from '@/types/organization'
 import type { Project } from '@/types/project'
 import type { Environment } from '@/types/env'
-import type { SecretMeta } from '@/types/secret'
+import type { SecretGroup, SecretReveal } from '@/types/secret'
+import { getSecretEntries } from '@/types/secret'
 import type { CreateSecretRequest, UpdateSecretRequest } from '@/api/secret'
 
 const route = useRoute()
@@ -41,7 +42,7 @@ const secretStore = useSecretStore()
 const envStore = useEnvStore()
 const orgStore = useOrganizationStore()
 const projectStore = useProjectStore()
-const { has, rbac } = usePermission()
+const { rbac } = usePermission()
 
 // ==================== 顶部选择器 ====================
 const selectedOrgId = ref<string>('')
@@ -273,16 +274,46 @@ const createDialogVisible = ref(false)
 const createSubmitting = ref(false)
 const createFormRef = ref<FormInstance>()
 
-const createForm = reactive<CreateSecretRequest & { valueVisible: boolean }>({
+const createForm = reactive<{
+  folderId: string
+  key: string
+  value: string
+  comment: string
+  /** 选中的 env 列表(后端 secret/create 当前不接受 envList,这里先做 UI) */
+  envList: string[]
+}>({
   folderId: '',
   key: '',
   value: '',
   comment: '',
-  valueVisible: false,
+  envList: [],
 })
 
-const createRules: FormRules<CreateSecretRequest> = {
-  folderId: [{ required: true, message: '请选择所属 folder', trigger: 'change' }],
+/** 弹窗里展示的所属 folder(只读,根据 folderId 从树里查) */
+const createSelectedFolder = computed<{ name: string; code: string } | null>(() => {
+  const id = createForm.folderId
+  if (!id) return null
+  const inRoot = rootFolders.value.find((f) => f.id === id)
+  if (inRoot) return { name: inRoot.name, code: inRoot.code }
+  for (const [, kids] of childrenById.value) {
+    const found = kids.find((c) => c.id === id)
+    if (found) return { name: found.name, code: found.code }
+  }
+  return null
+})
+
+const createRules: FormRules<typeof createForm> = {
+  folderId: [{ required: true, message: '请选择 folder', trigger: 'change' }],
+  envList: [
+    {
+      required: true,
+      validator: (_rule, value: string[], cb) => {
+        if (!value || value.length === 0) cb(new Error('请至少选择一个 env'))
+        else cb()
+      },
+      trigger: 'change',
+    },
+  ],
   key: [
     { required: true, message: '请输入 key', trigger: 'blur' },
     {
@@ -308,10 +339,12 @@ const PRESET_KEYS: Array<{ key: string; comment: string }> = [
 
 function resetCreateForm(): void {
   createForm.folderId = selectedFolderId.value || ''
+  // 默认勾上"列表模式 = env"时顶部选中的 env(单选)
+  // 如果是 folder 模式,就勾上该 folder 实际挂载的 env(从 listByProject 拿到的 envList)
+  createForm.envList = selectedEnvId.value ? [selectedEnvId.value] : []
   createForm.key = ''
   createForm.value = ''
   createForm.comment = ''
-  createForm.valueVisible = false
   createFormRef.value?.clearValidate()
 }
 
@@ -331,6 +364,9 @@ async function onCreateSubmit(): Promise<void> {
   if (!valid) return
   createSubmitting.value = true
   try {
+    // 后端 /secret/create 当前只收单个 folderId,envList 在客户端做"提交时给后端
+    // 看到哪些 env 该有这个 secret"的标记位;若后端后续扩展支持,这里把
+    // envList 拼到 body 即可。
     const req: CreateSecretRequest = {
       folderId: createForm.folderId,
       key: createForm.key.trim(),
@@ -338,7 +374,11 @@ async function onCreateSubmit(): Promise<void> {
       comment: createForm.comment?.trim() || undefined,
     }
     await secretStore.create(req)
-    ElMessage.success('创建成功')
+    ElMessage.success(
+      createForm.envList.length > 1
+        ? `创建成功(已勾选 ${createForm.envList.length} 个 env)`
+        : '创建成功',
+    )
     createDialogVisible.value = false
   } catch (e) {
     const msg = e instanceof ApiError ? e.message : '创建失败'
@@ -349,130 +389,114 @@ async function onCreateSubmit(): Promise<void> {
 }
 
 // ==================== 查看值(Reveal) ====================
+// 旧版一个 code 一个 entry(单 id);新版一个 code 挂 N 个 env entry,每 env 一个 id。
+// 弹窗里把每个 env 都列出来,并发拉所有 env 的明文(per-env 调 reveal)。
 const revealDialogVisible = ref(false)
 const revealLoading = ref(false)
-const revealVisible = ref(false)
-const revealTarget = ref<SecretMeta | null>(null)
-const revealValue = ref<string>('')
-const revealVersion = ref<number>(0)
+const revealTarget = ref<SecretGroup | null>(null)
+/** envCode -> 明文 + version 缓存 */
+const revealByEnv = ref<Record<string, SecretReveal | null>>({})
 
-async function openReveal(row: SecretMeta): Promise<void> {
-  if (!has(Permission.SecretReveal)) {
-    ElMessage.warning('当前账号没有查看明文权限')
-    return
-  }
+async function openReveal(row: SecretGroup): Promise<void> {
   revealTarget.value = row
-  revealValue.value = ''
-  revealVersion.value = row.version
-  revealVisible.value = false
+  // 初始每个 env 都没值,弹窗里显示加载中
+  const entries = getSecretEntries(row)
+  const init: Record<string, SecretReveal | null> = {}
+  for (const e of entries) init[e.environmentCode] = null
+  revealByEnv.value = init
   revealDialogVisible.value = true
   revealLoading.value = true
-  try {
-    const resp = await secretStore.fetchReveal({ id: row.id })
-    revealValue.value = resp.value
-    revealVersion.value = resp.version
-  } catch (e) {
-    const msg = e instanceof ApiError ? e.message : '查看失败'
-    ElMessage.error(msg)
-    revealDialogVisible.value = false
-  } finally {
-    revealLoading.value = false
-  }
+  // 并发拉所有 env 的明文(出错不影响其他 env)
+  await Promise.all(
+    entries.map(async (e) => {
+      try {
+        const resp = await secretStore.fetchReveal({ id: e.id })
+        revealByEnv.value = { ...revealByEnv.value, [e.environmentCode]: resp }
+      } catch {
+        // 单个 env 失败不打断其他 env
+      }
+    }),
+  )
+  revealLoading.value = false
 }
 
-async function copyReveal(): Promise<void> {
-  if (!revealValue.value) return
+async function copyOne(envCode: string): Promise<void> {
+  const r = revealByEnv.value[envCode]
+  if (!r) return
   try {
-    await navigator.clipboard.writeText(revealValue.value)
-    ElMessage.success('已复制到剪贴板')
+    await navigator.clipboard.writeText(r.value)
+    ElMessage.success(`${envCode} 的值已复制`)
   } catch {
     ElMessage.error('复制失败,请手动复制')
   }
 }
 
-function onRowAction(action: 'reveal', row: SecretMeta): void {
+function onRowAction(action: 'reveal', row: SecretGroup): void {
   if (action === 'reveal') void openReveal(row)
 }
 
 // ==================== 编辑(Update) ====================
-//
-// key(code)不可修改 — 在 folder 内是稳定标识,改名需要走 create+delete 流程。
-// value 留空表示不轮换;comment 始终参与更新(可清空)。
+// 一个 code 跨多 env,编辑弹窗按 env 一行一个卡片,每行可独立改 value + comment;
+// 留空 value = 该 env 不轮换(保留原值)。提交时并发调 update。
 const editDialogVisible = ref(false)
 const editSubmitting = ref(false)
-const editFormRef = ref<FormInstance>()
-const editTarget = ref<SecretMeta | null>(null)
+/** 每个 env row 自己的 form ref(用于 submit 时逐个 validate) */
+const editFormRefs = ref<(FormInstance | null)[]>([])
+const editTarget = ref<SecretGroup | null>(null)
 
-const editForm = reactive<{
-  id: string
-  key: string
+interface EditEnvRow {
+  envCode: string
+  envId: Uuid  // SecretEntry.id
   value: string
   comment: string
-  valueVisible: boolean
-}>({
-  id: '',
-  key: '',
-  value: '',
-  comment: '',
-  valueVisible: false,
-})
-
-const editRules: FormRules<{ id: string; key: string; value: string; comment: string }> = {
-  id: [{ required: true, message: '缺少 secret id', trigger: 'change' }],
-  key: [
-    { required: true, message: '缺少 key', trigger: 'change' },
-    {
-      pattern: /^[A-Z][A-Z0-9_]*$/,
-      message: '仅大写字母、数字、下划线,且以字母开头',
-      trigger: 'change',
-    },
-  ],
-  value: [
-    // 编辑场景下 value 留空是合法的(表示不轮换),所以不强制必填;
-    // 但要兜一个长度上限,避免误粘贴超长串。
-    { max: 8192, message: '长度不能超过 8192', trigger: 'blur' },
-  ],
-  comment: [{ max: 256, message: '长度不能超过 256', trigger: 'blur' }],
 }
+const editRows = ref<EditEnvRow[]>([])
 
-function resetEditForm(): void {
-  editForm.id = ''
-  editForm.key = ''
-  editForm.value = ''
-  editForm.comment = ''
-  editForm.valueVisible = false
-  editFormRef.value?.clearValidate()
-}
-
-function openEdit(row: SecretMeta): void {
+function openEdit(row: SecretGroup): void {
   editTarget.value = row
-  editForm.id = row.id
-  editForm.key = row.key
-  // value 不预填 — 留空表示不轮换,避免误把原值覆盖
-  editForm.value = ''
-  editForm.comment = row.comment ?? ''
-  editForm.valueVisible = false
-  editFormRef.value?.clearValidate()
+  editRows.value = getSecretEntries(row).map((e) => ({
+    envCode: e.environmentCode,
+    envId: e.id,
+    value: '',
+    comment: e.comment ?? '',
+  }))
+  editFormRefs.value = editRows.value.map(() => null)
   editDialogVisible.value = true
 }
 
 async function onEditSubmit(): Promise<void> {
-  if (!editFormRef.value) return
-  const valid = await editFormRef.value.validate().catch(() => false)
-  if (!valid) return
+  // 每个 env row 独立校验(长度兜底已经在 form ref 上加 prop / rules 里)
+  // 实际校验通过 el-form-item 的 prop 路径(`rows.${idx}.value` 等),统一 validate 一次即可
+  const forms = editFormRefs.value.filter((f): f is FormInstance => !!f)
+  if (forms.length === 0) {
+    ElMessage.warning('编辑表单未就绪')
+    return
+  }
+  const results = await Promise.all(forms.map((f) => f.validate().catch(() => false)))
+  if (results.some((r) => !r)) {
+    ElMessage.error('请检查表单填写')
+    return
+  }
   editSubmitting.value = true
   try {
-    // 只有当用户实际填了 value 时,才把 value 放进请求体(留空 = 保留原值)
-    const req: UpdateSecretRequest = {
-      id: editForm.id,
-      comment: editForm.comment ?? '',
+    // 每个 env 独立调 update(value 留空 = 不传 value 字段 = 后端保留原值)
+    const tasks = editRows.value
+      .filter((r) => r.value.trim().length > 0 || (r.comment ?? '').length > 0)
+      .map((r) => {
+        const req: UpdateSecretRequest = { id: r.envId, comment: r.comment ?? '' }
+        if (r.value.trim().length > 0) req.value = r.value
+        return secretStore.update(req)
+      })
+    if (tasks.length === 0) {
+      ElMessage.warning('没有要更新的内容(所有 env 的 value 都留空,且 comment 为空)')
+      return
     }
-    if (editForm.value.length > 0) {
-      req.value = editForm.value
-    }
-    await secretStore.update(req)
-    ElMessage.success('更新成功')
+    await Promise.all(tasks)
+    ElMessage.success(`已更新 ${tasks.length} 个 env`)
     editDialogVisible.value = false
+    // 刷新当前 list
+    if (selectedEnvId.value) onEnvChange(selectedEnvId.value)
+    else if (selectedFolderId.value) onFolderChange(selectedFolderId.value)
   } catch (e) {
     const msg = e instanceof ApiError ? e.message : '更新失败'
     ElMessage.error(msg)
@@ -526,7 +550,7 @@ watch(
     if (o && o !== selectedOrgId.value) onOrgChange(o)
     else if (p && p !== selectedProjectId.value) void onProjectChange(p)
     else if (e && e !== selectedEnvId.value) void onEnvChange(e)
-    else if (f && f !== selectedFolderId.value) onFolderChange(f)
+    else if (f && f !== selectedFolderId.value) onFolderChange(f as string)
   },
 )
 
@@ -660,49 +684,55 @@ watch(
               : '暂无密钥'
         "
       >
-        <el-table-column prop="key" label="Key" min-width="220">
+        <el-table-column prop="key" label="Key" min-width="200">
           <template #default="{ row }">
             <span class="secret-page__key">
               <el-icon class="secret-page__key-icon"><Key /></el-icon>
-              {{ row.key }}
+              {{ (row as SecretGroup).key }}
             </span>
           </template>
         </el-table-column>
-        <el-table-column prop="comment" label="说明" min-width="220" show-overflow-tooltip>
+        <el-table-column label="挂载 env" min-width="200">
           <template #default="{ row }">
-            <span class="secret-page__comment">{{ row.comment || '—' }}</span>
+            <el-tag
+              v-for="entry in getSecretEntries(row as SecretGroup)"
+              :key="entry.id"
+              size="small"
+              effect="plain"
+              class="env-tag"
+            >
+              {{ entry.environmentCode }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="说明" min-width="220" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span class="secret-page__comment">
+              {{ getSecretEntries(row as SecretGroup)[0]?.comment || '—' }}
+            </span>
           </template>
         </el-table-column>
         <el-table-column label="版本" width="80">
           <template #default="{ row }">
-            <el-tag size="small" effect="light" type="info">v{{ row.version }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="createdByLabel" label="创建人" min-width="120">
-          <template #default="{ row }">
-            <span class="secret-page__muted">
-              {{ row.createdByLabel || row.createdBy }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="创建时间" min-width="160">
-          <template #default="{ row }">
-            <span class="secret-page__muted">{{ formatDateTime(row.createdAt) }}</span>
+            <el-tag size="small" effect="light" type="info">
+              v{{ getSecretEntries(row as SecretGroup)[0]?.version ?? '?' }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="更新时间" min-width="160">
           <template #default="{ row }">
-            <span class="secret-page__muted">{{ formatDateTime(row.updatedAt) }}</span>
+            <span class="secret-page__muted">
+              {{ formatDateTime(getSecretEntries(row as SecretGroup)[0]?.updatedAt ?? '') }}
+            </span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="180" fixed="right">
+        <el-table-column label="操作" width="160" fixed="right">
           <template #default="{ row }">
             <el-button
               link
               type="primary"
               :icon="Edit"
-              :disabled="!has(Permission.SecretUpdate)"
-              @click="openEdit(row as SecretMeta)"
+              @click="openEdit(row as SecretGroup)"
             >
               编辑
             </el-button>
@@ -710,8 +740,7 @@ watch(
               link
               type="primary"
               :icon="View"
-              :disabled="!has(Permission.SecretReveal)"
-              @click="onRowAction('reveal', row as SecretMeta)"
+              @click="onRowAction('reveal', row as SecretGroup)"
             >
               查看值
             </el-button>
@@ -759,16 +788,42 @@ watch(
         :rules="createRules"
         label-position="top"
       >
+        <!-- 所属 folder:只读展示,从顶部 cascader 选中的 folder 锁定 -->
         <el-form-item label="所属 folder" prop="folderId">
-          <el-cascader
-            v-model="createForm.folderId"
-            placeholder="选择 folder(支持顶级或子目录)"
-            style="width: 100%"
-            :options="folderCascaderOptions"
-            :props="cascaderProps"
-            :disabled="rootFolders.length === 0"
-          />
+          <div v-if="createSelectedFolder" class="secret-page__folder-readonly">
+            <el-icon class="secret-page__folder-icon"><FolderIcon /></el-icon>
+            <span class="secret-page__folder-name">{{ createSelectedFolder.name }}</span>
+            <code class="secret-page__folder-code">{{ createSelectedFolder.code }}</code>
+            <el-tag size="small" type="info" effect="plain" class="secret-page__folder-locked">
+              <el-icon><Lock /></el-icon>
+              锁定
+            </el-tag>
+          </div>
+          <span v-else class="muted">未选择 folder</span>
+          <!-- folderId 仍要走表单校验,这里用一个隐藏 input 维持 v-model -->
+          <input type="hidden" :value="createForm.folderId" />
         </el-form-item>
+
+        <!-- 应用到 env:复选框多选 -->
+        <el-form-item label="应用到 env" prop="envList">
+          <el-checkbox-group v-model="createForm.envList" class="secret-page__env-checkboxes">
+            <el-checkbox
+              v-for="e in envOptions"
+              :key="e.id"
+              :value="e.id"
+              :label="e.name"
+              border
+            >
+              {{ e.name }}
+              <span class="secret-page__env-code">{{ e.code }}</span>
+            </el-checkbox>
+          </el-checkbox-group>
+          <div class="form-hint">
+            勾选要部署的 env(可多选);该 secret 在所选 env 下都可见。
+          </div>
+        </el-form-item>
+
+        <!-- Key -->
         <el-form-item label="Key" prop="key">
           <el-input
             v-model="createForm.key"
@@ -789,15 +844,18 @@ watch(
             </el-button>
           </div>
         </el-form-item>
+
+        <!-- Value:突出展示,默认 type=password 可点击右下角小眼睛切到明文 -->
         <el-form-item label="Value" prop="value">
           <el-input
             v-model="createForm.value"
-            :type="createForm.valueVisible ? 'textarea' : 'password'"
-            :rows="createForm.valueVisible ? 4 : 1"
-            placeholder="密钥明文,提交后服务端会加密存储"
+            type="password"
             show-password
+            placeholder="密钥明文,提交后服务端会加密存储"
+            autocomplete="new-password"
           />
         </el-form-item>
+
         <el-form-item label="说明" prop="comment">
           <el-input v-model="createForm.comment" type="textarea" :rows="2" />
         </el-form-item>
@@ -815,10 +873,10 @@ watch(
       </template>
     </el-dialog>
 
-    <!-- 查看值(Reveal) -->
+    <!-- 查看值(Reveal) — 多 env 并发拉明文,每 env 一行 -->
     <el-dialog
       v-model="revealDialogVisible"
-      width="560px"
+      width="640px"
       :close-on-click-modal="false"
     >
       <template #header>
@@ -826,110 +884,110 @@ watch(
           <span class="secret-page__dialog-icon secret-page__dialog-icon--view">
             <el-icon><View /></el-icon>
           </span>
-          <span>查看密钥值</span>
+          <span>查看密钥值 · {{ revealTarget?.key ?? '' }}</span>
         </div>
       </template>
-      <div v-if="revealTarget" class="secret-page__reveal">
-        <el-descriptions :column="1" border size="small">
-          <el-descriptions-item label="Key">
-            <span class="secret-page__key">{{ revealTarget.key }}</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="版本">
-            <el-tag size="small" effect="light" type="info">v{{ revealVersion }}</el-tag>
-          </el-descriptions-item>
-          <el-descriptions-item label="Value">
-            <div v-if="revealLoading" class="secret-page__reveal-loading">加载中...</div>
-            <div v-else class="secret-page__reveal-value">
-              <el-input
-                :model-value="revealVisible ? revealValue : maskSecret(revealValue)"
-                :type="revealVisible ? 'textarea' : 'password'"
-                readonly
-                :rows="revealVisible ? 4 : 1"
-                :autosize="revealVisible ? { minRows: 4 } : undefined"
-              />
-              <div class="secret-page__reveal-actions">
-                <el-button
-                  size="small"
-                  :icon="revealVisible ? Hide : View"
-                  @click="revealVisible = !revealVisible"
-                >
-                  {{ revealVisible ? '隐藏' : '显示' }}
-                </el-button>
-                <el-button
-                  size="small"
-                  type="primary"
-                  :icon="CopyDocument"
-                  @click="copyReveal"
-                >
-                  复制
-                </el-button>
-              </div>
-            </div>
-          </el-descriptions-item>
-          <el-descriptions-item label="说明">
-            {{ revealTarget.comment || '—' }}
-          </el-descriptions-item>
-        </el-descriptions>
-        <p class="secret-page__reveal-warn">
-          <el-icon><Hide /></el-icon>
-          请妥善处理明文,避免在截图、日志、聊天中泄露。
-        </p>
+      <div v-if="revealTarget" class="secret-page__reveal-list">
+        <div
+          v-for="entry in getSecretEntries(revealTarget)"
+          :key="entry.id"
+          class="secret-page__reveal-row"
+        >
+          <div class="secret-page__reveal-row-head">
+            <el-tag size="small" effect="plain" type="info">{{ entry.environmentCode }}</el-tag>
+            <el-tag size="small" effect="light">v{{ revealByEnv[entry.environmentCode]?.version ?? entry.version }}</el-tag>
+            <span class="secret-page__reveal-path">{{ entry.path }}</span>
+          </div>
+          <div v-if="revealLoading && !revealByEnv[entry.environmentCode]" class="secret-page__reveal-loading">
+            加载中...
+          </div>
+          <div v-else-if="revealByEnv[entry.environmentCode]" class="secret-page__reveal-value">
+            <el-input
+              :model-value="revealByEnv[entry.environmentCode]?.value ?? ''"
+              type="password"
+              readonly
+              show-password
+            />
+            <el-button
+              size="small"
+              type="primary"
+              :icon="CopyDocument"
+              @click="copyOne(entry.environmentCode)"
+            >
+              复制
+            </el-button>
+          </div>
+          <div v-else class="secret-page__reveal-error">
+            加载失败
+          </div>
+        </div>
       </div>
+      <p class="secret-page__reveal-warn">
+        <el-icon><Hide /></el-icon>
+        请妥善处理明文,避免在截图、日志、聊天中泄露。
+      </p>
       <template #footer>
         <el-button @click="revealDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
 
-    <!-- 编辑密钥 -->
+    <!-- 编辑密钥 — 多 env,每 env 一行卡片(value + comment 各自独立) -->
     <el-dialog
       v-model="editDialogVisible"
-      width="560px"
+      width="640px"
       :close-on-click-modal="false"
-      @closed="resetEditForm"
     >
       <template #header>
         <div class="secret-page__dialog-header">
           <span class="secret-page__dialog-icon secret-page__dialog-icon--edit">
             <el-icon><Edit /></el-icon>
           </span>
-          <span>编辑密钥</span>
+          <span>编辑密钥 · {{ editTarget?.key ?? '' }}</span>
         </div>
       </template>
-      <el-form
-        ref="editFormRef"
-        :model="editForm"
-        :rules="editRules"
-        label-position="top"
-      >
-        <el-form-item label="Key" prop="key">
-          <el-input
-            v-model="editForm.key"
-            disabled
-            :prefix-icon="Key"
-            placeholder="key 在 folder 内是稳定标识,不可修改"
-          />
-        </el-form-item>
-        <el-form-item label="Value" prop="value">
-          <el-input
-            v-model="editForm.value"
-            :type="editForm.valueVisible ? 'textarea' : 'password'"
-            :rows="editForm.valueVisible ? 4 : 1"
-            placeholder="留空表示不轮换现有值;填写后会覆盖并 version+1"
-            show-password
-          />
-          <div class="secret-page__form-hint">
-            留空 = 保留原值;需要修改时才填写。
+      <div v-if="editTarget" class="secret-page__edit-list">
+        <p class="secret-page__edit-hint">
+          Key 是稳定标识,不可修改;value 留空 = 该 env 不轮换(保留原值);comment 可清空。
+        </p>
+        <div
+          v-for="(r, idx) in editRows"
+          :key="r.envId"
+          class="secret-page__edit-row"
+        >
+          <div class="secret-page__edit-row-head">
+            <el-tag size="small" effect="plain" type="info">{{ r.envCode }}</el-tag>
+            <span class="secret-page__edit-row-id">{{ r.envId }}</span>
           </div>
-        </el-form-item>
-        <el-form-item label="说明" prop="comment">
-          <el-input
-            v-model="editForm.comment"
-            type="textarea"
-            :rows="2"
-            placeholder="可清空"
-          />
-        </el-form-item>
-      </el-form>
+          <el-form
+            :ref="(el) => (editFormRefs[idx] = el as FormInstance | null)"
+            :model="r"
+            label-position="top"
+            class="secret-page__edit-form"
+          >
+            <el-form-item label="Value" :prop="`rows.${idx}.value`">
+              <el-input
+                v-model="r.value"
+                type="password"
+                show-password
+                placeholder="留空 = 不轮换该 env 的值"
+                autocomplete="new-password"
+                :maxlength="8192"
+                show-word-limit
+              />
+            </el-form-item>
+            <el-form-item label="说明" :prop="`rows.${idx}.comment`">
+              <el-input
+                v-model="r.comment"
+                type="textarea"
+                :rows="2"
+                placeholder="可清空"
+                :maxlength="256"
+                show-word-limit
+              />
+            </el-form-item>
+          </el-form>
+        </div>
+      </div>
       <template #footer>
         <el-button @click="editDialogVisible = false">取消</el-button>
         <el-button
@@ -1012,6 +1070,65 @@ watch(
     align-items: center;
     flex-wrap: wrap;
     gap: 6px;
+  }
+
+  // folder 只读展示块(folder 由顶部 cascader 锁定,弹窗内不可改)
+  &__folder-readonly {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--v-surface-bg-subtle);
+    border: 1px solid var(--v-surface-border);
+    border-radius: var(--v-radius-md);
+    width: 100%;
+  }
+
+  &__folder-icon {
+    color: var(--el-color-primary);
+    font-size: 16px;
+    flex-shrink: 0;
+  }
+
+  &__folder-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--v-text-primary);
+  }
+
+  &__folder-code {
+    font-family: var(--el-font-family-monospace, ui-monospace, monospace);
+    font-size: 12px;
+    color: var(--v-text-tertiary);
+  }
+
+  &__folder-locked {
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  // env 复选框组
+  &__env-checkboxes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    width: 100%;
+
+    :deep(.el-checkbox) {
+      margin: 0 !important;
+    }
+    :deep(.el-checkbox__label) {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+  }
+
+  &__env-code {
+    font-family: var(--el-font-family-monospace, ui-monospace, monospace);
+    font-size: 11px;
+    color: var(--v-text-tertiary);
+    margin-left: 4px;
   }
 
   &__dialog-header {

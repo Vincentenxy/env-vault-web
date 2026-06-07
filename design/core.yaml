@@ -480,6 +480,58 @@ paths:
         "400":
           $ref: "#/components/responses/BadRequest"
 
+  /api/v1/folder/listByProject:
+    post:
+      tags: [Folders]
+      summary: List all folders under a project (tree form)
+      description: |
+        Returns the **entire folder tree** of a project, independent of any single
+        environment. Each node carries an `envList` (which environments this folder
+        exists in) and a `subFolders` array (level=2 children). Clients can render
+        this as either:
+
+        - a tree with per-env column "✓" markers, or
+        - a flat list with one env column per project env.
+
+        Replaces the old client-side aggregation that combined per-env
+        `/folder/list?environmentId=...` responses.
+
+        Narrowed by the caller's `user_role_bindings` (v7+); an empty `folderList`
+        is returned (not 403) when the caller has no access to this project.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [projectId]
+              properties:
+                projectId:
+                  type: string
+                  format: uuid
+                  description: Project id (required).
+                includeSubfolders:
+                  type: boolean
+                  default: true
+                  description: |
+                    When true (default), each L1 node carries its `subFolders` (L2).
+                    When false, `subFolders` is always `[]` and clients should call
+                    `/folder/list?folderParentId=...` for L2 on demand.
+      responses:
+        "200":
+          description: Folder tree.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/FolderListByProjectResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
   /api/v1/folder/create:
     post:
       tags: [Folders]
@@ -1274,22 +1326,22 @@ components:
 
     CreateFolderRequest:
       type: object
-      required: [level, parentId, code, name]
+      required: [level, code, name, envList]
       properties:
         level:
           type: integer
           enum: [1, 2]
           description: |
-            1 = top-level folder (parent is the environment).
-            2 = sub-folder (parent is another folder, which must be `level=1`).
-        parentId:
+            1 = top-level folder (挂在 env 下,不需要 parentCode)。
+            2 = sub-folder (挂在 level=1 folder 下,必须传 parentCode)。
+        parentCode:
           type: string
-          format: uuid
+          pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
           description: |
-            For `level=1`: the environment id (the folder's direct parent).
-            For `level=2`: the parent folder id (must be a `level=1` folder in the
-            same environment). The environment is inferred from the parent on the
-            server side, so the client does not need to pass it.
+            level=2 时必填:父 level=1 folder 的 code。
+            后端在 `envList` 指定的每个 env 下找这个 code 的 L1 folder 作为父节点。
+            level=1 时不允许传(后端会 400)。
+          example: payment
         code:
           type: string
           pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
@@ -1297,6 +1349,21 @@ components:
         name:
           type: string
           example: Globals
+        envList:
+          type: array
+          minItems: 1
+          description: |
+            该 folder 要创建到的 env id 列表。批量场景:同一个 folder 一次性
+            在多个 env 下创建出来(对于 L2,即在每个 env 里"父 folder 存在"
+            的前提下都创建一个同名子 folder)。
+          items:
+            type: string
+            format: uuid
+          example:
+            - 11111111-1111-1111-1111-111111111111
+            - 22222222-2222-2222-2222-222222222222
+        comment:
+          type: string
         comment:
           type: string
 
@@ -1773,6 +1840,71 @@ components:
                       type: array
                       items:
                         $ref: "#/components/schemas/Entity"
+
+    FolderListByProjectResponse:
+      allOf:
+        - $ref: "#/components/schemas/Response"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [folderList]
+              properties:
+                folderList:
+                  type: array
+                  description: |
+                    顶层是该 project 下的所有 level=1 folder;每个节点递归挂
+                    subFolders(level=2)。L2 不会再有 subFolders(后端不返回)。
+                  items:
+                    $ref: "#/components/schemas/FolderNode"
+
+    FolderNode:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+          pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+        name:
+          type: string
+        comment:
+          type: string
+        envList:
+          type: array
+          description: |
+            该 folder 实际创建到的 env 列表。同一逻辑 folder 在不同 env 下
+            可能由不同 id 标识(后端按 env 独立创建 / 复制 folder 树),
+            所以每条 entry 都带 `folderId`(env 专属的 folder id),
+            上送 secret 时必须用它,不能共用 `FolderNode.id`。
+          items:
+            $ref: "#/components/schemas/FolderEnvBinding"
+        subFolders:
+          type: array
+          description: |
+            level=2 children;为空数组时表示该 L1 folder 暂无 L2 子目录。
+          items:
+            $ref: "#/components/schemas/FolderNode"
+
+    FolderEnvBinding:
+      type: object
+      description: |
+        FolderNode.envList 的元素。`id` 是 env 的 uuid,`folderId` 是该
+        folder 在该 env 下的真实 uuid(同一个 FolderNode 在 dev / test / prod
+        下可能各有自己的 folderId)。
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Env id。
+        code:
+          type: string
+          description: Env code(例如 dev / test / prod)。
+        folderId:
+          type: string
+          format: uuid
+          description: 该 folder 在该 env 下的真实 id(写入 secret 时使用)。
 
     SecretListResponse:
       allOf:

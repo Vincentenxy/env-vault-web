@@ -81,23 +81,12 @@ export const useFolderStore = defineStore('folder', () => {
   }
 
   async function create(req: CreateFolderRequest): Promise<Folder> {
+    // 新版 CreateFolderRequest 用 envList + parentCode,不再有单个 parentId,
+    // 这里无法判断"是否落到了当前 context",不做自动刷新,调用方自己处理。
+    // ProjectDetailView 已迁到直接调 createFolder,本方法保留为旧调用方的兜底。
     const created = await withApiCall(() => createFolder(req))
     // 后端不返回 level,按请求参数回填
-    const stamped: Folder = { ...created, level: req.level }
-    // 创建到当前上下文时刷新第一页
-    if (
-      context.value &&
-      context.value.level === req.level &&
-      context.value.parent === req.parentId
-    ) {
-      const ctx = context.value
-      const next: ListFoldersRequest =
-        ctx.level === 1
-          ? { environmentId: ctx.parent, pageNum: 1, pageSize: lastQuery.value.pageSize ?? 20 }
-          : { folderParentId: ctx.parent, pageNum: 1, pageSize: lastQuery.value.pageSize ?? 20 }
-      await fetchList(next)
-    }
-    return stamped
+    return { ...created, level: req.level }
   }
 
   function clear(): void {
