@@ -203,8 +203,21 @@ const folderBreadcrumb = computed<Array<{ id: string; name: string; kind: 'l1' |
   return out
 })
 
+/**
+ * 当前选中目录的 L2 子目录列表。
+ * 抽成 computed 是为了让 el-table 的 data 始终是 FolderNode[],
+ * 避免因为 `selectedFolderNode.subFolders` 是 `FolderNode[] | undefined`
+ * 而让 el-table 把 row 推断成 DefaultRow,从而影响 env 列的 row.node
+ * 类型检查。L2 自身没有 subFolders,这里直接返回 []。
+ */
+const currentSubfolders = computed<FolderNode[]>(() => {
+  if (!selectedFolderNode.value) return []
+  return selectedFolderNode.value.subFolders ?? []
+})
+
 // ==================== Tab ====================
-type TabKey = 'secrets' | 'info'
+// 顺序:secrets → subfolders(仅 L1 可建 L2)→ info
+type TabKey = 'secrets' | 'subfolders' | 'info'
 const activeTab = ref<TabKey>('secrets')
 
 // ==================== Secret 列表 ====================
@@ -335,6 +348,10 @@ function fillFromPreset(preset: (typeof PRESET_FOLDERS)[number]): void {
  * 用户在弹窗里可以删减。
  */
 function openCreateRootFolder(): void {
+  if (!has(Permission.FolderCreate)) {
+    ElMessage.warning('当前账号没有 folder:create 权限')
+    return
+  }
   resetCreateFolderForm()
   createFolderForm.level = 1
   createFolderForm.envList = envOptions.value.map((e) => e.id)
@@ -346,6 +363,10 @@ function openCreateRootFolder(): void {
  * 用户在弹窗里可以扩缩(典型场景:把同一个子目录同时铺到其它 env 下)。
  */
 function openCreateChildFolder(parent: FolderNode): void {
+  if (!has(Permission.FolderCreate)) {
+    ElMessage.warning('当前账号没有 folder:create 权限')
+    return
+  }
   resetCreateFolderForm()
   createFolderForm.level = 2
   // parent.envList 是 FolderEnvBinding[];createFolderForm.envList 只需 env id
@@ -385,6 +406,11 @@ async function onCreateFolderSubmit(): Promise<void> {
 
 // ==================== 删除 folder ====================
 async function onDeleteFolder(folder: FolderNode): Promise<void> {
+  // 函数级最后一道闸门:确认弹窗出现前先把没权限的拦截掉,免得无谓打扰用户
+  if (!has(Permission.FolderDelete)) {
+    ElMessage.warning('当前账号没有 folder:delete 权限')
+    return
+  }
   try {
     await ElMessageBox.confirm(
       `确定要删除目录 "${folder.name} (${folder.code})" 吗?\n该目录及其下所有密钥(覆盖 envList 中所有 env)都会被软删除。`,
@@ -465,6 +491,11 @@ function openEditFolder(folder: FolderNode): void {
 
 async function onEditFolderSubmit(): Promise<void> {
   if (!editFolderFormRef.value) return
+  // 函数级最后一道闸门:即使 UI 状态被绕过(脚本/DOM/调试器),也拒绝提交
+  if (!has(Permission.FolderUpdate)) {
+    ElMessage.warning('当前账号没有 folder:update 权限')
+    return
+  }
   const valid = await editFolderFormRef.value.validate().catch(() => false)
   if (!valid) return
   editFolderSubmitting.value = true
@@ -556,6 +587,10 @@ function makeEmptyBatchRow(): BatchSecretRow {
 }
 
 function openBatchCreateSecret(): void {
+  if (!has(Permission.SecretCreate)) {
+    ElMessage.warning('当前账号没有 secret:create 权限')
+    return
+  }
   if (!selectedFolderNode.value) {
     ElMessage.warning('请先选择一个目录')
     return
@@ -773,6 +808,11 @@ function openEditSecret(row: SecretMeta): void {
 
 async function onEditSecretSubmit(): Promise<void> {
   if (!editSecretFormRef.value) return
+  // 函数级最后一道闸门:即使 UI 状态被绕过(脚本/DOM/调试器),也拒绝提交
+  if (!has(Permission.SecretUpdate)) {
+    ElMessage.warning('当前账号没有 secret:update 权限')
+    return
+  }
   const valid = await editSecretFormRef.value.validate().catch(() => false)
   if (!valid) return
   editSecretSubmitting.value = true
@@ -853,7 +893,6 @@ watch(
     <!-- Header -->
     <header class="proj-header">
       <div class="proj-header__left">
-        <el-button text :icon="ArrowLeft" @click="onBack">返回</el-button>
         <div class="proj-header__title-block">
           <h1 class="proj-header__title">
             {{ project?.name ?? '加载中...' }}
@@ -889,7 +928,8 @@ watch(
               type="primary"
               size="small"
               :icon="Plus"
-              :disabled="envOptions.length === 0"
+              :disabled="envOptions.length === 0 || !has(Permission.FolderCreate)"
+              :title="!has(Permission.FolderCreate) ? '当前账号没有 folder:create 权限' : ''"
               @click="openCreateRootFolder"
             >
               新建顶级
@@ -905,10 +945,17 @@ watch(
             "
             @row-click="onFlatRowClick"
           >
-            <el-table-column prop="node.code" label="Code" min-width="200">
+            <!--
+              名称列承担了原 Code 列的展示职责:
+                [toggle]  [folder-icon]  name  (code)
+              - L1 行的展开/收起按钮(原放在 Code 列,这里随列合并一起搬过来,
+                避免被压成不可点的窄条)
+              - L2 行的占位:与 L1 的 toggle 同尺寸,保持 folder icon 视觉对齐
+              - code 跟在 name 后用括号包起来,作为次要标识
+            -->
+            <el-table-column label="名称" min-width="280">
               <template #default="{ row }">
-                <div class="folder-list__code-cell">
-                  <!-- L1 行的展开/收起按钮(挪到 Code 列里,避开独立列的列宽被压问题) -->
+                <div class="folder-list__name-cell">
                   <span
                     v-if="row.depth === 1"
                     class="folder-list__toggle"
@@ -922,14 +969,15 @@ watch(
                       {{ expandedRowIds.has(row.node.id) ? '−' : '+' }}
                     </span>
                   </span>
-                  <!-- L2 行的占位:跟 toggle 同尺寸,让 L1/L2 的 folder icon 视觉对齐 -->
                   <span v-else class="folder-list__toggle folder-list__toggle--placeholder" />
                   <el-icon class="folder-list__code-icon"><FolderIcon /></el-icon>
-                  <span class="folder-list__code-text">{{ row.node.code }}</span>
+                  <span class="folder-list__name-text">{{ row.node.name }}</span>
+                  <code v-if="row.node.code" class="folder-list__code-suffix">
+                    ({{ row.node.code }})
+                  </code>
                 </div>
               </template>
             </el-table-column>
-            <el-table-column prop="node.name" label="名称" min-width="160" />
             <el-table-column prop="node.comment" label="说明" min-width="200" show-overflow-tooltip>
               <template #default="{ row }">
                 <span class="muted">{{ row.node.comment || '—' }}</span>
@@ -995,18 +1043,30 @@ watch(
           <template v-else>
             <header class="detail-head">
               <nav class="crumb">
-                <span class="crumb__item crumb__item--root" @click="onTreeNodeClick(folderTree[0] ?? selectedFolderNode)">
+                <!--
+                  面包屑结构:project / folder / folder
+                  - project 项点击 → 切到 LIST 视图(项目下的目录列表),
+                    这才是「根目录」的含义 —— 当前项目页面的目录树顶层
+                  - 每个 folder 项点击 → 跳到该层级的 folder 详情
+                  - 路径分隔符统一用「/」,更接近传统文件系统路径的视觉
+                -->
+                <span
+                  class="crumb__item crumb__item--root"
+                  :title="'返回目录列表(项目下的目录树顶层)'"
+                  @click="onBackToList"
+                >
                   <el-icon><FolderIcon /></el-icon>
                   {{ project?.name ?? '项目' }}
                 </span>
                 <template v-for="c in folderBreadcrumb" :key="c.id">
-                  <el-icon class="crumb__sep"><ArrowRight /></el-icon>
+                  <span class="crumb__sep">/</span>
                   <span
                     class="crumb__item"
                     :class="{
                       'crumb__item--l1': c.kind === 'l1',
                       'crumb__item--current': c.id === selectedFolderNode.id,
                     }"
+                    :title="`跳到 ${c.name}`"
                     @click="onTreeNodeClick(findFolderNode(folderTree, c.id)?.node ?? selectedFolderNode)"
                   >
                     {{ c.name }}
@@ -1019,6 +1079,14 @@ watch(
                     <span class="detail-tabs__label">
                       <el-icon><KeyIcon /></el-icon>
                       Secrets
+                    </span>
+                  </template>
+                </el-tab-pane>
+                <el-tab-pane name="subfolders">
+                  <template #label>
+                    <span class="detail-tabs__label">
+                      <el-icon><FolderIcon /></el-icon>
+                      子目录
                     </span>
                   </template>
                 </el-tab-pane>
@@ -1049,15 +1117,6 @@ watch(
                 </div>
                 <div class="tab-pane__actions">
                   <el-button
-                    v-if="!selectedFolderNode.subFolders?.length"
-                    type="primary"
-                    size="small"
-                    :icon="Plus"
-                    @click="openCreateChildFolder(selectedFolderNode)"
-                  >
-                    新建子目录
-                  </el-button>
-                  <el-button
                     type="primary"
                     size="small"
                     :icon="Edit"
@@ -1070,6 +1129,8 @@ watch(
                     type="danger"
                     size="small"
                     :icon="Delete"
+                    :disabled="!has(Permission.FolderDelete)"
+                    :title="!has(Permission.FolderDelete) ? '当前账号没有 folder:delete 权限' : ''"
                     @click="onDeleteFolder(selectedFolderNode)"
                   >
                     删除目录
@@ -1124,6 +1185,100 @@ watch(
               </el-descriptions>
             </section>
 
+            <!-- Subfolders Tab:展示当前 L1 目录下的 L2 子目录,允许反复创建多个 -->
+            <section v-show="activeTab === 'subfolders'" class="tab-pane">
+              <div class="tab-pane__bar">
+                <div class="tab-pane__title">
+                  子目录
+                  <span class="tab-pane__count">
+                    {{ selectedFolderNode.subFolders?.length ?? 0 }}
+                  </span>
+                </div>
+                <div class="tab-pane__actions">
+                  <!--
+                    L1 目录(有 subFolders 字段)才允许在它下面挂 L2;
+                    L2 目录不能继续往下挂,所以隐藏按钮。
+                  -->
+                  <el-button
+                    v-if="selectedFolderNode.subFolders"
+                    type="primary"
+                    size="small"
+                    :icon="Plus"
+                    :disabled="!has(Permission.FolderCreate)"
+                    :title="!has(Permission.FolderCreate) ? '当前账号没有 folder:create 权限' : ''"
+                    @click="openCreateChildFolder(selectedFolderNode)"
+                  >
+                    新建子目录
+                  </el-button>
+                </div>
+              </div>
+
+              <el-table
+                v-if="currentSubfolders.length"
+                :data="currentSubfolders"
+                class="subfolder-table"
+                empty-text="该目录下还没有子目录,点击右上「新建子目录」开始"
+                @row-click="onTreeNodeClick"
+              >
+                <!-- 名称列合成 name(code) 格式:icon + name + (code) -->
+                <el-table-column label="名称" min-width="220">
+                  <template #default="{ row }">
+                    <div class="folder-list__name-cell">
+                      <el-icon class="folder-list__code-icon"><FolderIcon /></el-icon>
+                      <span class="folder-list__name-text">{{ row.name }}</span>
+                      <code v-if="row.code" class="folder-list__code-suffix">
+                        ({{ row.code }})
+                      </code>
+                    </div>
+                  </template>
+                </el-table-column>
+                <el-table-column
+                  prop="comment"
+                  label="说明"
+                  min-width="200"
+                  show-overflow-tooltip
+                >
+                  <template #default="{ row }">
+                    <span class="muted">{{ row.comment || '—' }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column
+                  v-for="env in envOptions"
+                  :key="env.id"
+                  :label="env.name"
+                  min-width="80"
+                  align="center"
+                >
+                  <template #default="{ row }">
+                    <!--
+                      el-table 内部对 data 数组的泛型推断在我们这版 Element Plus
+                      下会退化成 DefaultRow,而我们这里 :data 绑定的就是
+                      currentSubfolders: FolderNode[],这里手动断言以满足
+                      isFolderInEnv 的入参类型。
+                    -->
+                    <el-icon
+                      v-if="isFolderInEnv(row as FolderNode, env.id)"
+                      class="env-check"
+                      :title="`已挂载到 ${env.name}`"
+                    >
+                      <Check />
+                    </el-icon>
+                    <span v-else class="env-check__off" :title="`未挂载到 ${env.name}`">—</span>
+                  </template>
+                </el-table-column>
+              </el-table>
+
+              <div v-else class="subfolder-empty">
+                <el-icon class="subfolder-empty__icon"><FolderIcon /></el-icon>
+                <p v-if="!selectedFolderNode.subFolders">
+                  当前为 L2 子目录,系统最多支持 2 级目录,无法再挂载下一级。
+                </p>
+                <p v-else>
+                  该 L1 目录下还没有子目录,点击右上「新建子目录」开始创建。
+                </p>
+              </div>
+            </section>
+
             <!-- Secrets Tab -->
             <section v-show="activeTab === 'secrets'" class="tab-pane">
               <div class="tab-pane__bar">
@@ -1136,7 +1291,8 @@ watch(
                     type="primary"
                     size="small"
                     :icon="Plus"
-                    :disabled="selectedFolderNode.envList.length === 0"
+                    :disabled="selectedFolderNode.envList.length === 0 || !has(Permission.SecretCreate)"
+                    :title="!has(Permission.SecretCreate) ? '当前账号没有 secret:create 权限' : ''"
                     @click="openBatchCreateSecret"
                   >
                     新建密钥
@@ -1444,6 +1600,7 @@ watch(
                 <el-button
                   size="small"
                   :icon="revealVisible ? Hide : View"
+                  :disabled="!has(Permission.SecretReveal)"
                   @click="revealVisible = !revealVisible"
                 >
                   {{ revealVisible ? '隐藏' : '显示' }}
@@ -1452,6 +1609,7 @@ watch(
                   size="small"
                   type="primary"
                   :icon="CopyDocument"
+                  :disabled="!has(Permission.SecretReveal)"
                   @click="copyReveal"
                 >
                   复制
@@ -1488,6 +1646,10 @@ watch(
         label-position="top"
       >
         <el-form-item label="Key" prop="key">
+          <!--
+            key 在 folder 内是稳定标识,任何人都不能改 — 写死 disabled
+            (不受权限影响)
+          -->
           <el-input
             v-model="editSecretForm.key"
             disabled
@@ -1500,6 +1662,7 @@ watch(
             v-model="editSecretForm.value"
             :type="editSecretForm.valueVisible ? 'textarea' : 'password'"
             :rows="editSecretForm.valueVisible ? 4 : 1"
+            :disabled="!has(Permission.SecretUpdate)"
             placeholder="留空表示不轮换现有值;填写后会覆盖并 version+1"
             show-password
           />
@@ -1510,15 +1673,20 @@ watch(
             v-model="editSecretForm.comment"
             type="textarea"
             :rows="2"
+            :disabled="!has(Permission.SecretUpdate)"
             placeholder="可清空"
           />
         </el-form-item>
+        <p v-if="!has(Permission.SecretUpdate)" class="form-hint">
+          当前账号没有 <code>secret:update</code> 权限,无法修改 value / 说明。
+        </p>
       </el-form>
       <template #footer>
         <el-button @click="editSecretDialogVisible = false">取消</el-button>
         <el-button
           type="primary"
           :loading="editSecretSubmitting"
+          :disabled="!has(Permission.SecretUpdate)"
           @click="onEditSecretSubmit"
         >
           保存
@@ -1541,6 +1709,10 @@ watch(
         label-position="top"
       >
         <el-form-item label="Code" prop="code">
+          <!--
+            code 是 env 下的稳定标识,创建后不可改 — 这里写死 disabled
+            (不受权限影响,任何人都不能改)
+          -->
           <el-input
             v-model="editFolderForm.code"
             disabled
@@ -1550,6 +1722,7 @@ watch(
         <el-form-item label="名称" prop="name">
           <el-input
             v-model="editFolderForm.name"
+            :disabled="!has(Permission.FolderUpdate)"
             placeholder="Globals"
           />
         </el-form-item>
@@ -1558,15 +1731,20 @@ watch(
             v-model="editFolderForm.comment"
             type="textarea"
             :rows="2"
+            :disabled="!has(Permission.FolderUpdate)"
             placeholder="可清空"
           />
         </el-form-item>
+        <p v-if="!has(Permission.FolderUpdate)" class="form-hint">
+          当前账号没有 <code>folder:update</code> 权限,无法修改名称/说明。
+        </p>
       </el-form>
       <template #footer>
         <el-button @click="editFolderDialogVisible = false">取消</el-button>
         <el-button
           type="primary"
           :loading="editFolderSubmitting"
+          :disabled="!has(Permission.FolderUpdate)"
           @click="onEditFolderSubmit"
         >
           保存
@@ -1801,11 +1979,12 @@ watch(
     font-size: 13px;
   }
 
-  // Code 单元格里:toggle(可选) + folder icon + code 文本
-  &__code-cell {
+  // 名称单元格里:toggle(可选) + folder icon + name 文本 + (code) 后缀
+  &__name-cell {
     display: inline-flex;
     align-items: center;
     gap: 8px;
+    min-width: 0;
   }
 
   &__code-icon {
@@ -1813,9 +1992,30 @@ watch(
     flex-shrink: 0;
   }
 
-  &__code-text {
-    font-family: var(--el-font-family-monospace, ui-monospace, monospace);
+  &__name-text {
     font-size: 13px;
+    font-weight: 500;
+    color: var(--v-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  // name 后面的 (code) 后缀:次要标识,等宽字体 + 灰字
+  &__code-suffix {
+    font-family: var(--el-font-family-monospace, ui-monospace, SFMono-Regular, monospace);
+    font-size: 12px;
+    color: var(--v-text-tertiary);
+    font-weight: 400;
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    background: transparent;
+    padding: 0;
   }
 
   // L2 行 toggle 占位:跟 L1 toggle 同尺寸,让 L1/L2 的 folder icon 视觉对齐
@@ -2002,6 +2202,20 @@ watch(
     align-items: center;
     gap: 4px;
     color: var(--v-text-secondary);
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: var(--v-radius-sm);
+    transition: background 0.15s ease, color 0.15s ease;
+
+    &:hover:not(.crumb__item--current):not(.is-disabled) {
+      background: var(--v-surface-row-hover);
+      color: var(--el-color-primary);
+    }
+
+    &--root {
+      color: var(--el-color-primary);
+      font-weight: 500;
+    }
 
     &--env {
       color: var(--el-color-primary);
@@ -2010,12 +2224,21 @@ watch(
     &--current {
       color: var(--v-text-primary);
       font-weight: 600;
+      cursor: default;
+    }
+
+    &.is-disabled {
+      cursor: not-allowed;
+      opacity: 0.6;
     }
   }
 
+  // 路径分隔符「/」,跟传统文件系统路径视觉一致
   &__sep {
     color: var(--v-text-tertiary);
-    font-size: 12px;
+    font-size: 13px;
+    user-select: none;
+    padding: 0 2px;
   }
 }
 
@@ -2080,6 +2303,43 @@ watch(
 
 .secret-table {
   width: 100%;
+}
+
+// ---------------- subfolder table ----------------
+.subfolder-table {
+  width: 100%;
+
+  // 行点击 → 进入子目录详情,给用户一个指针提示
+  :deep(.el-table__row) {
+    cursor: pointer;
+  }
+}
+
+.subfolder-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 56px 24px;
+  text-align: center;
+  color: var(--v-text-tertiary);
+  background: var(--v-surface-bg-subtle);
+  border: 1px dashed var(--v-surface-border);
+  border-radius: var(--v-radius-md);
+
+  &__icon {
+    font-size: 36px;
+    margin-bottom: 10px;
+    opacity: 0.5;
+    color: var(--el-color-primary);
+  }
+
+  p {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.6;
+    max-width: 360px;
+  }
 }
 
 .secret-key {
