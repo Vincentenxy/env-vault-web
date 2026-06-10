@@ -306,9 +306,23 @@ function onCardEnter(row: Project): void {
 
 function onCardMenuCommand(command: CardAction, row: Project): void {
   if (command === 'view') openView(row)
-  else if (command === 'edit') openEdit(row)
-  else if (command === 'delete') openDelete(row)
-  else if (command === 'goEnvs') {
+  else if (command === 'edit') {
+    if (!has(Permission.ProjectUpdate)) {
+      ElMessage.warning('当前账号没有 project:update 权限')
+      return
+    }
+    openEdit(row)
+  } else if (command === 'delete') {
+    if (!has(Permission.ProjectDelete)) {
+      ElMessage.warning('当前账号没有 project:delete 权限')
+      return
+    }
+    openDelete(row)
+  } else if (command === 'goEnvs') {
+    if (!has(Permission.EnvRead)) {
+      ElMessage.warning('当前账号没有 env:read 权限')
+      return
+    }
     router.push({
       path: '/app/envs',
       query: { orgId: selectedOrgId.value, projectId: row.id },
@@ -385,7 +399,8 @@ watch(
         <el-button
           type="primary"
           :icon="Plus"
-          :disabled="!selectedOrgId"
+          :disabled="!selectedOrgId || !has(Permission.ProjectCreate)"
+          :title="!has(Permission.ProjectCreate) ? '当前账号没有 project:create 权限' : ''"
           @click="openCreate"
         >
           新建项目
@@ -428,10 +443,33 @@ watch(
               />
               <template #dropdown>
                 <el-dropdown-menu>
+                  <!-- 查看详情:有 project:read 即可(读权限) -->
                   <el-dropdown-item :icon="View" command="view">查看详情</el-dropdown-item>
-                  <el-dropdown-item :icon="Edit" command="edit">编辑</el-dropdown-item>
-                  <el-dropdown-item :icon="Position" command="goEnvs">环境管理</el-dropdown-item>
-                  <el-dropdown-item divided :icon="Delete" command="delete">删除</el-dropdown-item>
+                  <!-- 编辑:需要 project:update -->
+                  <el-dropdown-item
+                    :icon="Edit"
+                    command="edit"
+                    :disabled="!has(Permission.ProjectUpdate)"
+                  >
+                    编辑
+                  </el-dropdown-item>
+                  <!-- 环境管理:跳到 env 列表,需要 env:read(本项目下的 env) -->
+                  <el-dropdown-item
+                    :icon="Position"
+                    command="goEnvs"
+                    :disabled="!has(Permission.EnvRead)"
+                  >
+                    环境管理
+                  </el-dropdown-item>
+                  <!-- 删除:需要 project:delete -->
+                  <el-dropdown-item
+                    divided
+                    :icon="Delete"
+                    command="delete"
+                    :disabled="!has(Permission.ProjectDelete)"
+                  >
+                    删除
+                  </el-dropdown-item>
                 </el-dropdown-menu>
               </template>
             </el-dropdown>

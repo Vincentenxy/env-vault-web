@@ -26,7 +26,14 @@ export const useRbacStore = defineStore('rbac', () => {
   /** 每个 scope 是否有 in-flight 请求,避免并发重复拉 */
   const inflight = ref<Map<string, Promise<Set<string>>>>(new Map())
 
-  /** 当前 scope 对应的权限集合(空 Set 表示未加载或无权限) */
+  /**
+   * 当前 scope 的权限集合(空 Set 表示未加载或无权限)。
+   *
+   * 只查 currentScope —— 跨 scope 的合并逻辑放在 usePermission.has() 里,
+   * 那里读 current + global 两份缓存,显式、可控、不发请求,避免之前
+   * "在 computed 里 union global 把整条读取路径变复杂"导致某些按钮
+   * 永远 disabled 的回归。
+   */
   const granted = computed<Set<string>>(() => {
     return cache.value.get(scopeKey(currentScope.value)) ?? new Set<string>()
   })

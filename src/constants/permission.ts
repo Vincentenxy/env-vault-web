@@ -34,8 +34,11 @@ export const Permission = {
   EnvForceDelete: 'env:force_delete',
 
   // ---------- Env template ----------
-  EnvTemplateRead: 'env_template:read',
-  EnvTemplateManage: 'env_template:manage',
+  // 注意:permission code 跟后端 /rbac/me/permissions 的实际返回完全对齐,
+  // 必须用冒号风格(env:template:read)。历史上曾用过下划线(env_template:read),
+  // 与后端不一致会导致 has() 永远 false —— 这里已统一。
+  EnvTemplateRead: 'env:template:read',
+  EnvTemplateManage: 'env:template:manage',
 
   // ---------- Folder ----------
   FolderRead: 'folder:read',

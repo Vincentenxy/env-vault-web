@@ -12,7 +12,6 @@ import {
   ArrowRight,
   Check,
   CircleClose,
-  CopyDocument,
   Delete,
   Document,
   Edit,
@@ -38,11 +37,12 @@ import { listFoldersByProject, createFolder, deleteFolder, updateFolder } from '
 import type { Environment } from '@/types/env'
 import type { FolderLevel, FolderNode } from '@/types/folder'
 import type { Project } from '@/types/project'
-import type { SecretMeta } from '@/types/secret'
 import type {
+  SecretAcrossEnvs,
+  SecretAcrossEnvsEntry,
   UpdateSecretRequest,
   BatchCreateSecretsRequest,
-  BatchSecretItem,
+  BatchCreateEnvEntry,
 } from '@/api/secret'
 
 const route = useRoute()
@@ -220,17 +220,24 @@ const currentSubfolders = computed<FolderNode[]>(() => {
 type TabKey = 'secrets' | 'subfolders' | 'info'
 const activeTab = ref<TabKey>('secrets')
 
-// ==================== Secret 列表 ====================
+// ==================== Secret 列表(走新 /secrets/list 接口)====================
+//
+// 新接口一次拿一个 key 在 4 个 env 上的值(与新增/编辑弹窗的"一行 key + 4 个
+// env 输入框"视觉一致),与旧接口(单行单 env)并存,这里只用新接口。
+// 离开 folder / 切 folder 时清掉旧数据,避免误显示。
+const ACROSS_ENVS: string[] = ['dev', 'test', 'sim', 'prod']
+
 async function loadSecretsOfCurrent(): Promise<void> {
-  if (!selectedFolderNode.value) {
+  if (!selectedFolderNode.value || !projectId.value) {
     secretStore.clear()
     return
   }
   try {
-    await secretStore.fetchList({
-      folderId: selectedFolderNode.value.id,
-      pageNum: 1,
-      pageSize: secretStore.lastQuery.pageSize ?? 20,
+    await secretStore.fetchAcrossEnvs({
+      projectId: projectId.value,
+      folderCode: selectedFolderNode.value.code,
+      key: '', // 空 = 该 folder 下所有
+      envList: ACROSS_ENVS,
     })
   } catch (e) {
     const msg = e instanceof ApiError ? e.message : '加载密钥失败'
@@ -238,14 +245,74 @@ async function loadSecretsOfCurrent(): Promise<void> {
   }
 }
 
-function onSecretPageChange(pageNum: number, pageSize: number): void {
-  if (!selectedFolderNode.value) return
-  secretStore
-    .fetchList({ folderId: selectedFolderNode.value.id, pageNum, pageSize })
-    .catch((e: unknown) => {
-      const msg = e instanceof ApiError ? e.message : '加载失败'
-      ElMessage.error(msg)
-    })
+// 新接口一次性返回所有 key,不分页(后续若需要分页,这里加 pageNum/pageSize)
+function onSecretPageChange(_pageNum: number, _pageSize: number): void {
+  // 新接口不分页,刷新只调 fetchAcrossEnvs
+  void loadSecretsOfCurrent()
+}
+
+// ============ 表格单元格辅助:从 SecretAcrossEnvs 行里取指定 env 块 ============
+//
+// 新响应的 env 块是以 envCode 为键的索引(顶层还有 key/projectCode,需排除),
+// 写成统一函数避免模板里散落类型断言。
+type AcrossEnvsRow = { key: string; projectCode: string; [k: string]: unknown }
+function getEnvCell(row: AcrossEnvsRow, envCode: string): SecretAcrossEnvsEntry | undefined {
+  const v = row[envCode]
+  if (v && typeof v === 'object' && 'value' in (v as object)) {
+    return v as SecretAcrossEnvsEntry
+  }
+  return undefined
+}
+function getEnvCellValue(row: AcrossEnvsRow, envCode: string): string {
+  return getEnvCell(row, envCode)?.value ?? ''
+}
+function getEnvCellVersion(row: AcrossEnvsRow, envCode: string): number {
+  return getEnvCell(row, envCode)?.version ?? 0
+}
+function getEnvCellUpdatedAt(row: AcrossEnvsRow, envCode: string): string {
+  return getEnvCell(row, envCode)?.updatedAt ?? ''
+}
+
+// ============ 4 env 列的"明文/暗文"显隐状态(per-row × per-env)============
+//
+// 设计:
+//  - 默认 dev / test 可见(明文),sim / prod 隐藏(masked)—— 仿真/生产属
+//    高敏感环境,默认不裸眼曝,符合最小暴露原则。
+//  - 状态按 `${row.key}__${envCode}` 二维键存放,首次访问单元格时按默认
+//    惰性初始化,后续用户点击 toggle 翻转;离开页面 / 切 folder 由 store
+//    clear() 兜底清掉(本状态是组件局部 ref,组件 unmount 自动清)。
+const ENV_VISIBLE_BY_DEFAULT: Record<string, boolean> = {
+  dev: true,
+  test: true,
+  sim: false,
+  prod: false,
+}
+const cellShown = ref<Record<string, boolean>>({})
+
+function cellKey(rowKey: string, envCode: string): string {
+  return `${rowKey}__${envCode}`
+}
+
+function isCellShown(rowKey: string, envCode: string): boolean {
+  const k = cellKey(rowKey, envCode)
+  if (!(k in cellShown.value)) {
+    // 惰性初始化:按 ENV_VISIBLE_BY_DEFAULT 决定默认显隐
+    cellShown.value[k] = ENV_VISIBLE_BY_DEFAULT[envCode] ?? false
+  }
+  return cellShown.value[k] === true
+}
+
+function toggleCellShown(rowKey: string, envCode: string): void {
+  const k = cellKey(rowKey, envCode)
+  cellShown.value[k] = !isCellShown(rowKey, envCode)
+}
+
+/** 单元格实际展示的字符串:明文 / masked / "—"(无值) */
+function getCellDisplayValue(row: AcrossEnvsRow, envCode: string): string {
+  const raw = getEnvCellValue(row, envCode)
+  if (!raw) return ''
+  // maskSecret 来自 utils/format,空串会原样返回,这里 raw 已非空,放心调
+  return isCellShown(row.key, envCode) ? raw : maskSecret(raw)
 }
 
 // ==================== 创建 folder ====================
@@ -674,25 +741,32 @@ async function onBatchCreateSubmit(): Promise<void> {
     const envBindingByCode = new Map(picked.envList.map((b) => [b.code, b]))
     const req: BatchCreateSecretsRequest = {
       secretList: batchCreateForm.rows.map((row) => {
-        const item: BatchSecretItem = {
-          key: row.key.trim(),
-        }
-        const trimmedComment = row.comment?.trim()
-        if (trimmedComment) item.comment = trimmedComment
-        // 每个 env 都按 code 上送(空 value 也传空串,让后端决定如何处理 —— 不在客户端"跳过"任何 env)
+        // 新格式:envList 是 [{envCode, folderId, value}] 数组,
+        // 不再用索引签名塞平铺字段;每行必带 comment(可空串)
+        const envList: BatchCreateEnvEntry[] = []
         for (const envCode of batchCreateEnvCodes.value) {
           const value = row.values[envCode] ?? ''
           const binding = envBindingByCode.get(envCode)
           if (binding) {
-            item[envCode] = { folderId: binding.folderId, value }
+            envList.push({
+              envCode,
+              folderId: binding.folderId,
+              value,
+            })
           }
         }
-        return item
+        return {
+          key: row.key.trim(),
+          comment: row.comment?.trim() ?? '',
+          envList,
+        }
       }),
     }
     await secretStore.batchCreate(req)
     ElMessage.success('创建成功')
     batchCreateDialogVisible.value = false
+    // 新增后自动刷新列表(用新 /secrets/list 接口)
+    void loadSecretsOfCurrent()
   } catch (e) {
     const msg = e instanceof ApiError ? e.message : '创建失败'
     ElMessage.error(msg)
@@ -701,137 +775,102 @@ async function onBatchCreateSubmit(): Promise<void> {
   }
 }
 
-// ==================== 查看 secret 明文 ====================
-const revealDialogVisible = ref(false)
-const revealLoading = ref(false)
-const revealVisible = ref(false)
-const revealTarget = ref<SecretMeta | null>(null)
-const revealValue = ref<string>('')
-const revealVersion = ref<number>(0)
-
-async function openReveal(row: SecretMeta): Promise<void> {
-  if (!has(Permission.SecretReveal)) {
-    ElMessage.warning('当前账号没有查看明文权限')
-    return
-  }
-  revealTarget.value = row
-  revealValue.value = ''
-  revealVersion.value = row.version
-  revealVisible.value = false
-  revealDialogVisible.value = true
-  revealLoading.value = true
-  try {
-    const resp = await secretStore.fetchReveal({ id: row.id })
-    revealValue.value = resp.value
-    revealVersion.value = resp.version
-  } catch (e) {
-    const msg = e instanceof ApiError ? e.message : '查看失败'
-    ElMessage.error(msg)
-    revealDialogVisible.value = false
-  } finally {
-    revealLoading.value = false
-  }
-}
-
-async function copyReveal(): Promise<void> {
-  if (!revealValue.value) return
-  try {
-    await navigator.clipboard.writeText(revealValue.value)
-    ElMessage.success('已复制到剪贴板')
-  } catch {
-    ElMessage.error('复制失败,请手动复制')
-  }
-}
-
-// ==================== 编辑 secret ====================
+// ==================== 查看 secret 明文(4-env 一次性)====================
 //
-// key 不可修改 — 在 folder 内是稳定标识,改名需要走 create+delete 流程。
-// value 留空表示不轮换;comment 始终参与更新(可清空)。
-const editSecretDialogVisible = ref(false)
-const editSecretSubmitting = ref(false)
-const editSecretFormRef = ref<FormInstance>()
-const editSecretTarget = ref<SecretMeta | null>(null)
+// 旧版有个 reveal 对话框,会展开 4 env 的全量明文 + 复制 + 警告;
+// 现改为"每个 env 单元格自带小眼睛 toggle",查看/隐藏就地在行内完成,
+// 整组 reveal 弹窗成为死代码,连同 openReveal / copyRevealValue 等一并移除。
+// 复制明文改走浏览器自带的 select + copy,或后续在单元格再加 copy 按钮。
 
-const editSecretForm = reactive<{
-  id: string
-  key: string
-  value: string
-  comment: string
-  valueVisible: boolean
-}>({
-  id: '',
-  key: '',
-  value: '',
-  comment: '',
-  valueVisible: false,
-})
+// ==================== 行内编辑 secret ====================
+//
+// 不再弹窗:点行尾的 ✎ 图标后,该行的 4 个 env 单元格就地变成 el-input
+// (type=password + show-password),操作列变成「保存 / 取消」。
+//
+// 上一版用 `reactive<Record<string, string>>({})` + `v-model="editingValues[envCode]"`
+// 仍然遇到「保存提示没变化」的 bug——Vue 3 在 `v-model` 写入带动态字符串 key
+// 的 reactive 对象属性时,响应追踪有坑(set 不被监听到,save 时读到原值)。
+// 这次改用 **`ref<string[]>` 数组 + 索引访问**:
+//
+//   const editingValues = ref<string[]>(['', '', '', ''])   // 顺序 = ACROSS_ENVS
+//   v-model="editingValues[envIdx]"
+//
+// 数组元素的写入是 Vue 3 原生支持的,不会有动态 key 的响应性问题。
+const editingRowKey = ref<string | null>(null)
+const editingValues = ref<string[]>(['', '', '', ''])
+const editingEnvIds = ref<string[]>(['', '', '', ''])
+const editingOriginals = ref<string[]>(['', '', '', ''])
+const editingSubmitting = ref(false)
 
-const editSecretRules: FormRules<{
-  id: string
-  key: string
-  value: string
-  comment: string
-}> = {
-  id: [{ required: true, message: '缺少 secret id', trigger: 'change' }],
-  key: [
-    { required: true, message: '缺少 key', trigger: 'change' },
-    {
-      pattern: /^[A-Z][A-Z0-9_]*$/,
-      message: '仅大写字母、数字、下划线,且以字母开头',
-      trigger: 'change',
-    },
-  ],
-  value: [{ max: 8192, message: '长度不能超过 8192', trigger: 'blur' }],
-  comment: [{ max: 256, message: '长度不能超过 256', trigger: 'blur' }],
+function isRowEditing(rowKey: string): boolean {
+  return editingRowKey.value === rowKey
 }
 
-function resetEditSecretForm(): void {
-  editSecretForm.id = ''
-  editSecretForm.key = ''
-  editSecretForm.value = ''
-  editSecretForm.comment = ''
-  editSecretForm.valueVisible = false
-  editSecretFormRef.value?.clearValidate()
-}
-
-function openEditSecret(row: SecretMeta): void {
-  editSecretTarget.value = row
-  editSecretForm.id = row.id
-  editSecretForm.key = row.key
-  // value 不预填 — 留空表示不轮换,避免误把原值覆盖
-  editSecretForm.value = ''
-  editSecretForm.comment = row.comment ?? ''
-  editSecretForm.valueVisible = false
-  editSecretFormRef.value?.clearValidate()
-  editSecretDialogVisible.value = true
-}
-
-async function onEditSecretSubmit(): Promise<void> {
-  if (!editSecretFormRef.value) return
-  // 函数级最后一道闸门:即使 UI 状态被绕过(脚本/DOM/调试器),也拒绝提交
+function startEditRow(row: SecretAcrossEnvs): void {
   if (!has(Permission.SecretUpdate)) {
     ElMessage.warning('当前账号没有 secret:update 权限')
     return
   }
-  const valid = await editSecretFormRef.value.validate().catch(() => false)
-  if (!valid) return
-  editSecretSubmitting.value = true
+  editingRowKey.value = row.key
+  // 把 4 env 的当前值 + id + 原始值按 ACROSS_ENVS 顺序写入三个数组
+  // (顺序锁定:dev=0 / test=1 / sim=2 / prod=3,后续 v-for 同步走 envIdx 索引)
+  const newValues: string[] = []
+  const newIds: string[] = []
+  const newOriginals: string[] = []
+  for (const code of ACROSS_ENVS) {
+    const e = getEnvCell(row, code)
+    newValues.push(e?.value ?? '')
+    newIds.push(e?.id ?? '')
+    newOriginals.push(e?.value ?? '')
+  }
+  editingValues.value = newValues
+  editingEnvIds.value = newIds
+  editingOriginals.value = newOriginals
+}
+
+function cancelEditRow(): void {
+  editingRowKey.value = null
+  editingValues.value = ['', '', '', '']
+  editingEnvIds.value = ['', '', '', '']
+  editingOriginals.value = ['', '', '', '']
+  editingSubmitting.value = false
+}
+
+async function saveEditRow(): Promise<void> {
+  if (editingRowKey.value === null) return
+  if (!has(Permission.SecretUpdate)) {
+    ElMessage.warning('当前账号没有 secret:update 权限')
+    return
+  }
+  // diff:只对真正改动的 env 调 update,避免无谓的 version+1
+  const updates: Array<{ envCode: string; id: string; value: string }> = []
+  ACROSS_ENVS.forEach((code, idx) => {
+    const newVal = editingValues.value[idx] ?? ''
+    const oldVal = editingOriginals.value[idx] ?? ''
+    const id = editingEnvIds.value[idx]
+    if (id && newVal !== oldVal) {
+      updates.push({ envCode: code, id, value: newVal })
+    }
+  })
+  if (updates.length === 0) {
+    ElMessage.warning('没有任何 env 的值发生变化')
+    return
+  }
+  editingSubmitting.value = true
   try {
-    const req: UpdateSecretRequest = {
-      id: editSecretForm.id,
-      comment: editSecretForm.comment ?? '',
+    for (const u of updates) {
+      const req: UpdateSecretRequest = { id: u.id, value: u.value }
+      await secretStore.update(req)
     }
-    if (editSecretForm.value.length > 0) {
-      req.value = editSecretForm.value
-    }
-    await secretStore.update(req)
-    ElMessage.success('更新成功')
-    editSecretDialogVisible.value = false
+    ElMessage.success(`已更新 ${updates.length} 个 env 的值`)
+    cancelEditRow()
+    // 重新拉新接口,行里立即看到新值
+    void loadSecretsOfCurrent()
   } catch (e) {
     const msg = e instanceof ApiError ? e.message : '更新失败'
     ElMessage.error(msg)
   } finally {
-    editSecretSubmitting.value = false
+    editingSubmitting.value = false
   }
 }
 
@@ -839,7 +878,12 @@ async function onEditSecretSubmit(): Promise<void> {
 async function refreshAll(): Promise<void> {
   // 新数据模型:一次刷新整棵 folder 树
   await loadFolderTree()
+  // 同时清掉详情侧状态 + 切回 LIST 视图 —— 否则仅清 selectedFolderNode
+  // 之后 DETAIL 视图的 v-if 会变 false,但 LIST 视图的 v-show="viewMode === 'list'"
+  // 仍受旧的 viewMode 控制,如果用户原本在 detail 视图就会"两个视图都不渲染"
+  // → 整片空白。
   selectedFolderNode.value = null
+  viewMode.value = 'list'
   activeTab.value = 'secrets'
   secretStore.clear()
 }
@@ -1025,13 +1069,11 @@ watch(
         class="proj-detail__body proj-detail__body--detail"
       >
         <aside class="detail-panel detail-panel--full">
-          <!-- 返回按钮 -->
-          <header class="detail-back">
-            <el-button text :icon="ArrowLeft" @click="onBackToList">
-              返回目录列表
-            </el-button>
-          </header>
-
+          <!--
+            原「返回目录列表」按钮整组移除:
+            面包屑的 project 项是唯一的返回入口(点它切回 LIST 视图),
+            不再需要独立的返回按钮占一行。
+          -->
 
           <!-- 未选目录 -->
           <section v-if="!selectedFolderNode" class="detail-empty">
@@ -1057,6 +1099,12 @@ watch(
                 >
                   <el-icon><FolderIcon /></el-icon>
                   {{ project?.name ?? '项目' }}
+                  <!--
+                    "返回根目录"的视觉提示 ↩ —— 独立 ✎ 返回按钮移除后,
+                    project 项是唯一的返回入口,加个小箭头让"这是个可点的
+                    跳转"更明确,避免用户误以为是普通 label。
+                  -->
+                  <el-icon class="crumb__back-hint"><ArrowLeft /></el-icon>
                 </span>
                 <template v-for="c in folderBreadcrumb" :key="c.id">
                   <span class="crumb__sep">/</span>
@@ -1121,6 +1169,7 @@ watch(
                     size="small"
                     :icon="Edit"
                     :disabled="!has(Permission.FolderUpdate)"
+                    :title="!has(Permission.FolderUpdate) ? '当前账号没有 folder:update 权限' : ''"
                     @click="openEditFolder(selectedFolderNode)"
                   >
                     编辑目录
@@ -1301,54 +1350,104 @@ watch(
               </div>
 
               <el-table
-                v-loading="secretStore.loading"
-                :data="secretStore.items"
+                v-loading="secretStore.acrossEnvsLoading"
+                :data="secretStore.acrossEnvsItems"
                 class="secret-table"
                 empty-text="该目录下还没有密钥,点击右上「新建密钥」开始"
               >
-                <el-table-column prop="key" label="Key" min-width="220">
+                <el-table-column
+                  prop="key"
+                  label="Key"
+                  min-width="280"
+                  show-overflow-tooltip
+                >
                   <template #default="{ row }">
                     <span class="secret-key">
                       <el-icon class="secret-key__icon"><KeyIcon /></el-icon>
-                      {{ row.key }}
+                      {{ (row as SecretAcrossEnvs).key }}
                     </span>
                   </template>
                 </el-table-column>
-                <el-table-column prop="comment" label="说明" min-width="220" show-overflow-tooltip>
+                <!--
+                  4 个 env 列(列头 = env code)。
+                  - 显示态:[value 明文或 maskSecret 暗文] + [👁/🙈 切换小眼睛]
+                  - 编辑态:el-input(type=password, show-password) 就地改值
+                  整列宽度 200 容纳 "value(可拖长省略)" + "👁 图标" / "输入框"。
+                  row 推断成 DefaultRow,这里手动断言成 SecretAcrossEnvs。
+                -->
+                <el-table-column
+                  v-for="(envCode, envIdx) in ACROSS_ENVS"
+                  :key="envCode"
+                  :label="envCode"
+                  min-width="200"
+                  show-overflow-tooltip
+                >
                   <template #default="{ row }">
-                    <span class="muted">{{ row.comment || '—' }}</span>
+                    <!-- 显示态:展示 + 小眼睛 -->
+                    <div
+                      v-if="!isRowEditing((row as SecretAcrossEnvs).key)"
+                      class="secret-cell"
+                    >
+                      <span
+                        v-if="getEnvCellValue(row as SecretAcrossEnvs, envCode)"
+                        class="secret-cell-value"
+                        :title="`v${getEnvCellVersion(row as SecretAcrossEnvs, envCode)} · ${formatDateTime(getEnvCellUpdatedAt(row as SecretAcrossEnvs, envCode))}`"
+                      >
+                        {{ getCellDisplayValue(row as SecretAcrossEnvs, envCode) }}
+                      </span>
+                      <span v-else class="muted">—</span>
+                      <el-button
+                        v-if="getEnvCellValue(row as SecretAcrossEnvs, envCode)"
+                        link
+                        size="small"
+                        class="secret-cell-eye"
+                        :icon="isCellShown((row as SecretAcrossEnvs).key, envCode) ? Hide : View"
+                        :title="isCellShown((row as SecretAcrossEnvs).key, envCode) ? `隐藏 ${envCode}` : `查看 ${envCode}`"
+                        :disabled="!has(Permission.SecretReveal)"
+                        @click="toggleCellShown((row as SecretAcrossEnvs).key, envCode)"
+                      />
+                    </div>
+                    <!-- 编辑态:就地输入 -->
+                    <div v-else class="secret-cell-edit">
+                      <el-input
+                        :key="`${(row as SecretAcrossEnvs).key}__${envCode}`"
+                        v-model="editingValues[envIdx]"
+                        type="password"
+                        show-password
+                        size="small"
+                        :placeholder="`${envCode} 新值(留空 = 不轮换)`"
+                      />
+                    </div>
                   </template>
                 </el-table-column>
-                <el-table-column label="版本" width="80">
+                <!--
+                  操作列:行内编辑模式下显示「保存 / 取消」,否则显示 ✎ 图标。
+                  - 保存/取消只在被编辑的那一行出现,其他行继续显示 ✎
+                  - 保存时 loading 由 editingSubmitting 控(整个对话框共用,实际只有当前行)
+                -->
+                <el-table-column label="操作" width="170" fixed="right">
                   <template #default="{ row }">
-                    <el-tag size="small" effect="light" type="info">v{{ row.version }}</el-tag>
-                  </template>
-                </el-table-column>
-                <el-table-column label="更新时间" min-width="160">
-                  <template #default="{ row }">
-                    <span class="muted">{{ formatDateTime(row.updatedAt) }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="操作" width="180" fixed="right">
-                  <template #default="{ row }">
+                    <template v-if="isRowEditing((row as SecretAcrossEnvs).key)">
+                      <el-button
+                        link
+                        type="primary"
+                        :icon="Check"
+                        :loading="editingSubmitting"
+                        @click="saveEditRow"
+                      >
+                        保存
+                      </el-button>
+                      <el-button link @click="cancelEditRow">取消</el-button>
+                    </template>
                     <el-button
+                      v-else
                       link
                       type="primary"
                       :icon="Edit"
+                      :title="'编辑'"
                       :disabled="!has(Permission.SecretUpdate)"
-                      @click="openEditSecret(row as SecretMeta)"
-                    >
-                      编辑
-                    </el-button>
-                    <el-button
-                      link
-                      type="primary"
-                      :icon="View"
-                      :disabled="!has(Permission.SecretReveal)"
-                      @click="openReveal(row as SecretMeta)"
-                    >
-                      查看值
-                    </el-button>
+                      @click="startEditRow(row as SecretAcrossEnvs)"
+                    />
                   </template>
                 </el-table-column>
               </el-table>
@@ -1571,128 +1670,17 @@ watch(
       </template>
     </el-dialog>
 
-    <!-- 查看 secret 明文 Dialog -->
-    <el-dialog
-      v-model="revealDialogVisible"
-      width="560px"
-      :close-on-click-modal="false"
-      title="查看密钥值"
-    >
-      <div v-if="revealTarget" class="reveal">
-        <el-descriptions :column="1" border size="small">
-          <el-descriptions-item label="Key">
-            <span class="secret-key">{{ revealTarget.key }}</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="版本">
-            <el-tag size="small" effect="light" type="info">v{{ revealVersion }}</el-tag>
-          </el-descriptions-item>
-          <el-descriptions-item label="Value">
-            <div v-if="revealLoading" class="reveal__loading">加载中...</div>
-            <div v-else class="reveal__value">
-              <el-input
-                :model-value="revealVisible ? revealValue : maskSecret(revealValue)"
-                :type="revealVisible ? 'textarea' : 'password'"
-                readonly
-                :rows="revealVisible ? 4 : 1"
-                :autosize="revealVisible ? { minRows: 4 } : undefined"
-              />
-              <div class="reveal__actions">
-                <el-button
-                  size="small"
-                  :icon="revealVisible ? Hide : View"
-                  :disabled="!has(Permission.SecretReveal)"
-                  @click="revealVisible = !revealVisible"
-                >
-                  {{ revealVisible ? '隐藏' : '显示' }}
-                </el-button>
-                <el-button
-                  size="small"
-                  type="primary"
-                  :icon="CopyDocument"
-                  :disabled="!has(Permission.SecretReveal)"
-                  @click="copyReveal"
-                >
-                  复制
-                </el-button>
-              </div>
-            </div>
-          </el-descriptions-item>
-          <el-descriptions-item label="说明">
-            {{ revealTarget.comment || '—' }}
-          </el-descriptions-item>
-        </el-descriptions>
-        <p class="reveal__warn">
-          <el-icon><Hide /></el-icon>
-          请妥善处理明文,避免在截图、日志、聊天中泄露。
-        </p>
-      </div>
-      <template #footer>
-        <el-button @click="revealDialogVisible = false">关闭</el-button>
-      </template>
-    </el-dialog>
+    <!--
+      原「查看 secret 明文 Dialog」整组移除:
+      操作列不再放「查看值」入口,4 env 单元格自带 👁/🙈 切换。
+      value 已通过 /secrets/list 响应拿到,无需再调 reveal 接口。
+    -->
 
-    <!-- 编辑 secret Dialog -->
-    <el-dialog
-      v-model="editSecretDialogVisible"
-      width="560px"
-      :close-on-click-modal="false"
-      title="编辑密钥"
-      @closed="resetEditSecretForm"
-    >
-      <el-form
-        ref="editSecretFormRef"
-        :model="editSecretForm"
-        :rules="editSecretRules"
-        label-position="top"
-      >
-        <el-form-item label="Key" prop="key">
-          <!--
-            key 在 folder 内是稳定标识,任何人都不能改 — 写死 disabled
-            (不受权限影响)
-          -->
-          <el-input
-            v-model="editSecretForm.key"
-            disabled
-            :prefix-icon="KeyIcon"
-            placeholder="key 在 folder 内是稳定标识,不可修改"
-          />
-        </el-form-item>
-        <el-form-item label="Value" prop="value">
-          <el-input
-            v-model="editSecretForm.value"
-            :type="editSecretForm.valueVisible ? 'textarea' : 'password'"
-            :rows="editSecretForm.valueVisible ? 4 : 1"
-            :disabled="!has(Permission.SecretUpdate)"
-            placeholder="留空表示不轮换现有值;填写后会覆盖并 version+1"
-            show-password
-          />
-          <div class="form-hint">留空 = 保留原值;需要修改时才填写。</div>
-        </el-form-item>
-        <el-form-item label="说明" prop="comment">
-          <el-input
-            v-model="editSecretForm.comment"
-            type="textarea"
-            :rows="2"
-            :disabled="!has(Permission.SecretUpdate)"
-            placeholder="可清空"
-          />
-        </el-form-item>
-        <p v-if="!has(Permission.SecretUpdate)" class="form-hint">
-          当前账号没有 <code>secret:update</code> 权限,无法修改 value / 说明。
-        </p>
-      </el-form>
-      <template #footer>
-        <el-button @click="editSecretDialogVisible = false">取消</el-button>
-        <el-button
-          type="primary"
-          :loading="editSecretSubmitting"
-          :disabled="!has(Permission.SecretUpdate)"
-          @click="onEditSecretSubmit"
-        >
-          保存
-        </el-button>
-      </template>
-    </el-dialog>
+    <!--
+      原「编辑 secret Dialog」整组移除:
+      编辑改为"行内"(点 ✎ → 4 env 单元格就地变 input + 操作列变「保存/取消」),
+      整组 Dialog + 表单状态随之删除,startEditRow/cancelEditRow/saveEditRow 接管。
+    -->
 
     <!-- 编辑 folder Dialog -->
     <el-dialog
@@ -1861,11 +1849,8 @@ watch(
   }
 }
 
-.detail-back {
-  display: flex;
-  align-items: center;
-  padding: 4px 0 0;
-}
+// 原 .detail-back 样式块(顶部"返回目录列表"按钮)已随按钮删除,
+// 这里不再需要。面包屑的 project 项是唯一的返回入口。
 
 // 列表内的展开/收起箭头按钮
 // 目录树展开/收起按钮:圆形 + 始终可见的边框
@@ -2213,8 +2198,11 @@ watch(
     }
 
     &--root {
+      // 唯一返回入口:主色 + 轻量背景(独立 ✎ 返回按钮已移除,
+      // 需要更明显的"可点"视觉,跟普通 crumb label 区分开)
       color: var(--el-color-primary);
       font-weight: 500;
+      background: var(--el-color-primary-light-9);
     }
 
     &--env {
@@ -2239,6 +2227,19 @@ watch(
     font-size: 13px;
     user-select: none;
     padding: 0 2px;
+  }
+
+  // project 项尾部的小 ↩ —— 提示"点此返回根目录"
+  &__back-hint {
+    margin-left: 2px;
+    font-size: 12px;
+    opacity: 0.65;
+    transition: transform 0.15s ease, opacity 0.15s ease;
+  }
+
+  &__item--root:hover &__back-hint {
+    opacity: 1;
+    transform: translateX(-2px);
   }
 }
 
@@ -2517,36 +2518,55 @@ watch(
 }
 
 // ---------------- reveal ----------------
-.reveal {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+// 原 .reveal 弹窗样式已随死代码一并移除(查看功能下沉到 env 单元格)
+// 这里保留必要的 warn 等若后续有需要再补;先按"无人使用"原则清掉避免样式污染。
 
-  &__loading {
-    color: var(--v-text-tertiary);
-    font-size: 13px;
-    padding: 8px 0;
+// env code 旁边的 version tag(reveal/edit 弹窗里复用)
+.env-version-tag {
+  margin-left: 6px;
+  font-family: var(--el-font-family-monospace, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--v-text-tertiary);
+  font-weight: 400;
+  letter-spacing: 0.3px;
+  text-transform: lowercase;
+}
+
+// 表格里 4 env 单元格的明文值(单行省略)
+.secret-cell-value {
+  font-family: var(--el-font-family-monospace, ui-monospace, SFMono-Regular, monospace);
+  font-size: 12px;
+  color: var(--v-text-primary);
+}
+
+// 单个 env 单元格容器:左 value(省略) + 右 👁 按钮
+.secret-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.secret-cell-eye {
+  flex-shrink: 0;
+  padding: 0 4px;
+  color: var(--v-text-tertiary);
+
+  &:hover:not(:disabled) {
+    color: var(--el-color-primary);
   }
+}
 
-  &__value {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
+// 行内编辑态:el-input 占满列宽,跟显示态的 value 占据同样视觉位置
+.secret-cell-edit {
+  display: block;
+  width: 100%;
+  min-width: 0;
 
-  &__actions {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  &__warn {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin: 0;
-    color: var(--v-color-warning);
-    font-size: 12px;
+  // 缩小 el-input 内边距,行内编辑时更紧凑
+  :deep(.el-input__wrapper) {
+    padding: 1px 8px;
   }
 }
 

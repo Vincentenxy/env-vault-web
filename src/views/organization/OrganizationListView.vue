@@ -211,8 +211,19 @@ function onPageChange(pageNum: number, pageSize: number): void {
 
 function onRowAction(action: 'view' | 'edit' | 'delete', row: Organization): void {
   if (action === 'view') openView(row)
-  else if (action === 'edit') openEdit(row)
-  else openDelete(row)
+  else if (action === 'edit') {
+    if (!has(Permission.OrgUpdate)) {
+      ElMessage.warning('当前账号没有 org:update 权限')
+      return
+    }
+    openEdit(row)
+  } else {
+    if (!has(Permission.OrgDelete)) {
+      ElMessage.warning('当前账号没有 org:delete 权限')
+      return
+    }
+    openDelete(row)
+  }
 }
 
 onMounted(() => {
@@ -240,7 +251,13 @@ onMounted(() => {
             <el-icon><Search /></el-icon>
           </template>
         </el-input>
-        <el-button type="primary" :icon="Plus" @click="openCreate">
+        <el-button
+          type="primary"
+          :icon="Plus"
+          :disabled="!has(Permission.OrgCreate)"
+          :title="!has(Permission.OrgCreate) ? '当前账号没有 org:create 权限' : ''"
+          @click="openCreate"
+        >
           新建组织
         </el-button>
       </div>
@@ -291,6 +308,7 @@ onMounted(() => {
               link
               type="primary"
               :icon="Edit"
+              :disabled="!has(Permission.OrgUpdate)"
               @click="onRowAction('edit', row as Organization)"
             >
               编辑
@@ -299,6 +317,7 @@ onMounted(() => {
               link
               type="danger"
               :icon="Delete"
+              :disabled="!has(Permission.OrgDelete)"
               @click="onRowAction('delete', row as Organization)"
             >
               删除

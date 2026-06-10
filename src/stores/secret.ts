@@ -4,11 +4,14 @@ import type { SecretEntry, SecretGroup, SecretReveal } from '@/types/secret'
 import type { PageRequest, PageResp, Uuid } from '@/types/api'
 import {
   listSecrets,
+  listSecretsAcrossEnvs,
   createSecret,
   revealSecret,
   updateSecret,
   batchCreateSecrets,
   type ListSecretsRequest,
+  type ListSecretsAcrossEnvsRequest,
+  type SecretAcrossEnvs,
   type CreateSecretRequest,
   type RevealSecretRequest,
   type UpdateSecretRequest,
@@ -34,6 +37,13 @@ export const useSecretStore = defineStore('secret', () => {
   const context = ref<SecretContext | null>(null)
   const lastQuery = ref<PageRequest>({ pageNum: 1, pageSize: 20 })
 
+  /**
+   * 新接口响应:一行 = 一个 key,4 个 env 值平铺。
+   * 与 `items`(旧接口,一行一 env)互不影响,各自维护。
+   */
+  const acrossEnvsItems = ref<SecretAcrossEnvs[]>([])
+  const acrossEnvsLoading = ref(false)
+
   async function fetchList(req: ListSecretsRequest): Promise<PageResp<SecretGroup>> {
     loading.value = true
     if ('environmentId' in req && req.environmentId) {
@@ -51,6 +61,25 @@ export const useSecretStore = defineStore('secret', () => {
       return resp
     } finally {
       loading.value = false
+    }
+  }
+
+  /**
+   * 拉取 folder 下所有(或单个) secret 在 4 个 env 上的值(走新接口)。
+   * - key 不传/空串:返回该 folder 下所有 secret
+   * - key 传具体值:返回该 key 的 4-env 数据(用于编辑/查看回填)
+   * 响应:扁平数组,每项的 env 块以 envCode 为键。
+   */
+  async function fetchAcrossEnvs(
+    req: ListSecretsAcrossEnvsRequest,
+  ): Promise<SecretAcrossEnvs[]> {
+    acrossEnvsLoading.value = true
+    try {
+      const data = await withApiCall(() => listSecretsAcrossEnvs(req))
+      acrossEnvsItems.value = data ?? []
+      return data
+    } finally {
+      acrossEnvsLoading.value = false
     }
   }
 
@@ -127,6 +156,7 @@ export const useSecretStore = defineStore('secret', () => {
     items.value = []
     total.value = 0
     context.value = null
+    acrossEnvsItems.value = []
   }
 
   return {
@@ -135,7 +165,10 @@ export const useSecretStore = defineStore('secret', () => {
     loading,
     context,
     lastQuery,
+    acrossEnvsItems,
+    acrossEnvsLoading,
     fetchList,
+    fetchAcrossEnvs,
     create,
     fetchReveal,
     update,

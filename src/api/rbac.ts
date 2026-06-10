@@ -43,7 +43,12 @@ export function getMyPermissions(
   scope: Scope,
   config?: AxiosRequestConfig,
 ): Promise<string[]> {
-  return http.post('/rbac/me/permissions', scopePayload(scope), config)
+  const request = http.post(
+    '/rbac/me/permissions',
+    scopePayload(scope),
+    config,
+  ) as unknown as Promise<string[] | { permissions: string[] }>
+  return request.then((data) => (Array.isArray(data) ? data : data.permissions ?? []))
 }
 
 /* ============================================================

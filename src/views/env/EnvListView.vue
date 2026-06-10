@@ -279,9 +279,25 @@ function onRowAction(
   row: Environment,
 ): void {
   if (action === 'view') openView(row)
-  else if (action === 'edit') openEdit(row)
-  else if (action === 'goFolders') goToFolders(row)
-  else openDelete(row)
+  else if (action === 'edit') {
+    if (!has(Permission.EnvUpdate)) {
+      ElMessage.warning('当前账号没有 env:update 权限')
+      return
+    }
+    openEdit(row)
+  } else if (action === 'goFolders') {
+    if (!has(Permission.FolderRead)) {
+      ElMessage.warning('当前账号没有 folder:read 权限')
+      return
+    }
+    goToFolders(row)
+  } else {
+    if (!has(Permission.EnvDelete)) {
+      ElMessage.warning('当前账号没有 env:delete 权限')
+      return
+    }
+    openDelete(row)
+  }
 }
 
 onMounted(async () => {
@@ -401,7 +417,8 @@ watch(
         <el-button
           type="primary"
           :icon="Plus"
-          :disabled="!selectedProjectId"
+          :disabled="!selectedProjectId || !has(Permission.EnvCreate)"
+          :title="!has(Permission.EnvCreate) ? '当前账号没有 env:create 权限' : ''"
           @click="openCreate"
         >
           新建环境
@@ -453,6 +470,7 @@ watch(
               link
               type="primary"
               :icon="Edit"
+              :disabled="!has(Permission.EnvUpdate)"
               @click="onRowAction('edit', row as Environment)"
             >
               编辑
@@ -461,6 +479,7 @@ watch(
               link
               type="primary"
               :icon="FolderOpened"
+              :disabled="!has(Permission.FolderRead)"
               @click="onRowAction('goFolders', row as Environment)"
             >
               目录
@@ -469,6 +488,7 @@ watch(
               link
               type="danger"
               :icon="Delete"
+              :disabled="!has(Permission.EnvDelete)"
               @click="onRowAction('delete', row as Environment)"
             >
               删除
