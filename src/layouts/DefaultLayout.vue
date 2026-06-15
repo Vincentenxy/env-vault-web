@@ -10,7 +10,9 @@ import {
   Moon,
   Sunny,
   SwitchButton,
+  Lock,
   User as UserIcon,
+  UserFilled,
 } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
@@ -35,9 +37,11 @@ const navItems: NavItem[] = [
   { index: '/app/projects', label: '项目管理', icon: Files, group: 'WORKSPACE' },
   { index: '/app/envs', label: '环境管理', icon: Connection, group: 'RESOURCES' },
   { index: '/app/secrets', label: '密钥管理', icon: Key, group: 'RESOURCES' },
+  { index: '/app/rbac', label: '权限管理', icon: Lock, group: 'ADMIN' },
+  { index: '/app/users', label: '用户管理', icon: UserFilled, group: 'ADMIN' },
 ]
 
-const navGroups: string[] = ['WORKSPACE', 'RESOURCES']
+const navGroups: string[] = ['WORKSPACE', 'RESOURCES', 'ADMIN']
 
 const activeMenu = computed<string>(() => {
   // 用 matched 最后一段的 path 拿精确路径(避免 split/slice 算错层数)。

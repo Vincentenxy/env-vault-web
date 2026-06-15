@@ -55,16 +55,20 @@ export function getMyPermissions(
  * Roles
  * ============================================================ */
 
-export interface ListRolesRequest extends PageRequest {
-  scope: Scope
-}
-
-/** POST /rbac/role/list —— 列出某 scope 下的角色 */
+/**
+ * GET /rbac/role/list —— 列出系统所有角色。
+ *
+ * 该接口是**无参的 GET**(后端一次性返回全部角色,不分页)。
+ * 按 `design/DESIGN.md` §"接口方法选择" 规则:无请求数据的查询使用 GET。
+ *
+ * 响应:响应拦截器剥 envelope 后,`data.data` 直接是 `Role[]` 数组,
+ * 不会再包 `PageResp`(后端对无分页查询统一返回数组,不分页页码)。
+ * 保留 config 形参以兼容 axios 调用约定(`silent` / 自定义 header 等)。
+ */
 export function listRoles(
-  req: ListRolesRequest,
   config?: AxiosRequestConfig,
-): Promise<PageResp<Role>> {
-  return http.post('/rbac/role/list', { ...scopePayload(req.scope), ...req }, config)
+): Promise<Role[]> {
+  return http.get('/rbac/role/list', config) as unknown as Promise<Role[]>
 }
 
 /** POST /rbac/role/info —— 按 id 或 code 查单个角色 */

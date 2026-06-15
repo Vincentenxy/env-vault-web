@@ -94,31 +94,8 @@ const folderCascaderOptions = computed<CascaderOption[]>(() =>
 
 /** cascader 配置(顶部选择器 + 创建弹窗共用) */
 const cascaderProps = {
-  lazy: true,
   checkStrictly: true,
   emitPath: false,
-  lazyLoad(
-    node: { level: number; value: CascaderValue },
-    resolve: (nodes: CascaderOption[]) => void,
-  ) {
-    // level === 0 时是根 L1 被展开,从 childrenById 同步取 L2
-    if (node.level >= 1) {
-      resolve([])
-      return
-    }
-    if (node.value === undefined || node.value === null) {
-      resolve([])
-      return
-    }
-    const l2 = childrenById.value.get(String(node.value))
-    resolve(
-      (l2 ?? []).map((c) => ({
-        value: c.id,
-        label: `${c.name} (${c.code})`,
-        leaf: true,
-      })),
-    )
-  },
 }
 
 /** folder 选中时按 folder 拉,否则按 env 拉 */
@@ -684,7 +661,7 @@ watch(
               : '暂无密钥'
         "
       >
-        <el-table-column prop="key" label="Key" min-width="200">
+        <el-table-column label="Key" min-width="200">
           <template #default="{ row }">
             <span class="secret-page__key">
               <el-icon class="secret-page__key-icon"><Key /></el-icon>

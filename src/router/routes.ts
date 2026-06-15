@@ -55,6 +55,18 @@ export const routes: RouteRecordRaw[] = [
         component: () => import('@/views/secret/SecretListView.vue'),
         meta: { title: '密钥管理', requiresAuth: true },
       },
+      {
+        path: 'rbac',
+        name: 'Rbac',
+        component: () => import('@/views/rbac/RbacView.vue'),
+        meta: { title: '权限管理', requiresAuth: true },
+      },
+      {
+        path: 'users',
+        name: 'UserList',
+        component: () => import('@/views/user/UsersView.vue'),
+        meta: { title: '用户管理', requiresAuth: true },
+      },
     ],
   },
   {
