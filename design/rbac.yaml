@@ -2,7 +2,350 @@ openapi: 3.0.3
 info:
   title: EnvVault RBAC API
   version: 0.1.0
-  description: EnvVault RBAC interfaces for permissions, roles, users, and role bindings.
+  description: |
+    EnvVault RBAC interfaces for permissions, roles, users, and role bindings.
+    本文档是「授权判定逻辑」与「覆盖规则」的唯一来源,与代码
+    `internal/auth/rbac.go` / `internal/service/rbac_service.go` 的实现一一对应。
+
+    ---
+
+    ## 0. RBAC 模块定位与统一接入规范
+
+    ### 0.1 当前是否为独立模块
+
+    是。当前权限判定核心已经抽象为独立的 `auth.Authorizer`：
+
+    ```go
+    type Authorizer interface {
+        Allow(
+            ctx context.Context,
+            user UserInfo,
+            action string,
+            resource Resource,
+        ) error
+    }
+    ```
+
+    默认实现为 `auth.RBACAuthorizer`，应用启动时由
+    `auth.NewRBACAuthorizer(rbacStore)` 创建，再注入需要鉴权的 service
+    或 controller。业务代码不应直接查询 `roles`、`role_permissions`、
+    `user_role_bindings` 表来判断单个操作是否有权限。
+
+    `Allow` 的返回值就是权限判定结果：
+
+    - 返回 `nil`：有权限，可以继续执行业务。
+    - 返回 `auth.ErrPermissionDenied`：没有权限，HTTP 边界转换成
+      `403 / code=1403`。
+    - 返回 `domain.ErrNotFound`：目标资源不存在，HTTP 边界转换成
+      `404 / code=1404`。
+    - 返回其他 error：数据库、上下文取消等系统错误，不应伪装成无权限。
+
+    当前接口使用 `error` 而不是单纯 `bool`，是为了区分“无权限”、
+    “资源不存在”和“权限存储异常”。如果调用方只关心允许/拒绝，可以使用
+    `err == nil`；禁止吞掉其他系统错误后统一返回 `false`。
+
+    ### 0.2 模块职责划分
+
+    | 模块 | 代码位置 | 职责 |
+    | --- | --- | --- |
+    | JWT 认证 | `internal/auth`、HTTP middleware | 校验 JWT，构造 `auth.UserInfo`，只回答“用户是谁” |
+    | 权限模块接口 | `internal/auth/rbac.go` | 暴露 `Authorizer.Allow`，定义 `UserInfo`、`Resource`、`Scope` |
+    | RBAC 数据实现 | `internal/store/postgres/rbac.go` | 解析资源父级链，查询用户在各 scope 上的生效权限 |
+    | RBAC 管理业务 | `internal/service/rbac_service.go` | 角色、授权、撤权及授权覆盖规则，不承载普通资源业务 |
+    | HTTP 错误转换 | controller / response | 把权限模块 error 转换为统一 HTTP 和业务错误码 |
+
+    认证与授权必须分开：JWT 校验通过只代表用户身份可信，不代表用户拥有任何
+    organization、project、environment、folder 或 secret 权限。
+
+    ### 0.3 单个资源的标准调用方式
+
+    所有创建、详情、修改、删除、reveal 等可定位到明确目标 scope 的操作，
+    必须调用 `Authorizer.Allow`。推荐在 service 业务入口调用，使权限检查贴近
+    真实操作，避免绕过 HTTP controller 后直接调用 service 时失去保护。
+
+    ```go
+    func (s *SecretService) Reveal(
+        ctx context.Context,
+        user auth.UserInfo,
+        secretId string,
+    ) (domain.Secret, error) {
+        err := s.authorizer.Allow(
+            ctx,
+            user,
+            "secret:reveal",
+            auth.Resource{Type: "secret", Id: secretId},
+        )
+        if err != nil {
+            return domain.Secret{}, err
+        }
+
+        return s.revealSecret(ctx, secretId)
+    }
+    ```
+
+    参数含义：
+
+    | 参数 | 含义 | 示例 |
+    | --- | --- | --- |
+    | `user` | JWT 中解析出的当前用户，授权身份使用内部 UUID `user.UserId` | `60496c09-...` |
+    | `action` | 完整权限码或简写 action | `secret:reveal` 或 `reveal` |
+    | `resource.Type` | 实际被操作资源类型，而不是角色类型 | `secret` |
+    | `resource.Id` | 实际资源 UUID；global scope 为空字符串 | Secret UUID |
+
+    创建下级资源时，应校验其父 scope。例如：
+
+    | 业务操作 | 权限码 | 校验资源 |
+    | --- | --- | --- |
+    | 创建 Organization | `org:create` | `global` |
+    | 创建 Project | `project:create` | 父 Organization |
+    | 创建 Environment | `env:create` | 父 Project |
+    | 创建 Folder | `folder:create` | 父 Environment 或父 Folder |
+    | 创建 Secret | `secret:create` | 父 Folder |
+    | 查看 Secret 明文 | `secret:reveal` | Secret |
+
+    更新、删除、详情等操作应校验资源自身。不要仅因为请求里携带了某个
+    `projectId`，就用 Project scope 代替真实 Secret 或 Folder scope。
+
+    ### 0.4 controller helper 的现状
+
+    当前部分透传型 CRUD controller 仍通过
+    `Controller.allowScope(...) bool` 调用同一个 `auth.Authorizer`。
+    这个 helper 会立即写入 HTTP 403/404 响应，适合现有 controller，
+    但它属于 HTTP 适配层，不是新的权限实现。
+
+    新业务优先在 service 中直接依赖 `auth.Authorizer`，controller 只负责：
+
+    1. 从 Gin context 取得 `auth.UserInfo`。
+    2. 调用 service。
+    3. 把 service 返回的权限错误转换成 HTTP 响应。
+
+    不应在 controller 和 service 对同一个操作重复鉴权；也不应只在
+    controller 鉴权、让可被其他入口调用的 service 裸奔。现有直接
+    `handler → repo` 的 CRUD 后续迁移到 service 时，应一并把
+    `allowScope` 下沉。
+
+    ### 0.5 列表与搜索不能只返回 bool
+
+    列表、树、搜索等集合查询不能简单调用一次 `Allow(...) == nil` 后返回
+    全量数据。用户可能只拥有某个 Project、Environment 或 Folder 的权限，
+    此时结果必须按可见 scope 逐行收窄。
+
+    当前实现使用 PostgreSQL 中的 `userReadScopeCTE` 和
+    `scopeNarrowingWhere`，在同一条 SQL 中根据 caller、permission code
+    和 scope chain 过滤结果。这仍然使用相同的 RBAC 数据模型，但目前属于
+    repository 内部实现，尚未抽象为 `auth.Authorizer` 的公开批量接口。
+
+    当前约定：
+
+    - 单资源操作：必须调用 `auth.Authorizer.Allow`。
+    - 列表/搜索：必须使用 RBAC scope narrowing，返回“用户可见的子集”。
+    - 无任何可见资源时：返回空列表，而不是 403。
+    - reveal 类批量查询：narrowing 必须使用 `secret:reveal`，不能使用
+      `secret:read` 或 `secret:list` 代替。
+    - 禁止先查全量数据，再在 Go 内存中逐条过滤敏感数据。
+
+    为满足“所有业务只依赖权限模块”的最终目标，后续应在 `internal/auth`
+    增加集合授权接口，由权限模块返回可见 scope 约束，再由 PostgreSQL /
+    Redis adapter 转换为查询条件。例如：
+
+    ```go
+    type ScopeConstraint struct {
+        Global   bool
+        ScopeIds map[string][]string
+    }
+
+    type CollectionAuthorizer interface {
+        Constraint(
+            ctx context.Context,
+            user UserInfo,
+            permission string,
+        ) (ScopeConstraint, error)
+    }
+    ```
+
+    业务 repository 只消费 `ScopeConstraint`，不再自行理解角色表和绑定表。
+    该接口是目标架构，当前 `userReadScopeCTE` 尚未迁移，不应误认为已经完成。
+
+    ### 0.6 新功能接入检查表
+
+    新增需要权限的功能时必须完成以下事项：
+
+    1. 在权限目录中定义明确的 permission code。
+    2. 确定校验的是资源自身还是父资源。
+    3. service 注入 `auth.Authorizer`，在读取或修改数据前调用 `Allow`。
+    4. 列表/搜索使用 scope narrowing，不使用一次 bool 判定放行全量。
+    5. `secret:read` 与 `secret:reveal` 分开校验。
+    6. 为允许、拒绝、父级继承和无 binding 场景补测试。
+    7. 同步更新本文件中的接口说明和角色权限矩阵。
+
+    ---
+
+    ## 1. 权限码 (`permission code`) 结构
+
+    权限码一律为 `<resource>:<action>` 形式,系统初始化时由
+    `store.EnsureSystemData` 写入 `permissions` 表。系统当前共 30 个
+    权限码,分布在 7 个 resource 命名空间下,详见
+    `components.schemas.PermissionCodeEnum`。
+
+    | Resource | Action 集合 | 备注 |
+    | --- | --- | --- |
+    | `org` | create, read, update, delete, force_delete | |
+    | `project` | create, read, update, delete | |
+    | `env` | create, read, update, delete | |
+    | `env_template` | template:read | 权限码写作 `env:template:read`,独立命名空间 |
+    | `folder` | create, read, update, delete | |
+    | `secret` | list, search, read, reveal, create, update, delete | `reveal` 是独立码,不与 `read` 复用 |
+    | `audit` | read | |
+    | `rbac` | role:read, role:manage, binding:read, binding:manage | 权限码写作 `rbac:role:read` / `rbac:binding:manage` 等,manage 是更高级动作 |
+
+    ---
+
+    ## 2. 资源父级链 (`resource-scope chain`)
+
+    所有授权都沿资源父子关系向上查,层级为:
+
+    ```
+    folder(level 2) → folder(level 1) → environment → project → organization → global
+    ```
+
+    即:`ResourceScopes(resource)` 返回从最具体到最一般的 scope 列表。
+    当目标资源位于二级 Folder 时，一级父 Folder 会加入目标资源的 scope
+    chain。因此 user 在一级 Folder 上的 binding 会覆盖其二级 Folder 及其中
+    的 Secret；二级 Folder binding 不反向覆盖一级 Folder或同级 Folder。
+
+    `auth.ResourceScopes` 是 store 层接口,见 `internal/store/store.go`。
+    RBAC service 的父级覆盖判定直接复用此接口。
+
+    ---
+
+    ## 3. 单点操作鉴权(`authorizer.Allow` 走法)
+
+    所有需要权限的单资源写操作 / 单点 read 入口，都应走统一的
+    `auth.Authorizer.Allow` 接口
+    (`internal/auth/rbac.go:45`):
+
+    ```
+    Allow(user, action, resource) →
+      permission = "<resource>:<action>"         # 1. 把 action 拼成权限码
+      scopes    = ResourceScopes(resource)        # 2. 拿父级链
+      perms     = UserPermissions(userId, scopes) # 3. 沿父级链 OR 一次查
+      perms[permission] 是否存在                   # 4. 精确字符串命中
+    ```
+
+    **关键点**:
+    - 这一层走的是**精确字符串命中**(`p.code = $permission`),
+      **不应用** 第 4 节的 action 覆盖规则。
+    - 父级链上的**任一层**命中即放行。例如 caller 在
+      `(organization, X)` 持有 `org:update` 不会让 `(project, X.p1)`
+      上的 `project:read` 通过(因为 `org:update` ≠ `project:read`),
+      但 caller 在 `(project, X.p1)` 持有 `project:read` 当然能放行
+      `(project, X.p1)` 上的 `project:read`。
+    - 跨 resource 覆盖不参与此层(详见第 4 节差异)。
+
+    ---
+
+    ## 4. 父级覆盖 (`parent coverage`) — 授权 / 撤销 / 角色编辑专用
+
+    仅 `GrantRole` / `RevokeRole` / `CreateRole` / `UpdateRole` /
+    `ListRoleBindings` / `ListUserGrants` 入口除了第 3 节的
+    `authorizer.Allow` 检查外,还会额外校验 caller 的 effective
+    permissions 是否能覆盖被授权 / 被创建角色所声明的权限码集合。
+
+    覆盖判定按 **action 维度** 比较,沿资源父级链从最具体到最一般遍历,
+    任意一层满足即放行。
+
+    ### 4.1 action 覆盖规则(`actionCovers`)
+
+    | 父级 action | 覆盖子级 action | 备注 |
+    | --- | --- | --- |
+    | `X` | `X` | 同 action 覆盖自身 |
+    | `update` | `read` | GitLab 风格 write ≥ read |
+    | `resource:manage` | `resource:read` | maintainer includes reporter;**resource 前缀必须相同**(例 `role:manage` 覆盖 `role:read`,不覆盖 `binding:read`) |
+
+    其他 action(create / delete / force_delete / reveal / search /
+    list / template:read 等)只覆盖自身,不交叉。
+
+    **跨 resource 行为**:判定只看 action,resource 前缀不参与匹配。
+    即父级 `org:update` 同样能覆盖子级 `secret:read`(对应 GitLab
+    「org owner 可以管理组织内所有资源」语义)。
+
+    ### 4.2 受影响入口
+
+    | 入口 | 覆盖校验对象 | 资源父级链起点 |
+    | --- | --- | --- |
+    | `GrantRole` | `role.Permissions`(被授权角色) | `(scopeType, scopeId)` |
+    | `RevokeRole` | `role.Permissions`(被撤销角色) | `(scopeType, scopeId)` |
+    | `CreateRole` | 新角色的 `permissions` 字段 | `(scopeType, scopeId)` |
+    | `UpdateRole` | 更新后的 `permissions` 字段 | `(scopeType, scopeId)` |
+    | `ListRoleBindings` | `["rbac:binding:read"]` | `(scopeType, scopeId)` |
+    | `ListUserGrants` | `["rbac:binding:read"]` | `(global, "")` |
+
+    ---
+
+    ## 5. 自授 / 自撤拒绝(`rejectSelfGrant`)
+
+    `GrantRole` 与 `RevokeRole` 入口会拒绝 caller 把角色授给自己或撤销
+    自己(`userId == callerUserId`),即便 caller 拥有 `rbac:binding:manage`
+    与父级覆盖。这是固定边界,无法绕过。
+
+    ---
+
+    ## 6. global scope 仅 platform_admin
+
+    `GrantRole` / `RevokeRole` / `CreateRole` / `UpdateRole` 在
+    `scopeType = "global"` 时,要求 caller 持有 `(global, "")` 下的
+    `platform_admin` 角色绑定。其他 scope 不受此限。
+
+    ---
+
+    ## 7. 最后一个 org_owner 保护
+
+    `RevokeRole` 撤销 `org_owner` 时,如果撤销后该 `(organization, X)`
+    内 active `org_owner` 数 = 0,返回 409 Conflict。不可撤销最后一个
+    owner 防止组织失去所有者。
+
+    ---
+
+    ## 8. cascade 收窄 — `ListRoleBindings`
+
+    `ListRoleBindings` 返回的不是 (scopeType, scopeId) 自身的 binding,
+    而是该 scope **及所有下级**的 binding 之并集。store 层用递归 CTE
+    沿 `organization → project → environment → folder → secret` 链
+    一次拉全。
+
+    - 查 `(organization, X)` → 返回 X 下所有 project / env / folder
+      上的 binding
+    - 查 `(project, Y)` → 返回 Y 下所有 env / folder 上的 binding
+    - 查 `(environment, Z)` → 返回 Z 下所有 folder 上的 binding
+    - 查 `(folder, W)` → 返回 W 自身的 binding(无下级)
+
+    caller 只需在请求的 `(scopeType, scopeId)` 或其任一**父级** scope
+    上持有 `rbac:binding:read`,不必在每个下级 scope 都持有。
+
+    `ListUserGrants` 不走 cascade(它返回的是「某个 user 的所有 binding」,
+    无 scope 概念),走 global 的 `rbac:binding:read` 父级覆盖校验。
+
+    ---
+
+    ## 9. self vs other — `GetUserPermissions` / `EffectivePermissions`
+
+    `EffectivePermissions` / `GetUserPermissions` 接口:
+    - 当 `userId == callerUserId`(查自己)→ **不要求** `rbac:binding:read`,
+      直接返回 effective permissions
+    - 当 `userId != callerUserId`(查他人)→ caller 必须持有
+      `(scopeType, scopeId)` 上的 `rbac:binding:read`(`rbac:binding:manage`
+      通过 `*:manage → *:read` 同样放行)
+
+    ---
+
+    ## 10. 错误码
+
+    | HTTP | code | 触发条件 |
+    | --- | --- | --- |
+    | 401 | 1401 | 缺 / 失效 JWT;或 `users.tokens_valid_after` 已 bump(token revoked) |
+    | 403 | 1403 | authorizer.Allow 拒绝;父级覆盖不满足;自授/自撤被拒;非 platform_admin 操作 global scope |
+    | 404 | 1404 | 角色 / 用户 / binding 不存在 |
+    | 409 | 1409 | 撤销最后一个 org_owner;唯一约束冲突 |
 servers:
   - url: /
 security:
@@ -52,6 +395,7 @@ paths:
       tags:
         - RBAC Permissions
       summary: Get current user permissions in a scope
+      description: Any authenticated user can query their own effective permissions in the requested scope.
       operationId: getMyPermissions
       requestBody:
         required: true
@@ -73,8 +417,6 @@ paths:
                         $ref: "#/components/schemas/PermissionCodeList"
         "401":
           $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
 
   /api/v1/rbac/role/list:
     post:
@@ -157,9 +499,11 @@ paths:
       description: |
         Caller authorization — all four must hold:
         1. `rbac:role:manage` in the target `scopeType` / `scopeId` (via ancestor chain).
-        2. Caller's effective permission set (in the target scope) must be a superset
-           of the new role's `permissions` array. (You cannot grant a permission
-           you do not yourself possess.)
+        2. **父级覆盖(parent coverage)**:在 (scopeType, scopeId) 沿资源父级链
+           任意一层(`folder → environment → project → organization → global`),
+           caller 的 effective permissions 必须按 action 维度覆盖新角色的
+           `permissions` 数组(见 `info.description` 的「父级覆盖」规则)。
+           含义:不能创建包含自己不具备的权限的角色。
         3. If `scopeType = "global"`, caller must be `platform_admin`.
         4. If `code = "platform_admin"`, caller must be `platform_admin`.
 
@@ -199,7 +543,9 @@ paths:
       description: |
         Same authorization rules as `POST /rbac/role/create`:
         1. `rbac:role:manage` in target scope.
-        2. Caller's effective permission set must be a superset of the updated `permissions`.
+        2. **父级覆盖(parent coverage)**:在 (scopeType, scopeId) 沿资源父级链
+           任意一层,caller 的 effective permissions 必须按 action 维度覆盖
+           更新后的 `permissions` 数组(见 `info.description` 的「父级覆盖」规则)。
         3. `global` scope → caller must be `platform_admin`.
         4. Updating `code = "platform_admin"` → caller must be `platform_admin`.
 
@@ -269,10 +615,16 @@ paths:
     post:
       tags:
         - RBAC Bindings
-      summary: List role bindings in a scope
+      summary: List role bindings in a scope (cascading)
       description: |
         Caller must have `rbac:binding:read` in the requested scope (via the
-        resource-scope ancestor chain).
+        resource-scope ancestor chain). `rbac:binding:manage` is also accepted
+        via the `*:manage → *:read` parent-coverage rule.
+
+        结果集按 **cascade 收窄**:除了 (scopeType, scopeId) 自身,还会包含
+        所有下级 scope(`organization → project → environment → folder`)
+        上的 active binding。例如查 `(organization, X)` 会一并返回挂在
+        X 下各 project / env / folder 的 binding。
       operationId: listRoleBindings
       requestBody:
         required: true
@@ -310,16 +662,20 @@ paths:
         - RBAC Bindings
       summary: Grant a role to a user in a scope
       description: |
-        Caller authorization — all four must hold:
+        Caller authorization — all five must hold:
+        0. **自授拒绝**:`userId == callerUserId` 一律拒绝(403),
+           即便 caller 是 `platform_admin`。
         1. `rbac:binding:manage` in the target `scopeType` / `scopeId` (via ancestor chain).
-        2. Caller's effective permission set (in the target scope) must be a superset
-           of the role's permission set. (You cannot grant a permission you do
-           not yourself possess.)
+        2. **父级覆盖(parent coverage)**:在 (scopeType, scopeId) 沿资源父级链
+           任意一层,caller 的 effective permissions 必须按 action 维度覆盖
+           被授权角色所声明的权限码(见 `info.description` 的「父级覆盖」规则)。
+           含义:不能把一个自己不具备的能力授给 target user(GitLab 风格
+           父级 write 涵盖下级 write+read)。
         3. If `scopeType = "global"`, caller must be `platform_admin`.
         4. If `roleCode = "platform_admin"`, caller must be `platform_admin`.
 
         Audit: each grant writes a row to `role_binding_audit_records`
-        (`action = grant_role`, `actor` = caller's external user id).
+        (`action = grant_role`, `actor` = caller's database user UUID).
       operationId: grantRole
       requestBody:
         required: true
@@ -352,15 +708,22 @@ paths:
         - RBAC Bindings
       summary: Revoke a role from a user in a scope
       description: |
-        Caller authorization:
+        Caller authorization — all four must hold:
+        0. **自撤拒绝**:`userId == callerUserId` 一律拒绝(403),
+           即便 caller 是 `platform_admin`。
         1. `rbac:binding:manage` in the target scope.
-        2. If `scopeType = "global"`, caller must be `platform_admin`.
+        2. **父级覆盖(parent coverage)**:在 (scopeType, scopeId) 沿资源父级链
+           任意一层,caller 的 effective permissions 必须按 action 维度覆盖
+           被撤销角色所声明的权限码(见 `info.description` 的「父级覆盖」规则)。
+           与 GrantRole 对称:撤销也是「让 target user 失去权限」,caller 必须
+           自己持有对应权限。
+        3. If `scopeType = "global"`, caller must be `platform_admin`.
 
         Last-owner protection: revoking an `org_owner` binding that would
         leave the target organization with zero active `org_owner` bindings
         is rejected with 409 Conflict. (A non-platform caller can still
         revoke other roles, including `platform_admin` in non-global scopes,
-        provided they otherwise pass the superset check at grant time.)
+        provided they otherwise pass the parent-coverage check.)
 
         Audit: each revoke writes a row to `role_binding_audit_records`
         (`action = revoke_role`).
@@ -458,6 +821,12 @@ paths:
       tags:
         - RBAC Users
       summary: List direct grants for a user
+      description: |
+        Caller must have `rbac:binding:read` in the **global** scope (via the
+        parent-coverage rule:父级链上任意一层有 `rbac:binding:read` 即可,
+        `rbac:binding:manage` 通过 `*:manage → *:read` 同样放行)。
+        本接口不接收 scope 入参,返回 target user 的全集 grants,不做
+        caller-scope 过滤。
       operationId: listUserGrants
       requestBody:
         required: true
@@ -496,6 +865,11 @@ paths:
       tags:
         - RBAC Users
       summary: Get user permissions in a scope
+      description: |
+        Caller 查自己(`userId == callerUserId`)时无需 `rbac:binding:read` 权限,
+        直接返回 effective permissions。查他人时 caller 必须持有
+        `(scopeType, scopeId)` 上的 `rbac:binding:read`(`rbac:binding:manage`
+        通过 `*:manage → *:read` 同样放行),否则 403。
       operationId: getUserPermissions
       requestBody:
         required: true
@@ -651,17 +1025,21 @@ components:
     UserLookupRequest:
       type: object
       description: |
-        At least one of `externalUserId` or `userId` must be set. When both are
-        present, `userId` is preferred (SDK-friendly alias). `scopeType` /
-        `resourceType` follow the same alias priority.
+        At least one of `userId` or the compatibility field `externalUserId`
+        must be set. Both fields are interpreted as `users.id` (database UUID);
+        `externalUserId` is kept only for old clients and is not used as an
+        external identity in RBAC. When both are present, `userId` is preferred.
       properties:
         externalUserId:
           type: string
-          example: user-123
+          format: uuid
+          example: 760053fc-6ef2-4338-9a04-8581715e3613
+          description: Compatibility field. Interpreted as users.id.
         userId:
           type: string
-          example: user-123
-          description: Alias of externalUserId. Preferred when both are set.
+          format: uuid
+          example: 760053fc-6ef2-4338-9a04-8581715e3613
+          description: Database user UUID (`users.id`). Preferred when both are set.
 
     PageRequest:
       type: object
@@ -680,17 +1058,27 @@ components:
 
     PageResp:
       type: object
+      description: |
+        Paginated response wrapper. Shape depends on whether the result has data:
+
+        - **Empty data** (`list.length === 0`): `{ "total": 0, "list": [] }` —
+          `pageNum` / `pageSize` are **omitted**.
+        - **Non-empty data**: `{ "pageNum": 1, "pageSize": 20, "total": N, "list": [...] }`.
+
+        See `design/DESIGN.md`「分页响应 - 空数据形态」.
       required:
-        - pageNum
-        - pageSize
         - total
         - list
       properties:
         pageNum:
           type: integer
+          description: |
+            Page number. **Omitted on empty-data responses.**
           example: 1
         pageSize:
           type: integer
+          description: |
+            Page size. **Omitted on empty-data responses.**
           example: 20
         total:
           type: integer
@@ -720,13 +1108,81 @@ components:
         isSystem:
           type: boolean
 
+    # 完整 30 个系统权限码枚举,与 store.EnsureSystemData 写入的
+    # permissions 表一致(见 internal/store/postgres/rbac.go:defaultPermissions)。
+    # 任何 grant / create role / 自定义 role 引用权限码时,只能从此枚举中选取。
+    PermissionCodeEnum:
+      type: string
+      description: |
+        System permission code, 格式 `<resource>:<action>`。完整列表与
+        `store.EnsureSystemData` 同步,共 30 个。
+      enum:
+        # ---- org (5) ----
+        - org:create
+        - org:read
+        - org:update
+        - org:delete
+        - org:force_delete
+        # ---- project (4) ----
+        - project:create
+        - project:read
+        - project:update
+        - project:delete
+        # ---- env (4) ----
+        - env:create
+        - env:read
+        - env:update
+        - env:delete
+        # ---- env_template (1) ----
+        - env:template:read
+        # ---- folder (4) ----
+        - folder:create
+        - folder:read
+        - folder:update
+        - folder:delete
+        # ---- secret (7) ----
+        - secret:list
+        - secret:search
+        - secret:read
+        - secret:reveal
+        - secret:create
+        - secret:update
+        - secret:delete
+        # ---- audit (1) ----
+        - audit:read
+        # ---- rbac (4) ----
+        - rbac:role:read
+        - rbac:role:manage
+        - rbac:binding:read
+        - rbac:binding:manage
+      x-resource-actions:
+        org: [create, read, update, delete, force_delete]
+        project: [create, read, update, delete]
+        env: [create, read, update, delete]
+        env_template: ["template:read"]
+        folder: [create, read, update, delete]
+        secret: [list, search, read, reveal, create, update, delete]
+        audit: [read]
+        rbac: ["role:read", "role:manage", "binding:read", "binding:manage"]
+      x-coverage-rules:
+        - description: 同 action 覆盖
+          parent: "<X>"
+          child: "<X>"
+        - description: update 覆盖 read (GitLab write ≥ read)
+          parent: "update"
+          child: "read"
+        - description: "*:manage 覆盖 *:read,resource 前缀必须相同"
+          parent: "<resource>:manage"
+          child: "<resource>:read"
+          note: "role:manage 覆盖 role:read,不覆盖 binding:read"
+
     PermissionCodeList:
       type: object
       properties:
         permissions:
           type: array
           items:
-            type: string
+            $ref: "#/components/schemas/PermissionCodeEnum"
           example:
             - project:read
             - secret:list
@@ -761,7 +1217,7 @@ components:
         permissions:
           type: array
           items:
-            type: string
+            $ref: "#/components/schemas/PermissionCodeEnum"
           example:
             - project:read
             - project:update
@@ -809,7 +1265,7 @@ components:
         permissions:
           type: array
           items:
-            type: string
+            $ref: "#/components/schemas/PermissionCodeEnum"
           example:
             - secret:list
             - secret:read
@@ -823,7 +1279,8 @@ components:
           format: uuid
         externalUserId:
           type: string
-          example: user-123
+          example: legacy-user-123
+          description: Compatibility display field. RBAC uses `id` / `userId`.
         name:
           type: string
           example: Alice
@@ -881,7 +1338,9 @@ components:
       properties:
         userId:
           type: string
-          example: user-123
+          format: uuid
+          example: 760053fc-6ef2-4338-9a04-8581715e3613
+          description: Database user UUID (`users.id`).
         roleType:
           type: string
           example: project_developer
@@ -905,20 +1364,24 @@ components:
     RoleGrantRequest:
       type: object
       description: |
-        For SDK friendliness, every field has a camelCase alias. When both
-        the legacy and alias fields are set, the alias wins. Existing
-        clients using `externalUserId` / `roleCode` / `scopeType` / `scopeId`
-        continue to work unchanged.
+        For SDK friendliness, every field has a camelCase alias. RBAC user
+        identity uses `users.id` (database UUID). The legacy `externalUserId`
+        field is kept only for old clients and is interpreted as the same
+        database UUID, not as an external identity. When both the compatibility
+        and alias fields are set, the alias wins.
       required:
         - scopeType
       properties:
         externalUserId:
           type: string
-          example: user-123
+          format: uuid
+          example: 760053fc-6ef2-4338-9a04-8581715e3613
+          description: Compatibility field. Interpreted as users.id.
         userId:
           type: string
-          example: user-123
-          description: Alias of externalUserId. Preferred when both are set.
+          format: uuid
+          example: 760053fc-6ef2-4338-9a04-8581715e3613
+          description: Database user UUID (`users.id`). Preferred when both are set.
         name:
           type: string
           example: Alice
@@ -958,11 +1421,14 @@ components:
       properties:
         externalUserId:
           type: string
-          example: user-123
+          format: uuid
+          example: 760053fc-6ef2-4338-9a04-8581715e3613
+          description: Compatibility field. Interpreted as users.id.
         userId:
           type: string
-          example: user-123
-          description: Alias of externalUserId. Preferred when both are set.
+          format: uuid
+          example: 760053fc-6ef2-4338-9a04-8581715e3613
+          description: Database user UUID (`users.id`). Preferred when both are set.
         roleCode:
           type: string
           example: project_developer
@@ -991,7 +1457,7 @@ components:
         permissions:
           type: array
           items:
-            type: string
+            $ref: "#/components/schemas/PermissionCodeEnum"
           example:
             - project:read
             - project:update

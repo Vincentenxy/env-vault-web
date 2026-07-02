@@ -71,8 +71,8 @@ export interface RbacUser {
 
 /** rbac.yaml `RoleGrant` —— 一次"在某 scope 给某用户授某角色"的实例 */
 export interface RoleGrant {
-  userId: string
-  roleType: string
+  userId: Uuid
+  roleCode: string
   resourceType: ScopeType
   resourceId?: Uuid
   expiresAt?: string
@@ -82,8 +82,8 @@ export interface RoleGrant {
 
 /** rbac.yaml `RoleGrantRequest` —— 授予角色时的入参 */
 export interface RoleGrantRequest {
-  userId: string
-  roleType: string
+  userId: Uuid
+  roleCode: string
   scopeType: ScopeType
   scopeId?: Uuid
   expiresAt?: string
@@ -91,8 +91,8 @@ export interface RoleGrantRequest {
 
 /** rbac.yaml `RoleRevokeRequest` —— 撤销时的入参 */
 export interface RoleRevokeRequest {
-  userId: string
-  roleType: string
+  userId: Uuid
+  roleCode: string
   scopeType: ScopeType
   scopeId?: Uuid
 }
