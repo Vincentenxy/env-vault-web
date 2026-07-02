@@ -55,6 +55,8 @@ export interface SecretAcrossEnvsEntry {
   value: string
   version: number
   updatedAt: string
+  /** env 维度的排序字段,后续后端返回,当前暂缺。存在时按此升序;不存在时 fallback 到默认顺序。 */
+  sortOrder?: number
 }
 
 /**
@@ -65,7 +67,11 @@ export interface SecretAcrossEnvsEntry {
 export interface SecretAcrossEnvs {
   key: string
   projectCode: string
-  [envCode: string]: SecretAcrossEnvsEntry | string | undefined
+  /** secret 维度说明,后续后端返回;当前暂缺 */
+  comment?: string
+  /** secret 维度排序字段,后续后端返回,当前暂缺。存在时按此升序;不存在时 fallback 到默认顺序。 */
+  sortOrder?: number
+  [envCode: string]: SecretAcrossEnvsEntry | string | number | undefined
 }
 
 export function listSecretsAcrossEnvs(

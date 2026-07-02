@@ -584,76 +584,69 @@ async function onEditFolderSubmit(): Promise<void> {
   }
 }
 
-// ==================== 批量创建 secret ====================
+// ==================== Env 排序 ====================
 //
-// 适配新数据模型:
-//  - 旧:从顶部 env 多选 + per-env 树里收集 folder
-//  - 新:直接读 `selectedFolderNode` 的 envList → 作为 value 列的列头
-//         picked folder = 当前选中的 node
-//         env 列与 L1 实际挂载的 env 一一对应,无需反查
+// 二级表格的 env 列排序规则:
+//   - 优先使用后端返回的 SecretAcrossEnvsEntry.sortOrder 升序
+//   - 没有 sortOrder 时,fallback 到前端默认顺序(dev/test/sim/prod)
+const ENV_DEFAULT_ORDER: Record<string, number> = {
+  dev: 0,
+  test: 1,
+  sim: 2,
+  prod: 3,
+}
 
-const batchCreateDialogVisible = ref(false)
-const batchCreateSubmitting = ref(false)
-const batchCreateFormRef = ref<FormInstance>()
-/** 打开对话框时由 selectedFolderNode.envList 快照,作为 value 列的列头(envCode) */
-const batchCreateEnvCodes = ref<string[]>([])
+/** 从 SecretAcrossEnvs row 中提取所有 env entry,按 sortOrder 或默认顺序排序 */
+function getSortedEnvEntries(
+  row: SecretAcrossEnvs,
+): Array<{ envCode: string; entry: SecretAcrossEnvsEntry }> {
+  const out: Array<{ envCode: string; entry: SecretAcrossEnvsEntry }> = []
+  for (const k of Object.keys(row)) {
+    if (k === 'key' || k === 'projectCode' || k === 'comment' || k === 'sortOrder') continue
+    const v = row[k]
+    if (v && typeof v === 'object' && 'value' in v) {
+      out.push({ envCode: k, entry: v as SecretAcrossEnvsEntry })
+    }
+  }
+  out.sort((a, b) => {
+    const ao = a.entry.sortOrder ?? ENV_DEFAULT_ORDER[a.envCode] ?? 999
+    const bo = b.entry.sortOrder ?? ENV_DEFAULT_ORDER[b.envCode] ?? 999
+    return ao - bo
+  })
+  return out
+}
 
-interface BatchSecretRow {
-  uid: string
+// ==================== 行内新建 secret ====================
+//
+// 去掉旧版的批量创建弹窗,改为表格底部常驻新建行。
+// folder 锁定为当前 selectedFolderNode,secret 创建到所有已挂载 env。
+const newSecretCreating = ref(false)
+const newSecretSubmitting = ref(false)
+
+const newSecretForm = reactive<{
   key: string
   comment: string
-  /**
-   * envCode -> 该 env 下的 value。**空字符串 = 不为该 env 创建**(实现成
-   * "默认每个 env 都上传,留空就跳过"的语义)。
-   */
   values: Record<string, string>
-}
-
-const batchCreateForm = reactive<{
-  folderId: string
-  rows: BatchSecretRow[]
 }>({
-  folderId: '',
-  rows: [],
+  key: '',
+  comment: '',
+  values: {},
 })
 
-const batchCreateRules: FormRules<{ folderId: string }> = {
-  folderId: [{ required: true, message: '请选择目录', trigger: 'change' }],
-}
-
-/** batch create 的可选 folder:所有 L1 + L2(批量 secret 可挂在任意层级 folder 下)
- *  旧版只取 folderTree 顶层导致 L2 folder 详情面板点新建会"所选目录无效"。 */
-const batchCreateFolderOptions = computed<FolderNode[]>(() => {
-  const out: FolderNode[] = []
-  for (const l1 of folderTree.value) {
-    out.push(l1)
-    if (l1.subFolders?.length) out.push(...l1.subFolders)
-  }
-  return out
+/** 当前 folder 挂载的 env codes(按 sortOrder 或默认顺序排好),新建/列表共用 */
+const currentEnvCodes = computed<string[]>(() => {
+  if (!selectedFolderNode.value) return []
+  return selectedFolderNode.value.envList
+    .map((b) => envOptions.value.find((e) => e.id === b.id)?.code)
+    .filter((c): c is string => !!c)
+    .sort((a, b) => {
+      const ao = ENV_DEFAULT_ORDER[a] ?? 999
+      const bo = ENV_DEFAULT_ORDER[b] ?? 999
+      return ao - bo
+    })
 })
 
-/** 弹窗里展示的所属 folder(只读,当前页面已选中的那个,不能改) */
-const batchCreateSelectedFolder = computed<{ name: string; code: string } | null>(() => {
-  const id = batchCreateForm.folderId
-  if (!id) return null
-  return batchCreateFolderOptions.value.find((f) => f.id === id) ?? null
-})
-
-function makeEmptyBatchRow(): BatchSecretRow {
-  const values: Record<string, string> = {}
-  // 给每个 env code 预填空串(不勾 = 空字符串)
-  for (const envCode of batchCreateEnvCodes.value) {
-    values[envCode] = ''
-  }
-  return {
-    uid: `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
-    key: '',
-    comment: '',
-    values,
-  }
-}
-
-function openBatchCreateSecret(): void {
+function openNewSecretRow(): void {
   if (!has(Permission.SecretCreate)) {
     ElMessage.warning('当前账号没有 secret:create 权限')
     return
@@ -662,116 +655,79 @@ function openBatchCreateSecret(): void {
     ElMessage.warning('请先选择一个目录')
     return
   }
-  // env 列头 = 当前选中 folder 的 envList(每条带 code,就是 column header)
-  batchCreateEnvCodes.value = selectedFolderNode.value.envList
-    .map((b) => envOptions.value.find((e) => e.id === b.id)?.code)
-    .filter((c): c is string => !!c)
-  if (batchCreateEnvCodes.value.length === 0) {
-    ElMessage.warning('当前目录尚未挂载到任何环境,无法批量创建 secret')
+  if (currentEnvCodes.value.length === 0) {
+    ElMessage.warning('当前目录尚未挂载到任何环境,无法创建 secret')
     return
   }
-  batchCreateForm.folderId = selectedFolderNode.value.id
-  batchCreateForm.rows = [makeEmptyBatchRow()]
-  batchCreateFormRef.value?.clearValidate()
-  batchCreateDialogVisible.value = true
+  const vals: Record<string, string> = {}
+  for (const envCode of currentEnvCodes.value) {
+    vals[envCode] = ''
+  }
+  newSecretForm.key = ''
+  newSecretForm.comment = ''
+  newSecretForm.values = vals
+  newSecretCreating.value = true
 }
 
-function addBatchRow(): void {
-  batchCreateForm.rows.push(makeEmptyBatchRow())
+function cancelNewSecret(): void {
+  newSecretCreating.value = false
+  newSecretForm.key = ''
+  newSecretForm.comment = ''
+  newSecretForm.values = {}
 }
 
-function removeBatchRow(uid: string): void {
-  // 至少保留 1 行
-  if (batchCreateForm.rows.length <= 1) return
-  const idx = batchCreateForm.rows.findIndex((r) => r.uid === uid)
-  if (idx >= 0) batchCreateForm.rows.splice(idx, 1)
-}
+async function submitNewSecret(): Promise<void> {
+  const k = newSecretForm.key.trim()
+  if (!k) {
+    ElMessage.error('key 不能为空')
+    return
+  }
+  if (!/^[A-Z][A-Z0-9_]*$/.test(k)) {
+    ElMessage.error(`key "${k}" 格式不正确(大写字母/数字/下划线,以字母开头)`)
+    return
+  }
+  if ((newSecretForm.comment ?? '').length > 256) {
+    ElMessage.error('说明长度不能超过 256')
+    return
+  }
+  for (const [envCode, val] of Object.entries(newSecretForm.values)) {
+    if (val.length > 8192) {
+      ElMessage.error(`${envCode} value 长度不能超过 8192`)
+      return
+    }
+  }
 
-async function onBatchCreateSubmit(): Promise<void> {
-  if (!batchCreateFormRef.value) return
-  const valid = await batchCreateFormRef.value.validate().catch(() => false)
-  if (!valid) return
-
-  // 行级校验:key 必填 + 格式 + 互不重复;每行至少有一个 env 填了非空 value;
-  // 每个非空 value 长度兜底。
-  const seen = new Set<string>()
-  for (let i = 0; i < batchCreateForm.rows.length; i++) {
-    const row = batchCreateForm.rows[i]
-    if (!row) continue
-    const k = row.key.trim()
-    if (!k) {
-      ElMessage.error(`第 ${i + 1} 行:key 不能为空`)
-      return
-    }
-    if (!/^[A-Z][A-Z0-9_]*$/.test(k)) {
-      ElMessage.error(`第 ${i + 1} 行:key "${k}" 格式不正确(大写字母/数字/下划线,以字母开头)`)
-      return
-    }
-    if (seen.has(k)) {
-      ElMessage.error(`第 ${i + 1} 行:key "${k}" 重复`)
-      return
-    }
-    seen.add(k)
-    // value 长度兜底
-    for (const [envCode, val] of Object.entries(row.values)) {
-      if (val.length > 8192) {
-        ElMessage.error(`第 ${i + 1} 行 ${envCode} value 长度不能超过 8192`)
-        return
+  if (!selectedFolderNode.value) return
+  const picked = selectedFolderNode.value
+  newSecretSubmitting.value = true
+  try {
+    const envBindingByCode = new Map(picked.envList.map((b) => [b.code, b]))
+    const envList: BatchCreateEnvEntry[] = []
+    for (const envCode of currentEnvCodes.value) {
+      const value = newSecretForm.values[envCode] ?? ''
+      const binding = envBindingByCode.get(envCode)
+      if (binding) {
+        envList.push({ envCode, folderId: binding.folderId, value })
       }
     }
-    if ((row.comment ?? '').length > 256) {
-      ElMessage.error(`第 ${i + 1} 行说明长度不能超过 256`)
-      return
-    }
-  }
-
-  // picked folder:从 batchCreateForm.folderId 反查
-  const picked = batchCreateFolderOptions.value.find(
-    (f) => f.id === batchCreateForm.folderId,
-  )
-  if (!picked) {
-    ElMessage.error('所选目录无效,请重新选择')
-    return
-  }
-
-  batchCreateSubmitting.value = true
-  try {
-    // picked.envList 是 FolderEnvBinding[];同一逻辑 folder 在不同 env 下
-    // folderId 不同,上送时必须按 env code 查到对应的 env 专属 folderId。
-    const envBindingByCode = new Map(picked.envList.map((b) => [b.code, b]))
     const req: BatchCreateSecretsRequest = {
-      secretList: batchCreateForm.rows.map((row) => {
-        // 新格式:envList 是 [{envCode, folderId, value}] 数组,
-        // 不再用索引签名塞平铺字段;每行必带 comment(可空串)
-        const envList: BatchCreateEnvEntry[] = []
-        for (const envCode of batchCreateEnvCodes.value) {
-          const value = row.values[envCode] ?? ''
-          const binding = envBindingByCode.get(envCode)
-          if (binding) {
-            envList.push({
-              envCode,
-              folderId: binding.folderId,
-              value,
-            })
-          }
-        }
-        return {
-          key: row.key.trim(),
-          comment: row.comment?.trim() ?? '',
+      secretList: [
+        {
+          key: k,
+          comment: newSecretForm.comment?.trim() ?? '',
           envList,
-        }
-      }),
+        },
+      ],
     }
     await secretStore.batchCreate(req)
     ElMessage.success('创建成功')
-    batchCreateDialogVisible.value = false
-    // 新增后自动刷新列表(用新 /secrets/list 接口)
+    cancelNewSecret()
     void loadSecretsOfCurrent()
   } catch (e) {
     const msg = e instanceof ApiError ? e.message : '创建失败'
     ElMessage.error(msg)
   } finally {
-    batchCreateSubmitting.value = false
+    newSecretSubmitting.value = false
   }
 }
 
@@ -784,26 +740,31 @@ async function onBatchCreateSubmit(): Promise<void> {
 
 // ==================== 行内编辑 secret ====================
 //
-// 不再弹窗:点行尾的 ✎ 图标后,该行的 4 个 env 单元格就地变成 el-input
-// (type=password + show-password),操作列变成「保存 / 取消」。
-//
-// 上一版用 `reactive<Record<string, string>>({})` + `v-model="editingValues[envCode]"`
-// 仍然遇到「保存提示没变化」的 bug——Vue 3 在 `v-model` 写入带动态字符串 key
-// 的 reactive 对象属性时,响应追踪有坑(set 不被监听到,save 时读到原值)。
-// 这次改用 **`ref<string[]>` 数组 + 索引访问**:
-//
-//   const editingValues = ref<string[]>(['', '', '', ''])   // 顺序 = ACROSS_ENVS
-//   v-model="editingValues[envIdx]"
-//
-// 数组元素的写入是 Vue 3 原生支持的,不会有动态 key 的响应性问题。
-const editingRowKey = ref<string | null>(null)
-const editingValues = ref<string[]>(['', '', '', ''])
-const editingEnvIds = ref<string[]>(['', '', '', ''])
-const editingOriginals = ref<string[]>(['', '', '', ''])
-const editingSubmitting = ref(false)
+// 彻底避开嵌套 el-table expand slot 内的 v-model 响应追踪问题：
+// 1) 编辑值统一放在组件顶级 ref<Record<string,string>> 中,
+//    key = ${rowKey}_${envCode}, 值读取和写入都不依赖 slot 作用域里的响应式。
+// 2) 模板中使用原生 <input type="password"> + :value + @input,
+//    完全避免 el-input 内部 v-model 在深层 slot 中的失效问题。
+// 3) 原始快照单独保存为普通对象（非响应式），只用于 save 时的 diff。
+const _editingRowKey = ref<string | null>(null)
+const _editingComment = ref('')
+const _editingOriginalComment = ref('')
+/** key = `${rowKey}_${envCode}` → 当前输入值 */
+const _editingValues = ref<Record<string, string>>({})
+/** key = `${rowKey}_${envCode}` → 原始值（用于 diff） */
+let _editingOriginals: Record<string, string> = {}
+/** key = `${rowKey}_${envCode}` → secret entry id */
+let _editingEnvIds: Record<string, string> = {}
+/** 编辑行对应的 envCode 列表 */
+let _editingEnvCodes: string[] = []
+const _editingSubmitting = ref(false)
+
+function editingValueKey(rowKey: string, envCode: string): string {
+  return `${rowKey}_${envCode}`
+}
 
 function isRowEditing(rowKey: string): boolean {
-  return editingRowKey.value === rowKey
+  return _editingRowKey.value === rowKey
 }
 
 function startEditRow(row: SecretAcrossEnvs): void {
@@ -811,66 +772,96 @@ function startEditRow(row: SecretAcrossEnvs): void {
     ElMessage.warning('当前账号没有 secret:update 权限')
     return
   }
-  editingRowKey.value = row.key
-  // 把 4 env 的当前值 + id + 原始值按 ACROSS_ENVS 顺序写入三个数组
-  // (顺序锁定:dev=0 / test=1 / sim=2 / prod=3,后续 v-for 同步走 envIdx 索引)
-  const newValues: string[] = []
-  const newIds: string[] = []
-  const newOriginals: string[] = []
-  for (const code of ACROSS_ENVS) {
-    const e = getEnvCell(row, code)
-    newValues.push(e?.value ?? '')
-    newIds.push(e?.id ?? '')
-    newOriginals.push(e?.value ?? '')
+  const entries = getSortedEnvEntries(row)
+  _editingRowKey.value = row.key
+  _editingComment.value = row.comment ?? ''
+  _editingOriginalComment.value = row.comment ?? ''
+
+  const vals: Record<string, string> = {}
+  const originals: Record<string, string> = {}
+  const ids: Record<string, string> = {}
+  const codes: string[] = []
+  for (const { envCode, entry } of entries) {
+    const v = entry.value ?? ''
+    const k = editingValueKey(row.key, envCode)
+    vals[k] = v
+    originals[k] = v
+    ids[k] = entry.id ?? ''
+    codes.push(envCode)
   }
-  editingValues.value = newValues
-  editingEnvIds.value = newIds
-  editingOriginals.value = newOriginals
+  _editingValues.value = vals
+  _editingOriginals = originals
+  _editingEnvIds = ids
+  _editingEnvCodes = codes
+  _editingSubmitting.value = false
+}
+
+/** 模板中 @input 调用，直接修改 ref 的 Record 属性 */
+function onEditValueInput(rowKey: string, envCode: string, e: Event): void {
+  const target = e.target as HTMLInputElement | null
+  if (!target) return
+  const k = editingValueKey(rowKey, envCode)
+  _editingValues.value = { ..._editingValues.value, [k]: target.value }
+}
+
+/** 模板中 @input 调用，更新说明 */
+function onEditCommentInput(e: Event): void {
+  const target = e.target as HTMLInputElement | null
+  if (target) {
+    _editingComment.value = target.value
+  }
 }
 
 function cancelEditRow(): void {
-  editingRowKey.value = null
-  editingValues.value = ['', '', '', '']
-  editingEnvIds.value = ['', '', '', '']
-  editingOriginals.value = ['', '', '', '']
-  editingSubmitting.value = false
+  _editingRowKey.value = null
+  _editingComment.value = ''
+  _editingOriginalComment.value = ''
+  _editingValues.value = {}
+  _editingOriginals = {}
+  _editingEnvIds = {}
+  _editingEnvCodes = []
+  _editingSubmitting.value = false
 }
 
 async function saveEditRow(): Promise<void> {
-  if (editingRowKey.value === null) return
+  const rowKey = _editingRowKey.value
+  if (rowKey === null) return
   if (!has(Permission.SecretUpdate)) {
     ElMessage.warning('当前账号没有 secret:update 权限')
     return
   }
-  // diff:只对真正改动的 env 调 update,避免无谓的 version+1
-  const updates: Array<{ envCode: string; id: string; value: string }> = []
-  ACROSS_ENVS.forEach((code, idx) => {
-    const newVal = editingValues.value[idx] ?? ''
-    const oldVal = editingOriginals.value[idx] ?? ''
-    const id = editingEnvIds.value[idx]
-    if (id && newVal !== oldVal) {
-      updates.push({ envCode: code, id, value: newVal })
+
+  const comment = _editingComment.value
+  const originalComment = _editingOriginalComment.value
+
+  const updates: Array<{ envCode: string; id: string; value: string; comment: string }> = []
+  for (const envCode of _editingEnvCodes) {
+    const k = editingValueKey(rowKey, envCode)
+    const newVal = _editingValues.value[k] ?? ''
+    const oldVal = _editingOriginals[k] ?? ''
+    const id = _editingEnvIds[k] ?? ''
+    if (id && (newVal !== oldVal || comment !== originalComment)) {
+      updates.push({ envCode, id, value: newVal, comment })
     }
-  })
+  }
   if (updates.length === 0) {
-    ElMessage.warning('没有任何 env 的值发生变化')
+    ElMessage.warning('没有任何值发生变化')
     return
   }
-  editingSubmitting.value = true
+  _editingSubmitting.value = true
   try {
     for (const u of updates) {
-      const req: UpdateSecretRequest = { id: u.id, value: u.value }
+      const req: UpdateSecretRequest = { id: u.id, value: u.value, comment: u.comment }
       await secretStore.update(req)
     }
     ElMessage.success(`已更新 ${updates.length} 个 env 的值`)
     cancelEditRow()
-    // 重新拉新接口,行里立即看到新值
     void loadSecretsOfCurrent()
   } catch (e) {
     const msg = e instanceof ApiError ? e.message : '更新失败'
     ElMessage.error(msg)
   } finally {
-    editingSubmitting.value = false
+    _editingSubmitting.value = false
   }
 }
 
@@ -1333,16 +1324,16 @@ watch(
               <div class="tab-pane__bar">
                 <div class="tab-pane__title">
                   当前目录密钥
-                  <span class="tab-pane__count">{{ secretStore.total }}</span>
+                  <span class="tab-pane__count">{{ secretStore.acrossEnvsItems.length }}</span>
                 </div>
                 <div class="tab-pane__actions">
                   <el-button
                     type="primary"
                     size="small"
                     :icon="Plus"
-                    :disabled="selectedFolderNode.envList.length === 0 || !has(Permission.SecretCreate)"
+                    :disabled="!newSecretCreating && (selectedFolderNode.envList.length === 0 || !has(Permission.SecretCreate))"
                     :title="!has(Permission.SecretCreate) ? '当前账号没有 secret:create 权限' : ''"
-                    @click="openBatchCreateSecret"
+                    @click="openNewSecretRow"
                   >
                     新建密钥
                   </el-button>
@@ -1352,15 +1343,64 @@ watch(
               <el-table
                 v-loading="secretStore.acrossEnvsLoading"
                 :data="secretStore.acrossEnvsItems"
+                row-key="key"
                 class="secret-table"
                 empty-text="该目录下还没有密钥,点击右上「新建密钥」开始"
               >
-                <el-table-column
-                  prop="key"
-                  label="Key"
-                  min-width="280"
-                  show-overflow-tooltip
-                >
+                <el-table-column type="expand">
+                  <template #default="{ row }">
+                    <!-- 二级表格:每个 env 一行 -->
+                    <el-table
+                      :data="getSortedEnvEntries(row as SecretAcrossEnvs)"
+                      size="small"
+                      class="secret-sub-table"
+                    >
+                      <el-table-column label="环境" width="100">
+                        <template #default="{ row: subRow }">
+                          <el-tag size="small" effect="plain">{{ subRow.envCode }}</el-tag>
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="值" min-width="320">
+                        <template #default="{ row: subRow, $index: subIdx }">
+                          <!-- 编辑态 -->
+                          <div v-if="isRowEditing((row as SecretAcrossEnvs).key)" class="secret-sub-value">
+                            <input
+                              class="editing-input"
+                              :value="_editingValues[editingValueKey((row as SecretAcrossEnvs).key, subRow.envCode)] ?? ''"
+                              @input="(e: Event) => onEditValueInput((row as SecretAcrossEnvs).key, subRow.envCode, e)"
+                              :placeholder="`${subRow.envCode} 新值`"
+                            />
+                          </div>
+                          <!-- 展示态 -->
+                          <div v-else-if="subRow.entry.value" class="secret-sub-value">
+                            <el-input
+                              :model-value="subRow.entry.value"
+                              type="text"
+                              readonly
+                              size="small"
+                              :rows="1"
+                              placeholder="—"
+                            />
+                          </div>
+                          <span v-else class="muted">—</span>
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="版本" width="80" align="center">
+                        <template #default="{ row: subRow }">
+                          <el-tag size="small" effect="light" type="info">
+                            v{{ subRow.entry.version }}
+                          </el-tag>
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="更新时间" min-width="160">
+                        <template #default="{ row: subRow }">
+                          <span class="muted">{{ formatDateTime(subRow.entry.updatedAt) }}</span>
+                        </template>
+                      </el-table-column>
+                    </el-table>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="key" label="Key" min-width="200" show-overflow-tooltip>
                   <template #default="{ row }">
                     <span class="secret-key">
                       <el-icon class="secret-key__icon"><KeyIcon /></el-icon>
@@ -1368,89 +1408,110 @@ watch(
                     </span>
                   </template>
                 </el-table-column>
-                <!--
-                  4 个 env 列(列头 = env code)。
-                  - 显示态:[value 明文或 maskSecret 暗文] + [👁/🙈 切换小眼睛]
-                  - 编辑态:el-input(type=password, show-password) 就地改值
-                  整列宽度 200 容纳 "value(可拖长省略)" + "👁 图标" / "输入框"。
-                  row 推断成 DefaultRow,这里手动断言成 SecretAcrossEnvs。
-                -->
-                <el-table-column
-                  v-for="(envCode, envIdx) in ACROSS_ENVS"
-                  :key="envCode"
-                  :label="envCode"
-                  min-width="200"
-                  show-overflow-tooltip
-                >
+                <el-table-column label="说明" min-width="200" show-overflow-tooltip>
                   <template #default="{ row }">
-                    <!-- 显示态:展示 + 小眼睛 -->
-                    <div
-                      v-if="!isRowEditing((row as SecretAcrossEnvs).key)"
-                      class="secret-cell"
-                    >
-                      <span
-                        v-if="getEnvCellValue(row as SecretAcrossEnvs, envCode)"
-                        class="secret-cell-value"
-                        :title="`v${getEnvCellVersion(row as SecretAcrossEnvs, envCode)} · ${formatDateTime(getEnvCellUpdatedAt(row as SecretAcrossEnvs, envCode))}`"
-                      >
-                        {{ getCellDisplayValue(row as SecretAcrossEnvs, envCode) }}
-                      </span>
-                      <span v-else class="muted">—</span>
-                      <el-button
-                        v-if="getEnvCellValue(row as SecretAcrossEnvs, envCode)"
-                        link
-                        size="small"
-                        class="secret-cell-eye"
-                        :icon="isCellShown((row as SecretAcrossEnvs).key, envCode) ? Hide : View"
-                        :title="isCellShown((row as SecretAcrossEnvs).key, envCode) ? `隐藏 ${envCode}` : `查看 ${envCode}`"
-                        :disabled="!has(Permission.SecretReveal)"
-                        @click="toggleCellShown((row as SecretAcrossEnvs).key, envCode)"
-                      />
-                    </div>
-                    <!-- 编辑态:就地输入 -->
-                    <div v-else class="secret-cell-edit">
-                      <el-input
-                        :key="`${(row as SecretAcrossEnvs).key}__${envCode}`"
-                        v-model="editingValues[envIdx]"
-                        type="password"
-                        show-password
-                        size="small"
-                        :placeholder="`${envCode} 新值(留空 = 不轮换)`"
-                      />
-                    </div>
+                    <!-- 编辑态 -->
+                    <input
+                      v-if="isRowEditing((row as SecretAcrossEnvs).key)"
+                      class="editing-input editing-comment-input"
+                      :value="_editingComment"
+                      @input="onEditCommentInput"
+                      placeholder="说明"
+                    />
+                    <span v-else class="muted">{{ (row as SecretAcrossEnvs).comment || '—' }}</span>
                   </template>
                 </el-table-column>
-                <!--
-                  操作列:行内编辑模式下显示「保存 / 取消」,否则显示 ✎ 图标。
-                  - 保存/取消只在被编辑的那一行出现,其他行继续显示 ✎
-                  - 保存时 loading 由 editingSubmitting 控(整个对话框共用,实际只有当前行)
-                -->
-                <el-table-column label="操作" width="170" fixed="right">
+                <el-table-column label="操作" width="150" fixed="right">
                   <template #default="{ row }">
                     <template v-if="isRowEditing((row as SecretAcrossEnvs).key)">
                       <el-button
                         link
+                        size="small"
                         type="primary"
-                        :icon="Check"
-                        :loading="editingSubmitting"
+                        :loading="_editingSubmitting"
                         @click="saveEditRow"
                       >
                         保存
                       </el-button>
-                      <el-button link @click="cancelEditRow">取消</el-button>
+                      <el-button link size="small" @click="cancelEditRow">取消</el-button>
                     </template>
                     <el-button
                       v-else
                       link
+                      size="small"
                       type="primary"
                       :icon="Edit"
-                      :title="'编辑'"
                       :disabled="!has(Permission.SecretUpdate)"
                       @click="startEditRow(row as SecretAcrossEnvs)"
-                    />
+                    >
+                      编辑
+                    </el-button>
                   </template>
                 </el-table-column>
               </el-table>
+
+              <!-- 新建密钥行(表格底部) -->
+              <div v-if="newSecretCreating" class="tab-pane__new-secret">
+                <div class="new-secret-card">
+                  <div class="new-secret-card__header">
+                    <el-icon class="secret-key__icon"><Plus /></el-icon>
+                    <span class="new-secret-card__title">新建密钥</span>
+                    <el-tag size="small" type="info" effect="plain">
+                      目录: {{ selectedFolderNode?.code ?? '' }}
+                    </el-tag>
+                  </div>
+                  <div class="new-secret-card__body">
+                    <div class="new-secret-card__row">
+                      <el-input
+                        v-model="newSecretForm.key"
+                        placeholder="例如 DATABASE_URL"
+                        :prefix-icon="KeyIcon"
+                        class="new-secret-card__key-input"
+                      />
+                      <el-input
+                        v-model="newSecretForm.comment"
+                        type="textarea"
+                        :rows="1"
+                        :autosize="{ minRows: 1, maxRows: 3 }"
+                        placeholder="说明(可选)"
+                        class="new-secret-card__comment-input"
+                      />
+                    </div>
+                    <!-- 新建 env 值:与上方展示框一致的列表布局 -->
+                    <el-table
+                      :data="currentEnvCodes.map(code => ({ envCode: code }))"
+                      size="small"
+                      class="new-secret-card__env-table"
+                    >
+                      <el-table-column label="环境" width="100">
+                        <template #default="{ row: envRow }">
+                          <el-tag size="small" effect="plain">{{ envRow.envCode }}</el-tag>
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="值">
+                        <template #default="{ row: envRow }">
+                          <el-input
+                            v-model="newSecretForm.values[envRow.envCode]"
+                            :placeholder="`${envRow.envCode} 的值`"
+                            autocomplete="new-password"
+                          />
+                        </template>
+                      </el-table-column>
+                    </el-table>
+                  </div>
+                  <div class="new-secret-card__footer">
+                    <el-button
+                      type="primary"
+                      size="small"
+                      :loading="newSecretSubmitting"
+                      @click="submitNewSecret"
+                    >
+                      保存
+                    </el-button>
+                    <el-button size="small" @click="cancelNewSecret">取消</el-button>
+                  </div>
+                </div>
+              </div>
 
               <div class="secret-pager">
                 <el-pagination
@@ -1565,122 +1626,6 @@ watch(
         </el-button>
       </template>
     </el-dialog>
-
-    <!-- 批量新建 secret Dialog -->
-    <el-dialog
-      v-model="batchCreateDialogVisible"
-      width="960px"
-      :close-on-click-modal="false"
-      title="批量新建密钥"
-      top="6vh"
-    >
-      <el-form
-        ref="batchCreateFormRef"
-        :model="batchCreateForm"
-        :rules="batchCreateRules"
-        label-position="top"
-      >
-        <el-form-item label="所属目录" prop="folderId">
-          <!-- 当前页面已选中了 folder,弹窗内只展示、不可修改 -->
-          <div v-if="batchCreateSelectedFolder" class="proj-detail__folder-readonly">
-            <el-icon class="proj-detail__folder-icon"><FolderIcon /></el-icon>
-            <span class="proj-detail__folder-name">{{ batchCreateSelectedFolder.name }}</span>
-            <code class="proj-detail__folder-code">{{ batchCreateSelectedFolder.code }}</code>
-            <el-tag size="small" type="info" effect="plain" class="proj-detail__folder-locked">
-              <el-icon><Lock /></el-icon>
-              锁定
-            </el-tag>
-          </div>
-          <span v-else class="muted">未选择目录</span>
-          <div class="form-hint">
-            folder 名字在已勾选环境间共享;每个 env 下若找不到同名 folder,该 env 将跳过创建。
-          </div>
-          <!-- folderId 仍要走表单校验,这里用隐藏 input 维持 v-model -->
-          <input type="hidden" :value="batchCreateForm.folderId" />
-        </el-form-item>
-
-        <div class="batch-form">
-          <!-- 行(card 样式):顶部 key+说明+删除,下方 env inputs 自动换行网格 -->
-          <div
-            v-for="(row, idx) in batchCreateForm.rows"
-            :key="row.uid"
-            class="batch-form__row"
-          >
-            <div class="batch-form__row-head">
-              <el-input
-                v-model="row.key"
-                :placeholder="idx === 0 ? 'DATABASE_URL' : 'KEY'"
-                :prefix-icon="KeyIcon"
-                class="batch-form__key"
-              />
-              <el-input
-                v-model="row.comment"
-                type="textarea"
-                :rows="1"
-                :autosize="{ minRows: 1, maxRows: 3 }"
-                placeholder="说明(可选)"
-                class="batch-form__comment"
-              />
-              <el-button
-                :icon="Delete"
-                size="small"
-                :disabled="batchCreateForm.rows.length <= 1"
-                class="batch-form__action"
-                @click="removeBatchRow(row.uid)"
-              />
-            </div>
-            <div class="batch-form__envs">
-              <div
-                v-for="envCode in batchCreateEnvCodes"
-                :key="envCode"
-                class="batch-form__env-cell"
-              >
-                <label class="batch-form__env-label">{{ envCode }}</label>
-                <el-input
-                  v-model="row.values[envCode]"
-                  type="password"
-                  show-password
-                  :placeholder="`${envCode} 的值(留空 = 跳过该 env)`"
-                  autocomplete="new-password"
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="batch-form__footer">
-          <el-button :icon="Plus" plain @click="addBatchRow">添加一行</el-button>
-          <span class="batch-form__hint">
-            每行 = 一个密钥定义;key 在 folder 内唯一;每个 env 一个输入框,
-            留空也按 env code 上送(value 为空串),由后端决定如何处理。
-            输入框 ≥ 280px,env 多时自动换行。
-          </span>
-        </div>
-      </el-form>
-      <template #footer>
-        <el-button @click="batchCreateDialogVisible = false">取消</el-button>
-        <el-button
-          type="primary"
-          :loading="batchCreateSubmitting"
-          @click="onBatchCreateSubmit"
-        >
-          创建
-          <el-icon class="el-icon--right"><ArrowRight /></el-icon>
-        </el-button>
-      </template>
-    </el-dialog>
-
-    <!--
-      原「查看 secret 明文 Dialog」整组移除:
-      操作列不再放「查看值」入口,4 env 单元格自带 👁/🙈 切换。
-      value 已通过 /secrets/list 响应拿到,无需再调 reveal 接口。
-    -->
-
-    <!--
-      原「编辑 secret Dialog」整组移除:
-      编辑改为"行内"(点 ✎ → 4 env 单元格就地变 input + 操作列变「保存/取消」),
-      整组 Dialog + 表单状态随之删除,startEditRow/cancelEditRow/saveEditRow 接管。
-    -->
 
     <!-- 编辑 folder Dialog -->
     <el-dialog
@@ -2568,6 +2513,120 @@ watch(
   :deep(.el-input__wrapper) {
     padding: 1px 8px;
   }
+}
+
+.secret-sub-table {
+  width: 100%;
+  margin: 4px 0;
+  background: var(--v-surface-bg-subtle);
+  border-radius: var(--v-radius-sm);
+}
+
+.secret-sub-value {
+  width: 100%;
+
+  :deep(.el-input__wrapper) {
+    font-family: var(--el-font-family-monospace, ui-monospace, SFMono-Regular, monospace);
+    font-size: 12px;
+  }
+}
+
+// ---------------- 新建密钥行(card 样式) ----------------
+.tab-pane__new-secret {
+  margin-top: 8px;
+}
+
+.new-secret-card {
+  border: 1px dashed var(--el-color-primary-light-5);
+  border-radius: var(--v-radius-md);
+  background: var(--el-color-primary-light-9);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+
+  &__header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  &__title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--el-color-primary);
+  }
+
+  &__body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  &__row {
+    display: grid;
+    grid-template-columns: 1fr 1.4fr;
+    gap: 8px;
+    align-items: start;
+  }
+
+  &__key-input,
+  &__comment-input {
+    min-width: 0;
+  }
+
+  &__envs {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 8px 12px;
+    border-top: 1px dashed var(--v-divider);
+    padding-top: 10px;
+  }
+
+  &__env-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  &__env-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--v-text-tertiary);
+    font-family: var(--el-font-family-monospace, ui-monospace, SFMono-Regular, monospace);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+
+  &__footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-top: 4px;
+  }
+}
+
+.editing-input {
+  width: 100%;
+  padding: 6px 10px;
+  font-family: var(--el-font-family-monospace, ui-monospace, SFMono-Regular, monospace);
+  font-size: 12px;
+  border: 1px solid var(--el-border-color);
+  border-radius: var(--v-radius-sm);
+  outline: none;
+  box-sizing: border-box;
+  background: var(--el-input-bg-color, #fff);
+  color: var(--v-text-primary);
+
+  &:focus {
+    border-color: var(--el-color-primary);
+  }
+}
+
+.editing-comment-input {
+  font-family: inherit;
+  font-size: 13px;
 }
 
 code {

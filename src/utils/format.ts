@@ -10,9 +10,14 @@ export function formatDateTime(iso: string): string {
   )
 }
 
-/** UI 层 Secret value 遮显,仅显示前 2 后 2 字符。空值返回空串。 */
+/**
+ * UI 层 Secret value 遮显 —— 无论原值多长,统一显示 `********`(8 个 *)。
+ *
+ * 不再暴露首尾字符(避免暗示长度/内容),不再随原值长度变星号数。
+ * 空值返回空串(让调用方走 "—" 占位分支)。
+ */
+const MASKED = '********'
 export function maskSecret(value: string | null | undefined): string {
   if (!value) return ''
-  if (value.length <= 4) return '*'.repeat(value.length)
-  return `${value.slice(0, 2)}${'*'.repeat(Math.max(4, value.length - 4))}${value.slice(-2)}`
+  return MASKED
 }
