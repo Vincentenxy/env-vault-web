@@ -29,6 +29,8 @@ import { useOrganizationStore } from '@/stores/organization'
 import { useProjectStore } from '@/stores/project'
 import { useSecretStore } from '@/stores/secret'
 import { ApiError } from '@/types/api'
+import { updateSecrets } from '@/api/secret'
+import { withApiCall } from '@/composables/use-api-call'
 import { formatDateTime, maskSecret } from '@/utils/format'
 import { getEnvProjectId } from '@/utils/env'
 import { usePermission } from '@/composables/use-permission'
@@ -40,7 +42,7 @@ import type { Project } from '@/types/project'
 import type {
   SecretAcrossEnvs,
   SecretAcrossEnvsEntry,
-  UpdateSecretRequest,
+  UpdateSecretsRequest as UpdateSecretsReq,
   BatchCreateSecretsRequest,
   BatchCreateEnvEntry,
 } from '@/api/secret'
@@ -831,34 +833,29 @@ async function saveEditRow(): Promise<void> {
     return
   }
 
-  const comment = _editingComment.value
-  const originalComment = _editingOriginalComment.value
-
-  const updates: Array<{ envCode: string; id: string; value: string; comment: string }> = []
+  // 构造新接口请求体：key + comment + 所有 env 的 {id, value} 数组(全量提交)
+  const values: Array<{ id: string; value: string }> = []
   for (const envCode of _editingEnvCodes) {
     const k = editingValueKey(rowKey, envCode)
-    const newVal = _editingValues.value[k] ?? ''
-    const oldVal = _editingOriginals[k] ?? ''
     const id = _editingEnvIds[k] ?? ''
-    if (id && (newVal !== oldVal || comment !== originalComment)) {
-      updates.push({ envCode, id, value: newVal, comment })
+    if (id) {
+      values.push({ id, value: _editingValues.value[k] ?? '' })
     }
   }
-  if (updates.length === 0) {
-    ElMessage.warning('没有任何值发生变化')
-    return
-  }
+
   _editingSubmitting.value = true
   try {
-    for (const u of updates) {
-      const req: UpdateSecretRequest = { id: u.id, value: u.value, comment: u.comment }
-      await secretStore.update(req)
+    const req: UpdateSecretsReq = {
+      key: rowKey,
+      comment: _editingComment.value,
+      values,
     }
-    ElMessage.success(`已更新 ${updates.length} 个 env 的值`)
+    await withApiCall(() => updateSecrets(req))
+    ElMessage.success('保存成功')
     cancelEditRow()
     void loadSecretsOfCurrent()
   } catch (e) {
-    const msg = e instanceof ApiError ? e.message : '更新失败'
+    const msg = e instanceof ApiError ? e.message : '保存失败'
     ElMessage.error(msg)
   } finally {
     _editingSubmitting.value = false
