@@ -130,7 +130,7 @@ export function revealSecret(req: RevealSecretRequest): Promise<SecretReveal> {
 }
 
 /**
- * POST /api/v1/secret/update
+ * POST /api/v1/secret/update (旧接口,仍需保留兼容)
  * - id 必填(env 专属 id,定位要更新的 secret)
  * - value 可选:填写则轮换密钥值,后端会 version+1;不填则保持原值
  * - comment 可选:更新说明,可清空
@@ -144,6 +144,24 @@ export interface UpdateSecretRequest {
 }
 export function updateSecret(req: UpdateSecretRequest): Promise<SecretEntry> {
   return http.post('/secret/update', req)
+}
+
+/**
+ * POST /api/v1/secrets/update (新接口)
+ * 一次提交一个 key 在所有 env 上的值和说明，无需 per-env 循环调用。
+ * values 数组中只放有变更的 env（含 id + value），comment 可清空。
+ */
+export interface UpdateSecretsValueEntry {
+  id: Uuid
+  value: string
+}
+export interface UpdateSecretsRequest {
+  key: string
+  comment: string
+  values: UpdateSecretsValueEntry[]
+}
+export function updateSecrets(req: UpdateSecretsRequest): Promise<null> {
+  return http.post('/secrets/batchUpdate', req)
 }
 
 /**
