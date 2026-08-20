@@ -6,30 +6,30 @@
 /* ---------- 亮色 (默认) ---------- */
 :root {
   /* 页面整体底色(比 surface 略深一档,营造层次) */
-  --v-app-bg: #f5f7fa;
+  --v-app-bg: #f1f5f9;
 
   /* 侧栏深色板 — 亮色模式下也是深侧栏(Infisical 风) */
-  --v-sidebar-bg: #0b0c0e;
-  --v-sidebar-bg-hover: #16181c;
-  --v-sidebar-bg-active: rgba(124, 58, 237, 0.12);
+  --v-sidebar-bg: #0f172a;
+  --v-sidebar-bg-hover: #1e293b;
+  --v-sidebar-bg-active: rgba(37, 99, 235, 0.18);
   --v-sidebar-border: rgba(255, 255, 255, 0.06);
-  --v-sidebar-text: #a1a1aa;
+  --v-sidebar-text: #94a3b8;
   --v-sidebar-text-active: #ffffff;
-  --v-sidebar-text-hover: #e4e4e7;
-  --v-sidebar-icon: #71717a;
-  --v-sidebar-icon-active: #a78bfa;
+  --v-sidebar-text-hover: #e2e8f0;
+  --v-sidebar-icon: #64748b;
+  --v-sidebar-icon-active: #60a5fa;
 
   /* 卡片/表格/弹窗浅色板 */
   --v-surface-bg: #ffffff;
-  --v-surface-border: #e4e4e7;
-  --v-surface-bg-subtle: #fafafa;
-  --v-surface-row-hover: #f4f4f5;
-  --v-divider: #e4e4e7;
+  --v-surface-border: #e2e8f0;
+  --v-surface-bg-subtle: #f8fafc;
+  --v-surface-row-hover: #f1f5f9;
+  --v-divider: #e2e8f0;
 
   /* 文字色阶 */
-  --v-text-primary: #18181b;
-  --v-text-secondary: #71717a;
-  --v-text-tertiary: #a1a1aa;
+  --v-text-primary: #0f172a;
+  --v-text-secondary: #64748b;
+  --v-text-tertiary: #94a3b8;
   --v-text-inverse: #ffffff;
 
   /* 状态色 */
@@ -39,9 +39,9 @@
   --v-color-info: #2563eb;
 
   /* 圆角 */
-  --v-radius-sm: 4px;
-  --v-radius-md: 6px;
-  --v-radius-lg: 8px;
+  --v-radius-sm: 6px;
+  --v-radius-md: 8px;
+  --v-radius-lg: 12px;
 
   /* 间距 (8px 基线) */
   --v-space-1: 4px;

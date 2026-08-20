@@ -4,7 +4,6 @@ import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Key, ArrowRight } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
-import { ApiError } from '@/types/api'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -31,19 +30,11 @@ async function onSubmit(): Promise<void> {
   submitting.value = true
   try {
     await auth.login(t)
-    ElMessage.success('登录成功')
+    ElMessage.success('Token 已保存')
     const redirect = (route.query.redirect as string | undefined) ?? '/app/organizations'
     await router.replace(redirect)
-  } catch (e) {
-    if (e instanceof ApiError) {
-      if (e.code === 1401) {
-        errorMessage.value = 'token 无效或已过期,请检查后重试'
-      } else {
-        errorMessage.value = e.message || '登录失败'
-      }
-    } else {
-      errorMessage.value = '登录失败,请检查网络'
-    }
+  } catch {
+    errorMessage.value = '保存 token 失败,请重试'
   } finally {
     submitting.value = false
   }
@@ -92,7 +83,7 @@ async function onSubmit(): Promise<void> {
       <div class="login-page__form-inner">
         <h2 class="login-page__form-title">登录</h2>
         <p class="login-page__form-sub">
-          开发自测入口:粘贴后端签发的 JWT 完成身份校验。
+          粘贴 Bearer token，后续请求会自动写入 Authorization 请求头。
         </p>
 
         <form class="login-page__form" @submit.prevent="onSubmit">
@@ -106,7 +97,7 @@ async function onSubmit(): Promise<void> {
             type="textarea"
             :rows="5"
             :autosize="{ minRows: 5, maxRows: 10 }"
-            placeholder="粘贴 JWT,带不带 Bearer 前缀都可以"
+            placeholder="粘贴 token，带不带 Bearer 前缀都可以"
             spellcheck="false"
             autocomplete="off"
             class="login-page__input"

@@ -9,20 +9,16 @@ import {
 } from 'element-plus'
 import {
   ArrowLeft,
-  ArrowRight,
   Check,
   CircleClose,
   Delete,
   Document,
   Edit,
   Folder as FolderIcon,
-  Hide,
   InfoFilled,
   Key as KeyIcon,
-  Lock,
   Plus,
   Refresh,
-  View,
 } from '@element-plus/icons-vue'
 import { useEnvStore } from '@/stores/env'
 import { useOrganizationStore } from '@/stores/organization'
@@ -31,7 +27,7 @@ import { useSecretStore } from '@/stores/secret'
 import { ApiError } from '@/types/api'
 import { updateSecrets } from '@/api/secret'
 import { withApiCall } from '@/composables/use-api-call'
-import { formatDateTime, maskSecret } from '@/utils/format'
+import { formatDateTime } from '@/utils/format'
 import { getEnvProjectId } from '@/utils/env'
 import { usePermission } from '@/composables/use-permission'
 import { Permission } from '@/constants/permission'
@@ -251,70 +247,6 @@ async function loadSecretsOfCurrent(): Promise<void> {
 function onSecretPageChange(_pageNum: number, _pageSize: number): void {
   // 新接口不分页,刷新只调 fetchAcrossEnvs
   void loadSecretsOfCurrent()
-}
-
-// ============ 表格单元格辅助:从 SecretAcrossEnvs 行里取指定 env 块 ============
-//
-// 新响应的 env 块是以 envCode 为键的索引(顶层还有 key/projectCode,需排除),
-// 写成统一函数避免模板里散落类型断言。
-type AcrossEnvsRow = { key: string; projectCode: string; [k: string]: unknown }
-function getEnvCell(row: AcrossEnvsRow, envCode: string): SecretAcrossEnvsEntry | undefined {
-  const v = row[envCode]
-  if (v && typeof v === 'object' && 'value' in (v as object)) {
-    return v as SecretAcrossEnvsEntry
-  }
-  return undefined
-}
-function getEnvCellValue(row: AcrossEnvsRow, envCode: string): string {
-  return getEnvCell(row, envCode)?.value ?? ''
-}
-function getEnvCellVersion(row: AcrossEnvsRow, envCode: string): number {
-  return getEnvCell(row, envCode)?.version ?? 0
-}
-function getEnvCellUpdatedAt(row: AcrossEnvsRow, envCode: string): string {
-  return getEnvCell(row, envCode)?.updatedAt ?? ''
-}
-
-// ============ 4 env 列的"明文/暗文"显隐状态(per-row × per-env)============
-//
-// 设计:
-//  - 默认 dev / test 可见(明文),sim / prod 隐藏(masked)—— 仿真/生产属
-//    高敏感环境,默认不裸眼曝,符合最小暴露原则。
-//  - 状态按 `${row.key}__${envCode}` 二维键存放,首次访问单元格时按默认
-//    惰性初始化,后续用户点击 toggle 翻转;离开页面 / 切 folder 由 store
-//    clear() 兜底清掉(本状态是组件局部 ref,组件 unmount 自动清)。
-const ENV_VISIBLE_BY_DEFAULT: Record<string, boolean> = {
-  dev: true,
-  test: true,
-  sim: false,
-  prod: false,
-}
-const cellShown = ref<Record<string, boolean>>({})
-
-function cellKey(rowKey: string, envCode: string): string {
-  return `${rowKey}__${envCode}`
-}
-
-function isCellShown(rowKey: string, envCode: string): boolean {
-  const k = cellKey(rowKey, envCode)
-  if (!(k in cellShown.value)) {
-    // 惰性初始化:按 ENV_VISIBLE_BY_DEFAULT 决定默认显隐
-    cellShown.value[k] = ENV_VISIBLE_BY_DEFAULT[envCode] ?? false
-  }
-  return cellShown.value[k] === true
-}
-
-function toggleCellShown(rowKey: string, envCode: string): void {
-  const k = cellKey(rowKey, envCode)
-  cellShown.value[k] = !isCellShown(rowKey, envCode)
-}
-
-/** 单元格实际展示的字符串:明文 / masked / "—"(无值) */
-function getCellDisplayValue(row: AcrossEnvsRow, envCode: string): string {
-  const raw = getEnvCellValue(row, envCode)
-  if (!raw) return ''
-  // maskSecret 来自 utils/format,空串会原样返回,这里 raw 已非空,放心调
-  return isCellShown(row.key, envCode) ? raw : maskSecret(raw)
 }
 
 // ==================== 创建 folder ====================
@@ -753,8 +685,6 @@ const _editingComment = ref('')
 const _editingOriginalComment = ref('')
 /** key = `${rowKey}_${envCode}` → 当前输入值 */
 const _editingValues = ref<Record<string, string>>({})
-/** key = `${rowKey}_${envCode}` → 原始值（用于 diff） */
-let _editingOriginals: Record<string, string> = {}
 /** key = `${rowKey}_${envCode}` → secret entry id */
 let _editingEnvIds: Record<string, string> = {}
 /** 编辑行对应的 envCode 列表 */
@@ -792,7 +722,6 @@ function startEditRow(row: SecretAcrossEnvs): void {
     codes.push(envCode)
   }
   _editingValues.value = vals
-  _editingOriginals = originals
   _editingEnvIds = ids
   _editingEnvCodes = codes
   _editingSubmitting.value = false
@@ -819,7 +748,6 @@ function cancelEditRow(): void {
   _editingComment.value = ''
   _editingOriginalComment.value = ''
   _editingValues.value = {}
-  _editingOriginals = {}
   _editingEnvIds = {}
   _editingEnvCodes = []
   _editingSubmitting.value = false
@@ -1358,7 +1286,7 @@ watch(
                         </template>
                       </el-table-column>
                       <el-table-column label="值" min-width="320">
-                        <template #default="{ row: subRow, $index: subIdx }">
+                        <template #default="{ row: subRow }">
                           <!-- 编辑态 -->
                           <div v-if="isRowEditing((row as SecretAcrossEnvs).key)" class="secret-sub-value">
                             <input

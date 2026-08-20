@@ -16,7 +16,7 @@
 | --- | --- |
 | `environment/` | 环境列表 / 详情 / 模板 |
 | `folder/` | folder 列表 / 详情 |
-| `secret/` | secret 列表 / 详情 / reveal 弹窗 / 路径访问 |
+| `secret/` | 秘钥中心（列表 / 详情 / reveal / 创建 / 编辑） |
 | `audit/` | 审计查询 |
 | `rbac/` | 角色 / 用户 / 授权 |
 

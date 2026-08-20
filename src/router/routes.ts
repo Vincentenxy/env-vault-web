@@ -22,7 +22,7 @@ export const routes: RouteRecordRaw[] = [
   {
     path: '/app',
     component: () => import('@/layouts/DefaultLayout.vue'),
-    redirect: '/app/organizations',
+    redirect: '/app/secrets',
     meta: { requiresAuth: true },
     children: [
       {
@@ -53,7 +53,7 @@ export const routes: RouteRecordRaw[] = [
         path: 'secrets',
         name: 'SecretList',
         component: () => import('@/views/secret/SecretListView.vue'),
-        meta: { title: '密钥管理', requiresAuth: true },
+        meta: { title: '秘钥中心', requiresAuth: true },
       },
       {
         path: 'rbac',
@@ -77,7 +77,7 @@ export const routes: RouteRecordRaw[] = [
   },
   {
     path: '/',
-    redirect: '/app/organizations',
+    redirect: '/app/secrets',
   },
   {
     path: '/:pathMatch(.*)*',

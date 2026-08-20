@@ -1,449 +1,558 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { useRouter, useRoute, RouterView } from 'vue-router'
-import {
-  CaretBottom,
-  Connection,
-  Files,
-  Folder,
-  Key,
-  Moon,
-  Sunny,
-  SwitchButton,
-  Lock,
-  User as UserIcon,
-  UserFilled,
-} from '@element-plus/icons-vue'
+import { computed } from 'vue'
+import { RouterView, useRoute, useRouter } from 'vue-router'
+import { Folder, OfficeBuilding } from '@element-plus/icons-vue'
+import { Bell, KeyRound, LogOut, Moon, Sun } from '@lucide/vue'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
-import { DefaultPrimaryColor } from '@/utils/color'
 
-const router = useRouter()
+interface NavItem {
+  path: string
+  label: string
+  icon: typeof Folder
+}
+
 const route = useRoute()
+const router = useRouter()
 const auth = useAuthStore()
 const theme = useThemeStore()
 
-const collapsed = ref(false)
-
-interface NavItem {
-  index: string
-  label: string
-  icon: typeof Folder
-  group?: string
-}
-
 const navItems: NavItem[] = [
-  { index: '/app/organizations', label: '组织管理', icon: Folder, group: 'WORKSPACE' },
-  { index: '/app/projects', label: '项目管理', icon: Files, group: 'WORKSPACE' },
-  { index: '/app/envs', label: '环境管理', icon: Connection, group: 'RESOURCES' },
-  { index: '/app/secrets', label: '密钥管理', icon: Key, group: 'RESOURCES' },
-  { index: '/app/rbac', label: '权限管理', icon: Lock, group: 'ADMIN' },
-  { index: '/app/users', label: '用户管理', icon: UserFilled, group: 'ADMIN' },
+  { path: '/app/secrets', label: '项目管理', icon: Folder },
+  { path: '/app/organizations', label: '组织管理', icon: OfficeBuilding },
 ]
-
-const navGroups: string[] = ['WORKSPACE', 'RESOURCES', 'ADMIN']
-
-const activeMenu = computed<string>(() => {
-  // 用 matched 最后一段的 path 拿精确路径(避免 split/slice 算错层数)。
-  // 注意:`/app` 这种父级路径会匹配不到任何 navItem,fallback 到空串。
-  const last = route.matched[route.matched.length - 1]
-  const matchedPath = last?.path ?? route.path
-  // 项目详情(/app/projects/:projectId)归属"项目管理"
-  if (matchedPath.startsWith('/app/projects')) return '/app/projects'
-  return matchedPath
-})
-
-/** 当前激活的导航项(供面包屑渲染) */
-const currentNav = computed<NavItem | undefined>(() =>
-  navItems.find((i) => i.index === activeMenu.value),
+const userName = computed(() => auth.currentUser?.name ?? auth.currentUser?.userId ?? '管理员')
+const userEmail = computed(
+  () => auth.currentUser?.email ?? auth.currentUser?.userId ?? 'admin@company.com',
+)
+const userInitial = computed(() =>
+  auth.currentUser ? userName.value.slice(0, 1).toUpperCase() : 'AD',
 )
 
-function onMenuSelect(index: string): void {
-  if (index && index !== route.path) {
-    router.push(index)
-  }
+function navigate(path: string): void {
+  if (path !== route.path) void router.push(path)
+}
+
+function isNavActive(path: string): boolean {
+  return route.path === path
 }
 
 async function onLogout(): Promise<void> {
   auth.logout()
   await router.replace({ name: 'Login' })
 }
-
-const PRESET_COLORS = [
-  DefaultPrimaryColor,
-  '#67c23a',
-  '#e6a23c',
-  '#f56c6c',
-  '#722ed1',
-  '#13c2c2',
-]
 </script>
 
 <template>
-  <el-container class="layout">
-    <el-aside class="layout__aside" :width="collapsed ? '56px' : '240px'">
-      <div class="layout__brand">
-        <div class="layout__brand-logo">
-          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path
-              d="M12 2L3 7v10l9 5 9-5V7l-9-5z"
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linejoin="round"
-            />
-            <path
-              d="M12 22V12M3 7l9 5 9-5"
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linejoin="round"
-            />
-          </svg>
-        </div>
-        <span v-if="!collapsed" class="layout__brand-text">EnvVault</span>
-        <el-button
-          v-if="!collapsed"
-          class="layout__brand-toggle"
-          text
-          size="small"
-          @click="collapsed = true"
+  <div class="ops-layout">
+    <header class="ops-layout__brand">
+      <span class="ops-layout__brand-mark">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M13.2 2.8 6.7 12h4.6l-.5 9.2 6.5-10h-4.6l.5-8.4Z" />
+        </svg>
+      </span>
+      <strong>OpsCenter</strong>
+    </header>
+
+    <header class="ops-layout__topbar">
+      <nav class="ops-layout__modules" aria-label="当前子系统">
+        <button
+          type="button"
+          class="ops-layout__module is-active"
+          aria-label="秘钥中心"
+          title="秘钥中心"
+          @click="navigate('/app/secrets')"
         >
-          <el-icon><CaretBottom class="rotate-90" /></el-icon>
-        </el-button>
-      </div>
+          <el-icon><KeyRound :stroke-width="1.8" /></el-icon>
+          <span>秘钥中心</span>
+        </button>
+      </nav>
 
-      <el-menu
-        v-if="!collapsed"
-        class="layout__menu"
-        :default-active="activeMenu"
-        @select="onMenuSelect"
-      >
-        <template v-for="group in navGroups" :key="group">
-          <div class="layout__menu-group">{{ group }}</div>
-          <el-menu-item
-            v-for="item in navItems.filter((i) => i.group === group)"
-            :key="item.index"
-            :index="item.index"
-          >
-            <el-icon><component :is="item.icon" /></el-icon>
-            <span>{{ item.label }}</span>
-          </el-menu-item>
-        </template>
-      </el-menu>
+      <div class="ops-layout__tools">
+        <el-popover
+          placement="bottom-end"
+          :width="270"
+          trigger="click"
+          popper-class="ops-notification-popper"
+        >
+          <template #reference>
+            <button type="button" class="ops-layout__icon-button" aria-label="通知消息">
+              <Bell :size="16" :stroke-width="1.7" />
+              <span class="ops-layout__notice-dot"></span>
+            </button>
+          </template>
+          <div class="ops-notifications">
+            <header>
+              <strong>通知</strong>
+              <span>2 条未读</span>
+            </header>
+            <button type="button">
+              <span class="ops-notifications__status is-blue"></span>
+              <span>
+                <strong>生产环境配置已更新</strong>
+                <small>5 分钟前</small>
+              </span>
+            </button>
+            <button type="button">
+              <span class="ops-notifications__status is-amber"></span>
+              <span>
+                <strong>2 个密钥即将过期</strong>
+                <small>今天 09:30</small>
+              </span>
+            </button>
+          </div>
+        </el-popover>
 
-      <el-menu v-else class="layout__menu layout__menu--collapsed" :default-active="activeMenu">
         <el-tooltip
-          v-for="item in navItems"
-          :key="item.index"
-          :content="item.label"
-          placement="right"
+          :content="theme.mode === 'dark' ? '切换为亮色' : '切换为暗色'"
+          placement="bottom"
         >
-          <el-menu-item :index="item.index" @click="onMenuSelect(item.index)">
-            <el-icon><component :is="item.icon" /></el-icon>
-          </el-menu-item>
+          <button
+            type="button"
+            class="ops-layout__icon-button"
+            :aria-label="theme.mode === 'dark' ? '切换为亮色' : '切换为暗色'"
+            @click="theme.toggleMode"
+          >
+            <Sun v-if="theme.mode === 'dark'" :size="16" :stroke-width="1.7" />
+            <Moon v-else :size="16" :stroke-width="1.7" />
+          </button>
         </el-tooltip>
-      </el-menu>
 
-      <div class="layout__aside-foot" v-if="!collapsed">
-        <el-button
-          class="layout__expand"
-          text
-          :icon="CaretBottom"
-          @click="collapsed = true"
-        >
-          收起侧栏
-        </el-button>
+        <span class="ops-layout__tool-divider"></span>
+
+        <el-dropdown trigger="click" placement="bottom-end" popper-class="ops-user-dropdown">
+          <button type="button" class="ops-layout__avatar" :aria-label="userName">
+            {{ userInitial }}
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <div class="ops-layout__account-menu">
+                <strong>{{ userName }}</strong>
+                <span>{{ userEmail }}</span>
+              </div>
+              <el-dropdown-item divided @click="onLogout">
+                <LogOut :size="14" :stroke-width="1.8" />
+                <span>退出登录</span>
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
-    </el-aside>
+    </header>
 
-    <el-container>
-      <el-header class="layout__header">
-        <div class="layout__bread">
-          <span class="layout__bread-section">{{ currentNav?.group ?? 'Workspace' }}</span>
-          <span class="layout__bread-sep">/</span>
-          <span class="layout__bread-current">
-            {{ currentNav?.label ?? '...' }}
-          </span>
-        </div>
-        <div class="layout__header-actions">
-          <el-dropdown trigger="click">
-            <span class="layout__user">
-              <span class="layout__user-avatar">
-                {{ (auth.currentUser?.name ?? auth.currentUser?.userId ?? '?').slice(0, 1).toUpperCase() }}
-              </span>
-              <span class="layout__user-name">
-                {{ auth.currentUser?.name ?? auth.currentUser?.userId ?? '未登录' }}
-              </span>
-              <el-icon><CaretBottom /></el-icon>
-            </span>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <div class="layout__user-menu-section">
-                  <div class="layout__user-menu-label">主题</div>
-                  <div class="layout__user-menu-row">
-                    <el-tooltip content="切换为暗色" placement="bottom">
-                      <el-button
-                        text
-                        circle
-                        :icon="theme.mode === 'dark' ? Sunny : Moon"
-                        @click="theme.toggleMode"
-                      />
-                    </el-tooltip>
-                    <el-color-picker
-                      v-model="theme.primaryColor"
-                      size="small"
-                      :predefine="PRESET_COLORS"
-                    />
-                  </div>
-                </div>
-                <el-dropdown-item
-                  :icon="UserIcon"
-                  disabled
-                  class="layout__user-menu-info"
-                >
-                  {{ auth.currentUser?.email ?? auth.currentUser?.userId }}
-                </el-dropdown-item>
-                <el-dropdown-item divided :icon="SwitchButton" @click="onLogout">
-                  退出登录
-                </el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-        </div>
-      </el-header>
+    <aside class="ops-layout__sidebar">
+      <div class="ops-layout__nav-caption">秘钥中心</div>
+      <nav class="ops-layout__nav" aria-label="秘钥中心导航">
+        <button
+          v-for="item in navItems"
+          :key="item.path"
+          type="button"
+          class="ops-layout__nav-item"
+          :class="{ 'is-active': isNavActive(item.path) }"
+          :aria-label="item.label"
+          :title="item.label"
+          @click="navigate(item.path)"
+        >
+          <el-icon><component :is="item.icon" /></el-icon>
+          <span>{{ item.label }}</span>
+        </button>
+      </nav>
+    </aside>
 
-      <el-main class="layout__main">
-        <RouterView />
-      </el-main>
-    </el-container>
-  </el-container>
+    <main class="ops-layout__main">
+      <RouterView />
+    </main>
+  </div>
 </template>
 
 <style lang="scss" scoped>
-.layout {
+.ops-layout {
+  display: grid;
+  grid-template-columns: 221px minmax(0, 1fr);
+  grid-template-rows: 52px minmax(0, 1fr);
+  width: 100%;
   height: 100vh;
+  overflow: hidden;
+  background: var(--v-app-bg);
 
-  &__aside {
-    background: var(--v-sidebar-bg);
-    color: var(--v-sidebar-text);
-    border-right: 1px solid var(--v-sidebar-border);
-    transition: width 0.2s ease;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
+  &__brand,
+  &__sidebar {
+    background: #020817;
+    color: #fff;
   }
 
   &__brand {
-    height: var(--v-header-height);
     display: flex;
     align-items: center;
-    padding: 0 14px;
-    border-bottom: 1px solid var(--v-sidebar-border);
-    gap: 10px;
+    gap: 8px;
+    padding: 0 20px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+
+    strong {
+      font-size: 14px;
+      font-weight: 650;
+    }
   }
 
-  &__brand-logo {
-    width: 28px;
-    height: 28px;
-    border-radius: 6px;
-    background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%);
-    display: flex;
+  &__brand-mark {
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    color: #fff;
-    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    border-radius: 8px;
+    background: #2563eb;
+    box-shadow: 0 4px 10px rgba(37, 99, 235, 0.28);
 
     svg {
-      width: 18px;
-      height: 18px;
+      width: 15px;
+      height: 15px;
+      fill: #fff;
     }
   }
 
-  &__brand-text {
-    color: var(--v-sidebar-text-active);
-    font-size: 15px;
-    font-weight: 600;
-    letter-spacing: 0.3px;
-    flex: 1;
-  }
-
-  &__brand-toggle {
-    color: var(--v-sidebar-text) !important;
-  }
-
-  &__menu {
-    background: transparent;
-    border-right: none;
-    flex: 1;
-    padding: 8px 0;
-    overflow-y: auto;
-    overflow-x: hidden;
-
-    --el-menu-bg-color: transparent;
-    --el-menu-text-color: var(--v-sidebar-text);
-    --el-menu-hover-bg-color: var(--v-sidebar-bg-hover);
-    --el-menu-active-color: var(--v-sidebar-text-active);
-    --el-menu-border-color: transparent;
-  }
-
-  &__menu--collapsed {
-    padding: 8px 0;
-  }
-
-  &__menu-group {
-    color: var(--v-sidebar-icon);
-    font-size: 11px;
-    font-weight: 500;
-    letter-spacing: 0.8px;
-    padding: 16px 20px 6px;
-  }
-
-  :deep(.el-menu-item) {
-    height: 36px;
-    line-height: 36px;
-    margin: 2px 8px;
-    padding: 0 12px !important;
-    border-radius: var(--v-radius-md);
-    font-size: var(--v-font-md);
-    color: var(--v-sidebar-text) !important;
-    transition: background 0.1s ease, color 0.1s ease;
-
-    &:hover {
-      background: var(--v-sidebar-bg-hover) !important;
-      color: var(--v-sidebar-text-hover) !important;
-    }
-
-    .el-icon {
-      color: var(--v-sidebar-icon);
-      margin-right: 10px;
-      font-size: 16px;
-      transition: color 0.1s ease;
-    }
-
-    &.is-active {
-      background: var(--v-sidebar-bg-active) !important;
-      color: var(--v-sidebar-text-active) !important;
-      font-weight: 500;
-
-      .el-icon {
-        color: var(--v-sidebar-icon-active);
-      }
-    }
-  }
-
-  &__aside-foot {
-    padding: 8px 14px 12px;
-    border-top: 1px solid var(--v-sidebar-border);
-  }
-
-  &__expand {
-    color: var(--v-sidebar-text) !important;
-    font-size: var(--v-font-sm) !important;
-    width: 100%;
-    justify-content: flex-start;
-  }
-
-  &__header {
+  &__topbar {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    height: var(--v-header-height) !important;
+    min-width: 0;
+    padding: 0 16px 0 32px;
     background: var(--v-surface-bg);
     border-bottom: 1px solid var(--v-divider);
-    padding: 0 20px;
   }
 
-  &__bread {
+  &__modules {
     display: flex;
     align-items: center;
-    gap: 8px;
-    font-size: var(--v-font-md);
+    gap: 3px;
   }
 
-  &__bread-section {
-    color: var(--v-text-tertiary);
-  }
-
-  &__bread-sep {
-    color: var(--v-text-tertiary);
-  }
-
-  &__bread-current {
-    color: var(--v-text-primary);
-    font-weight: 500;
-  }
-
-  &__header-actions {
+  &__tools {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 2px;
   }
 
-  &__user {
+  &__module {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
+    height: 32px;
+    padding: 0 11px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--v-text-secondary);
+    font: inherit;
+    font-size: 14px;
     cursor: pointer;
-    padding: 4px 8px 4px 4px;
-    border-radius: var(--v-radius-md);
-    transition: background 0.1s ease;
+    transition:
+      background 0.15s ease,
+      color 0.15s ease;
 
     &:hover {
+      color: var(--v-text-primary);
+      background: var(--v-surface-row-hover);
+    }
+
+    &.is-active {
+      color: #fff;
+      background: #2563eb;
+      box-shadow: 0 2px 5px rgba(37, 99, 235, 0.22);
+    }
+
+    .el-icon {
+      font-size: 15px;
+    }
+  }
+
+  &__icon-button {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--v-text-secondary);
+    cursor: pointer;
+    transition:
+      color 0.15s ease,
+      background 0.15s ease;
+
+    &:hover {
+      color: var(--v-text-primary);
       background: var(--v-surface-row-hover);
     }
   }
 
-  &__user-avatar {
-    width: 24px;
-    height: 24px;
+  &__notice-dot {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 5px;
+    height: 5px;
+    border: 1px solid var(--v-surface-bg);
     border-radius: 50%;
-    background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%);
-    color: #fff;
+    background: #ef4444;
+  }
+
+  &__tool-divider {
+    width: 1px;
+    height: 18px;
+    margin: 0 7px;
+    background: var(--v-divider);
+  }
+
+  &__avatar {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: #2563eb;
+    color: #fff;
+    font: inherit;
     font-size: 12px;
-    font-weight: 600;
+    font-weight: 650;
+    cursor: pointer;
+    transition:
+      box-shadow 0.15s ease,
+      transform 0.15s ease;
+
+    &:hover,
+    &:focus-visible {
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+      outline: none;
+    }
+
+    &:active {
+      transform: scale(0.96);
+    }
   }
 
-  &__user-name {
-    font-size: var(--v-font-md);
-    color: var(--v-text-primary);
-    max-width: 120px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  &__account-menu {
+    display: flex;
+    min-width: 190px;
+    flex-direction: column;
+    gap: 3px;
+    padding: 9px 14px 8px;
+
+    strong {
+      color: var(--v-text-primary);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    span {
+      color: var(--v-text-secondary);
+      font-size: 11px;
+    }
   }
 
-  &__user-menu-section {
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--v-divider);
+  &__sidebar {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
 
-  &__user-menu-label {
-    font-size: var(--v-font-xs);
-    color: var(--v-text-tertiary);
-    margin-bottom: 6px;
+  &__nav-caption {
+    padding: 16px 22px 7px;
+    color: #475569;
+    font-size: 11px;
   }
 
-  &__user-menu-row {
+  &__nav {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 4px;
+    padding: 0 12px;
+  }
+
+  &__nav-item {
     display: flex;
     align-items: center;
-    gap: 8px;
-  }
+    gap: 11px;
+    width: 100%;
+    height: 34px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: #94a3b8;
+    font: inherit;
+    font-size: 14px;
+    text-align: left;
+    cursor: pointer;
+    transition:
+      background 0.15s ease,
+      color 0.15s ease;
 
-  &__user-menu-info {
-    color: var(--v-text-secondary) !important;
-    font-size: var(--v-font-sm) !important;
+    &:hover {
+      color: #e2e8f0;
+      background: #111c31;
+    }
+
+    &.is-active {
+      color: #fff;
+      background: #2563eb;
+      box-shadow: 0 5px 14px rgba(37, 99, 235, 0.2);
+    }
+
+    .el-icon {
+      flex: 0 0 auto;
+      font-size: 17px;
+    }
   }
 
   &__main {
-    background: var(--v-surface-bg-subtle);
-    padding: 24px;
-    overflow: auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--v-app-bg);
   }
 }
 
-.rotate-90 {
-  transform: rotate(90deg);
+.ops-notifications {
+  margin: -4px -2px;
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 8px 9px;
+    border-bottom: 1px solid var(--v-divider);
+
+    strong {
+      color: var(--v-text-primary);
+      font-size: 13px;
+    }
+
+    span {
+      color: #2563eb;
+      font-size: 11px;
+    }
+  }
+
+  button {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    width: 100%;
+    padding: 10px 8px;
+    border: 0;
+    border-bottom: 1px solid var(--v-divider);
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+
+    &:last-child {
+      border-bottom: 0;
+    }
+
+    &:hover {
+      background: var(--v-surface-row-hover);
+    }
+
+    > span:last-child {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    strong {
+      color: var(--v-text-primary);
+      font-size: 12px;
+      font-weight: 550;
+    }
+
+    small {
+      color: var(--v-text-tertiary);
+      font-size: 10px;
+    }
+  }
+
+  &__status {
+    width: 7px;
+    height: 7px;
+    flex: 0 0 auto;
+    margin-top: 5px;
+    border-radius: 50%;
+
+    &.is-blue {
+      background: #2563eb;
+    }
+
+    &.is-amber {
+      background: #f59e0b;
+    }
+  }
+}
+
+:global(.ops-user-dropdown .el-dropdown-menu__item svg) {
+  flex: 0 0 auto;
+  margin-right: 7px;
+}
+
+@media (max-width: 820px) {
+  .ops-layout {
+    grid-template-columns: 64px minmax(0, 1fr);
+
+    &__brand {
+      justify-content: center;
+      padding: 0;
+
+      strong {
+        display: none;
+      }
+    }
+
+    &__sidebar {
+      align-items: center;
+    }
+
+    &__nav-caption,
+    &__nav-item span {
+      display: none;
+    }
+
+    &__nav {
+      flex: 1;
+      width: 100%;
+      padding: 12px 8px;
+    }
+
+    &__nav-item {
+      justify-content: center;
+      padding: 0;
+    }
+  }
+}
+
+@media (max-width: 600px) {
+  .ops-layout {
+    &__topbar {
+      padding: 0 8px;
+    }
+
+    &__module {
+      width: 34px;
+      justify-content: center;
+      padding: 0;
+
+      span {
+        display: none;
+      }
+    }
+  }
 }
 </style>
