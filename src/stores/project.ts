@@ -49,9 +49,9 @@ export const useProjectStore = defineStore('project', () => {
   async function create(req: CreateProjectRequest): Promise<Project> {
     const created = await withApiCall(() => createProject(req))
     // 若创建到当前列表所属 org,刷新第一页
-    if (currentOrgId.value === req.parentId) {
+    if (currentOrgId.value === req.orgId) {
       await fetchList({
-        orgId: req.parentId,
+        orgId: req.orgId,
         pageNum: 1,
         pageSize: lastQuery.value.pageSize ?? 20,
       })

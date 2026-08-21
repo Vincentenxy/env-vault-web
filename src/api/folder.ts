@@ -28,6 +28,20 @@ export function listFolders(
   return http.post('/folder/list', req, config)
 }
 
+/** 当前秘钥中心按 project 分页读取配置目录。 */
+export interface ListProjectFoldersRequest extends PageRequest {
+  projectId: Uuid
+  code?: string | null
+  name?: string | null
+}
+
+export function listProjectFolders(
+  req: ListProjectFoldersRequest,
+  config?: AxiosRequestConfig,
+): Promise<PageResp<Folder>> {
+  return http.post('/folder/list', req, config)
+}
+
 /**
  * POST /api/v1/folder/listByProject
  * 一次拉取整个 project 下的 folder 树(L1 + L2 + 每个节点的 envList)。
@@ -79,6 +93,27 @@ export interface CreateFolderRequest {
 }
 export function createFolder(
   req: CreateFolderRequest,
+  config?: AxiosRequestConfig,
+): Promise<Folder> {
+  return http.post('/folder/create', req, config)
+}
+
+/**
+ * POST /api/v1/folder/create
+ * 秘钥中心创建顶级配置目录使用的请求格式。
+ * type 由秘钥中心创建文件夹弹框选择:common 表示通用配置,customer 表示用户配置。
+ */
+export interface CreateSecretFolderRequest {
+  projectId: Uuid
+  code: string
+  name: string
+  remark?: string
+  type: 'common' | 'customer'
+  parentFolderId?: Uuid
+}
+
+export function createSecretFolder(
+  req: CreateSecretFolderRequest,
   config?: AxiosRequestConfig,
 ): Promise<Folder> {
   return http.post('/folder/create', req, config)

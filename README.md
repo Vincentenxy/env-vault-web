@@ -583,7 +583,7 @@ VITE_APP_TITLE=EnvVault
 # 安装依赖
 pnpm install
 
-# 本地开发(默认走 vite proxy 把 /api/v1 转发到后端 http://localhost:8080)
+# 本地开发(默认走 vite proxy 把 /api/v1 转发到后端 http://localhost:8090)
 pnpm dev
 
 # 类型检查

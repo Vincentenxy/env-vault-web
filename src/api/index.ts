@@ -5,6 +5,7 @@ export { http, request } from './http'
 
 // 业务模块
 export * from './me'
+export * from './tenant'
 export * from './organization'
 export * from './project'
 export * from './env'

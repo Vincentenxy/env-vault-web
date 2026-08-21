@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, type Component } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
-import { Folder, OfficeBuilding } from '@element-plus/icons-vue'
+import { OfficeBuilding } from '@element-plus/icons-vue'
 import { Bell, KeyRound, LogOut, Moon, Sun } from '@lucide/vue'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
@@ -9,7 +9,7 @@ import { useThemeStore } from '@/stores/theme'
 interface NavItem {
   path: string
   label: string
-  icon: typeof Folder
+  icon: Component
 }
 
 const route = useRoute()
@@ -18,8 +18,8 @@ const auth = useAuthStore()
 const theme = useThemeStore()
 
 const navItems: NavItem[] = [
-  { path: '/app/secrets', label: '项目管理', icon: Folder },
   { path: '/app/organizations', label: '组织管理', icon: OfficeBuilding },
+  { path: '/app/secrets', label: '秘钥管理', icon: KeyRound },
 ]
 const userName = computed(() => auth.currentUser?.name ?? auth.currentUser?.userId ?? '管理员')
 const userEmail = computed(

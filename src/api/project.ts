@@ -4,13 +4,15 @@ import { http } from './http'
 
 export interface ListProjectsRequest extends PageRequest {
   orgId: string
+  name?: string
+  code?: string
 }
 
 export interface CreateProjectRequest {
-  parentId: string
+  orgId: string
   code: string
   name: string
-  comment?: string
+  remark?: string
   /** 可选;若不传,project 下不创建任何 env,后续在 env 页补建。 */
   environments?: EnvSpec[]
 }

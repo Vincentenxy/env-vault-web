@@ -24,10 +24,7 @@ import { usePermission } from '@/composables/use-permission'
 import { Permission } from '@/constants/permission'
 import type { Project } from '@/types/project'
 import type { Organization } from '@/types/organization'
-import type {
-  CreateProjectRequest,
-  UpdateProjectRequest,
-} from '@/api/project'
+import type { CreateProjectRequest, UpdateProjectRequest } from '@/api/project'
 import type { EnvSpec } from '@/types/project'
 
 const projectStore = useProjectStore()
@@ -46,9 +43,7 @@ const filteredProjects = computed<Project[]>(() => {
   const kw = searchKeyword.value.trim().toLowerCase()
   if (!kw) return projectStore.items
   return projectStore.items.filter(
-    (p) =>
-      p.code.toLowerCase().includes(kw) ||
-      p.name.toLowerCase().includes(kw),
+    (p) => p.code.toLowerCase().includes(kw) || p.name.toLowerCase().includes(kw),
   )
 })
 
@@ -133,11 +128,11 @@ const envCodeRules = {
   name: [{ required: true, message: '必填', trigger: 'blur' }],
 }
 
-const DEFAULT_ENVS: Array<Pick<EnvSpec, 'code' | 'name' | 'comment'>> = [
-  { code: 'dev', name: 'Development', comment: '' },
-  { code: 'test', name: 'Testing', comment: '' },
-  { code: 'sim', name: 'Simulation', comment: '' },
-  { code: 'prod', name: 'Production', comment: '' },
+const DEFAULT_ENVS: Array<Pick<EnvSpec, 'code' | 'name' | 'remark'>> = [
+  { code: 'dev', name: 'Development', remark: '' },
+  { code: 'test', name: 'Testing', remark: '' },
+  { code: 'sim', name: 'Simulation', remark: '' },
+  { code: 'prod', name: 'Production', remark: '' },
 ]
 
 function resetCreateForm(): void {
@@ -155,7 +150,7 @@ function openCreate(): void {
 }
 
 function addEnvRow(): void {
-  createForm.environments.push({ code: '', name: '', comment: '' })
+  createForm.environments.push({ code: '', name: '', remark: '' })
 }
 
 function addDefaultEnv(env: (typeof DEFAULT_ENVS)[number]): void {
@@ -177,10 +172,10 @@ async function onCreateSubmit(): Promise<void> {
   createSubmitting.value = true
   try {
     const req: CreateProjectRequest = {
-      parentId: createForm.parentId,
+      orgId: createForm.parentId,
       code: createForm.code,
       name: createForm.name,
-      comment: createForm.comment,
+      remark: createForm.comment,
       environments: createForm.environments.length > 0 ? createForm.environments : undefined,
     }
     await projectStore.create(req)
@@ -374,14 +369,11 @@ watch(
           filterable
           @change="onOrgChange"
         >
-          <el-option
-            v-for="o in orgOptions"
-            :key="o.id"
-            :label="o.name"
-            :value="o.id"
-          >
-            <span style="float:left">{{ o.name }}</span>
-            <span style="float:right;color:var(--v-text-tertiary);font-size:12px;margin-left:8px">
+          <el-option v-for="o in orgOptions" :key="o.id" :label="o.name" :value="o.id">
+            <span style="float: left">{{ o.name }}</span>
+            <span
+              style="float: right; color: var(--v-text-tertiary); font-size: 12px; margin-left: 8px"
+            >
               {{ o.code }}
             </span>
           </el-option>
@@ -527,7 +519,12 @@ watch(
       </template>
       <el-form ref="createFormRef" :model="createForm" :rules="createRules" label-position="top">
         <el-form-item label="所属组织" prop="parentId">
-          <el-select v-model="createForm.parentId" placeholder="请选择" style="width: 100%" filterable>
+          <el-select
+            v-model="createForm.parentId"
+            placeholder="请选择"
+            style="width: 100%"
+            filterable
+          >
             <el-option
               v-for="o in orgOptions"
               :key="o.id"
@@ -563,11 +560,7 @@ watch(
             </div>
 
             <div v-if="createForm.environments.length > 0" class="env-block__list">
-              <div
-                v-for="(env, idx) in createForm.environments"
-                :key="idx"
-                class="env-row"
-              >
+              <div v-for="(env, idx) in createForm.environments" :key="idx" class="env-row">
                 <el-form-item
                   :prop="`environments.${idx}.code`"
                   :rules="envCodeRules.code"
@@ -583,7 +576,7 @@ watch(
                   <el-input v-model="env.name" placeholder="name" />
                 </el-form-item>
                 <el-form-item class="env-row__field env-row__field--comment">
-                  <el-input v-model="env.comment" placeholder="说明(可选)" />
+                  <el-input v-model="env.remark" placeholder="说明(可选)" />
                 </el-form-item>
                 <el-button text type="danger" @click="removeEnvRow(idx)">移除</el-button>
               </div>
@@ -640,11 +633,7 @@ watch(
     </el-dialog>
 
     <!-- 编辑 -->
-    <el-dialog
-      v-model="editDialogVisible"
-      width="480px"
-      :close-on-click-modal="false"
-    >
+    <el-dialog v-model="editDialogVisible" width="480px" :close-on-click-modal="false">
       <template #header>
         <div class="project-page__dialog-header">
           <span class="project-page__dialog-icon project-page__dialog-icon--edit">
@@ -675,11 +664,7 @@ watch(
     </el-dialog>
 
     <!-- 删除 -->
-    <el-dialog
-      v-model="deleteDialogVisible"
-      width="460px"
-      :close-on-click-modal="false"
-    >
+    <el-dialog v-model="deleteDialogVisible" width="460px" :close-on-click-modal="false">
       <template #header>
         <div class="project-page__dialog-header">
           <span class="project-page__dialog-icon project-page__dialog-icon--delete">
@@ -689,7 +674,9 @@ watch(
         </div>
       </template>
       <p v-if="deleteTarget" class="project-page__confirm-text">
-        确定要删除项目 <b>{{ deleteTarget.name }}</b>(<code>{{ deleteTarget.code }}</code>)吗?
+        确定要删除项目 <b>{{ deleteTarget.name }}</b
+        >(<code>{{ deleteTarget.code }}</code
+        >)吗?
       </p>
       <p class="project-page__confirm-warn">删除后不可恢复,请谨慎操作。</p>
       <el-checkbox
@@ -704,11 +691,7 @@ watch(
       </p>
       <template #footer>
         <el-button @click="deleteDialogVisible = false">取消</el-button>
-        <el-button
-          type="danger"
-          :loading="deleteSubmitting"
-          @click="onDeleteConfirm"
-        >
+        <el-button type="danger" :loading="deleteSubmitting" @click="onDeleteConfirm">
           {{ forceChecked ? '级联删除' : '删除' }}
         </el-button>
       </template>
@@ -841,9 +824,12 @@ watch(
   padding: 18px 18px 14px;
   background: var(--v-surface-bg);
   border: 1px solid var(--v-surface-border);
-  border-radius: var(--v-radius-lg);
+  border-radius: 14px;
   cursor: pointer;
-  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease,
+    border-color 0.18s ease;
   overflow: hidden;
   min-height: 168px;
 
@@ -979,7 +965,9 @@ watch(
   &__enter {
     opacity: 0;
     transform: translateY(4px);
-    transition: opacity 0.18s ease, transform 0.18s ease;
+    transition:
+      opacity 0.18s ease,
+      transform 0.18s ease;
     flex-shrink: 0;
   }
 }

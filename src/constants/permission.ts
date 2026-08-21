@@ -9,6 +9,10 @@
  * 增删时同步检视 rbac.yaml 与 useRbacStore 的加载逻辑。
  */
 export const Permission = {
+  // ---------- Tenant ----------
+  // 后端 RBAC 接入租户级权限后直接返回该权限码;前端创建入口已按此码隔离。
+  TenantCreate: 'tenant:create',
+
   // ---------- Org ----------
   OrgRead: 'org:read',
   OrgList: 'org:list',

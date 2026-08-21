@@ -7,6 +7,10 @@ export interface Project extends Actor {
   code: string
   name: string
   comment: string
+  remark?: string
+  admin?: string
+  environmentCount?: number
+  memberCount?: number
   createdAt: string
   updatedAt: string
 }
@@ -15,5 +19,6 @@ export interface Project extends Actor {
 export interface EnvSpec {
   code: string
   name: string
-  comment?: string
+  remark?: string
+  isCheckPerm?: boolean
 }

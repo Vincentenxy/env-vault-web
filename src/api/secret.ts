@@ -11,20 +11,77 @@ import { http } from './http'
  * 响应是 `SecretGroup[]`:每个 code 挂若干 env entry。
  */
 export type ListSecretsRequest = PageRequest &
-  (
-    | { environmentId: Uuid; folderId?: never }
-    | { environmentId?: never; folderId: Uuid }
-  )
+  ({ environmentId: Uuid; folderId?: never } | { environmentId?: never; folderId: Uuid })
 
 export function listSecrets(req: ListSecretsRequest): Promise<PageResp<SecretGroup>> {
   return http.post('/secret/list', req)
 }
 
 /**
- * POST /api/v1/secrets/list  (复数 —— 新接口,与新增页面保持一致)
+ * 秘钥中心按 folderGroupId 查询一个逻辑文件夹下的全部密钥。
+ * 响应数据包裹在 `secretList` 中,每条密钥的环境值位于 `values` 下。
+ */
+export interface FolderGroupSecretValue {
+  secretId: Uuid
+  folderId: Uuid
+  value: string
+  version: number
+  valueType: string
+}
+
+export interface FolderGroupSecret {
+  groupId: Uuid
+  key: string
+  remark?: string
+  values: Record<string, FolderGroupSecretValue>
+}
+
+export interface ListFolderGroupSecretsResponse {
+  secretList: FolderGroupSecret[]
+}
+
+export function listSecretsByFolderGroup(req: {
+  folderGroupId: Uuid
+}): Promise<ListFolderGroupSecretsResponse> {
+  return http.post('/secret/list', req)
+}
+
+export interface UpdateFolderGroupSecretValueRequest {
+  secretId: Uuid
+  envCode: string
+  folderId: Uuid
+  value: string
+}
+
+export interface UpdateFolderGroupSecretItemRequest {
+  groupId: Uuid
+  key: string
+  remark: string
+  commitMsg?: string
+  values: UpdateFolderGroupSecretValueRequest[]
+}
+
+export interface UpdateFolderGroupSecretsRequest {
+  commitMsg: string
+  secrets: UpdateFolderGroupSecretItemRequest[]
+}
+
+export interface UpdateFolderGroupSecretsResponse {
+  batchId: Uuid
+}
+
+export function updateFolderGroupSecrets(
+  req: UpdateFolderGroupSecretsRequest,
+): Promise<UpdateFolderGroupSecretsResponse> {
+  return http.post('/secret/update', req)
+}
+
+/**
+ * POST /api/v1/secret/list
  *
  * 新形态:
- *  - 入参按 (projectId, folderCode, key, envList) 定位
+ *  - 秘钥中心按 folderGroupId 定位,请求只需要 folderGroupId
+ *  - 项目详情页仍兼容 projectId + folderCode + envList 的旧调用方式
  *  - key 为空时,返回该 folder 下所有 secret
  *  - 响应是平铺的 `SecretAcrossEnvs[]`,每个对象顶层 `key` + `projectCode`,
  *    加上 `envCode` 索引的 {value, version, updatedAt} 块
@@ -35,14 +92,25 @@ export function listSecrets(req: ListSecretsRequest): Promise<PageResp<SecretGro
  *  - 新:按 key 列表,每个 key 一行 4 列 (4 个 env 横向并列),与新增/编辑
  *    弹窗里"一行 key 下面 4 个 env 输入框"的视觉一致
  */
-export interface ListSecretsAcrossEnvsRequest {
-  projectId: Uuid
-  folderCode: string
-  /** 空字符串/不传 = 查询该 folder 下所有 secret;否则按 key 精确查询 */
-  key?: string
-  /** 要返回哪些 env 列;典型为 ["dev","test","sim","prod"] */
-  envList: string[]
-}
+export type ListSecretsAcrossEnvsRequest =
+  | {
+      /** 秘钥中心文件夹的逻辑分组 ID,后端据此查询该文件夹下所有环境的 secret。 */
+      folderGroupId: Uuid
+      /** 空字符串/不传 = 查询该 folder 下所有 secret;否则按 key 精确查询 */
+      key?: string
+      /** 仅兼容后端仍要求环境过滤的版本。 */
+      envList?: string[]
+      projectId?: never
+      folderCode?: never
+    }
+  | {
+      /** 项目详情页旧查询方式,秘钥中心不再使用。 */
+      projectId: Uuid
+      folderCode: string
+      key?: string
+      envList: string[]
+      folderGroupId?: never
+    }
 
 /** 单个 env 在新接口响应中的块(包含 value + 元信息) */
 export interface SecretAcrossEnvsEntry {
@@ -77,7 +145,7 @@ export interface SecretAcrossEnvs {
 export function listSecretsAcrossEnvs(
   req: ListSecretsAcrossEnvsRequest,
 ): Promise<SecretAcrossEnvs[]> {
-  return http.post('/secrets/list', req)
+  return http.post('/secret/list', req)
 }
 
 /**
@@ -188,8 +256,6 @@ export interface BatchCreateSecretItem {
 export interface BatchCreateSecretsRequest {
   secretList: BatchCreateSecretItem[]
 }
-export function batchCreateSecrets(
-  req: BatchCreateSecretsRequest,
-): Promise<null> {
+export function batchCreateSecrets(req: BatchCreateSecretsRequest): Promise<null> {
   return http.post('/secrets/batchCreate', req)
 }

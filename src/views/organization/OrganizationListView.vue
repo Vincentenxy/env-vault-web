@@ -1,659 +1,1265 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
-  ElMessage,
-  type FormInstance,
-  type FormRules,
-} from 'element-plus'
-import {
+  ArrowDown,
   ArrowRight,
-  Delete,
-  Edit,
+  Check,
+  CollectionTag,
+  Folder,
+  OfficeBuilding,
   Plus,
-  Refresh,
   Search,
-  View,
+  Star,
+  StarFilled,
+  User,
 } from '@element-plus/icons-vue'
-import { useOrganizationStore } from '@/stores/organization'
-import { ApiError } from '@/types/api'
-import { formatDateTime } from '@/utils/format'
-import { usePermission } from '@/composables/use-permission'
-import { Permission } from '@/constants/permission'
+import { listOrganizations } from '@/api/organization'
+import { listProjects } from '@/api/project'
+import {
+  getTenantWithOrgProject,
+  type TenantHierarchyOption,
+  type TenantOrganizationOption,
+  type TenantProjectOption,
+} from '@/api/tenant'
+import ResourceCreateDialog, {
+  type ResourceCreatedPayload,
+} from './components/ResourceCreateDialog.vue'
 import type { Organization } from '@/types/organization'
-import type {
-  CreateOrganizationRequest,
-  UpdateOrganizationRequest,
-} from '@/api/organization'
+import type { Project } from '@/types/project'
 
-const orgStore = useOrganizationStore()
-const { has } = usePermission()
+type CascadeLevel = 'tenant' | 'organization' | 'project'
+type ResourceLevel = 'organization' | 'project'
+type CascadeItem = TenantHierarchyOption | TenantOrganizationOption | TenantProjectOption
+type ResourceItem = Organization | Project
+type CardTone = 'blue' | 'violet' | 'teal' | 'rose'
 
+const tenantHierarchy = ref<TenantHierarchyOption[]>([])
+const organizations = ref<Organization[]>([])
+const projects = ref<Project[]>([])
+const selectedTenantId = ref('')
+const selectedOrganizationId = ref('')
+const selectedProjectId = ref('')
+const hierarchyLoading = ref(false)
+const contentLoading = ref(false)
+const loadFailed = ref(false)
+const currentPage = ref(1)
+const pageSize = ref(10)
+const total = ref(0)
 const searchKeyword = ref('')
+const favoriteOnly = ref(false)
+const favoriteIds = reactive(new Set<string>())
 
-// ==================== 创建组织 ====================
-const createDialogVisible = ref(false)
-const createSubmitting = ref(false)
-const createFormRef = ref<FormInstance>()
+const cascadeOpen = ref(false)
+const cascadeLevel = ref<CascadeLevel>('tenant')
+const cascadeSearch = ref('')
 
-const createForm = reactive<CreateOrganizationRequest>({
-  code: '',
-  name: '',
-  comment: '',
+let contentRequestId = 0
+let searchTimer: number | undefined
+let skipNextSearchReload = false
+
+const resourceLevel = computed<ResourceLevel>(() =>
+  selectedOrganizationId.value ? 'project' : 'organization',
+)
+
+const selectedTenant = computed(() =>
+  tenantHierarchy.value.find((item) => item.id === selectedTenantId.value),
+)
+
+const tenantOrganizations = computed(() => selectedTenant.value?.orgList ?? [])
+
+const selectedOrganization = computed<TenantOrganizationOption | undefined>(() => {
+  const hierarchyItem = tenantOrganizations.value.find(
+    (item) => item.id === selectedOrganizationId.value,
+  )
+  if (hierarchyItem) return hierarchyItem
+
+  const listItem = organizations.value.find((item) => item.id === selectedOrganizationId.value)
+  return listItem ? { id: listItem.id, name: listItem.name, projectList: [] } : undefined
 })
 
-const createRules: FormRules<CreateOrganizationRequest> = {
-  code: [
-    { required: true, message: '请输入 code', trigger: 'blur' },
-    {
-      pattern: /^[a-z0-9]+(-[a-z0-9]+)*$/,
-      message: '仅小写字母、数字、中横线,且不能以中横线开头或结尾',
-      trigger: 'blur',
-    },
-    { max: 32, message: '长度不能超过 32', trigger: 'blur' },
-  ],
-  name: [
-    { required: true, message: '请输入名称', trigger: 'blur' },
-    { max: 64, message: '长度不能超过 64', trigger: 'blur' },
-  ],
-  comment: [{ max: 256, message: '长度不能超过 256', trigger: 'blur' }],
+const projectOptions = computed<TenantProjectOption[]>(() => {
+  const options = new Map<string, TenantProjectOption>()
+  for (const item of selectedOrganization.value?.projectList ?? []) options.set(item.id, item)
+  for (const item of projects.value) options.set(item.id, { id: item.id, name: item.name })
+  return [...options.values()]
+})
+
+const selectedProject = computed(() =>
+  projectOptions.value.find((item) => item.id === selectedProjectId.value),
+)
+
+const cascadeItems = computed<CascadeItem[]>(() => {
+  const keyword = cascadeSearch.value.trim().toLowerCase()
+  const source: CascadeItem[] =
+    cascadeLevel.value === 'tenant'
+      ? tenantHierarchy.value
+      : cascadeLevel.value === 'organization'
+        ? tenantOrganizations.value
+        : projectOptions.value
+
+  return keyword ? source.filter((item) => item.name.toLowerCase().includes(keyword)) : source
+})
+
+const visibleOrganizations = computed(() =>
+  favoriteOnly.value
+    ? organizations.value.filter((item) => favoriteIds.has(item.id))
+    : organizations.value,
+)
+
+const visibleProjects = computed<Project[]>(() => {
+  let items = projects.value
+  if (selectedProjectId.value) {
+    const loaded = items.find((item) => item.id === selectedProjectId.value)
+    items = loaded
+      ? [loaded]
+      : selectedProject.value
+        ? [projectOptionToCard(selectedProject.value)]
+        : []
+  }
+  return favoriteOnly.value ? items.filter((item) => favoriteIds.has(item.id)) : items
+})
+
+const hasVisibleResources = computed(() =>
+  resourceLevel.value === 'organization'
+    ? visibleOrganizations.value.length > 0
+    : visibleProjects.value.length > 0,
+)
+
+const searchPlaceholder = computed(() =>
+  resourceLevel.value === 'organization' ? '搜索组织...' : '搜索项目...',
+)
+
+const emptyTitle = computed(() => {
+  if (loadFailed.value)
+    return resourceLevel.value === 'organization' ? '组织加载失败' : '项目加载失败'
+  return resourceLevel.value === 'organization' ? '暂无组织' : '暂无项目'
+})
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
 }
 
-function resetCreateForm(): void {
-  createForm.code = ''
-  createForm.name = ''
-  createForm.comment = ''
-  createFormRef.value?.clearValidate()
+function firstString(value: unknown, keys: string[]): string | undefined {
+  const record = asRecord(value)
+  for (const key of keys) {
+    const candidate = record[key]
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim()
+  }
+  return undefined
 }
+
+function firstNumber(value: unknown, keys: string[]): number | undefined {
+  const record = asRecord(value)
+  for (const key of keys) {
+    const candidate = record[key]
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) return candidate
+  }
+  return undefined
+}
+
+function resourceDescription(item: ResourceItem): string {
+  return (
+    firstString(item, ['remark', 'comment', 'description']) ??
+    `暂无${isProject(item) ? '项目' : '组织'}说明，等待后台补充该字段`
+  )
+}
+
+function resourceAdmin(item: ResourceItem): string {
+  return (
+    firstString(item, [
+      'admin',
+      'adminName',
+      'updatedByLabel',
+      'createdByLabel',
+      'updatedBy',
+      'createdBy',
+    ]) ?? '待补充'
+  )
+}
+
+function organizationProjectCount(item: Organization): number {
+  const count = firstNumber(item, ['projectCount', 'projectNum'])
+  if (count !== undefined) return count
+  return tenantOrganizations.value.find((option) => option.id === item.id)?.projectList.length ?? 0
+}
+
+function memberCount(item: ResourceItem): number | undefined {
+  return firstNumber(item, ['memberCount', 'memberNum', 'userCount'])
+}
+
+function projectEnvironmentCount(item: Project): number | undefined {
+  return firstNumber(item, ['environmentCount', 'envCount', 'environmentNum', 'envNum'])
+}
+
+function isProject(item: ResourceItem): item is Project {
+  return 'orgId' in item
+}
+
+function avatarText(item: ResourceItem): string {
+  return resourceAdmin(item).slice(0, 1)
+}
+
+function stableIndex(value: string, modulo: number): number {
+  return [...value].reduce((sum, char) => sum + char.charCodeAt(0), 0) % modulo
+}
+
+function cardTone(item: ResourceItem): CardTone {
+  const tones = ['blue', 'violet', 'teal', 'rose'] as const
+  return tones[stableIndex(item.id, tones.length)] ?? 'blue'
+}
+
+function avatarTone(item: ResourceItem): number {
+  return stableIndex(item.id, 5) + 1
+}
+
+function projectOptionToCard(item: TenantProjectOption): Project {
+  return {
+    id: item.id,
+    orgId: selectedOrganizationId.value,
+    code: firstString(item, ['code']) ?? '',
+    name: item.name,
+    comment: '',
+    createdBy: '',
+    createdByLabel: '',
+    updatedBy: '',
+    updatedByLabel: '',
+    createdAt: '',
+    updatedAt: '',
+  }
+}
+
+function resetResourceSearch(): void {
+  window.clearTimeout(searchTimer)
+  if (searchKeyword.value) {
+    skipNextSearchReload = true
+    searchKeyword.value = ''
+  }
+}
+
+async function loadHierarchy(): Promise<void> {
+  hierarchyLoading.value = true
+  try {
+    const data = await getTenantWithOrgProject()
+    tenantHierarchy.value = Array.isArray(data.tenantList) ? data.tenantList : []
+
+    if (!tenantHierarchy.value.some((item) => item.id === selectedTenantId.value)) {
+      selectedTenantId.value = tenantHierarchy.value[0]?.id ?? ''
+      selectedOrganizationId.value = ''
+      selectedProjectId.value = ''
+    }
+  } catch {
+    tenantHierarchy.value = []
+  } finally {
+    hierarchyLoading.value = false
+  }
+}
+
+async function loadOrganizations(): Promise<void> {
+  const requestId = ++contentRequestId
+  contentLoading.value = true
+  loadFailed.value = false
+  projects.value = []
+
+  try {
+    const data = await listOrganizations({
+      pageNum: currentPage.value,
+      pageSize: pageSize.value,
+      tenantId: selectedTenantId.value || null,
+      name: searchKeyword.value.trim(),
+      code: '',
+    })
+    if (requestId !== contentRequestId) return
+    organizations.value = Array.isArray(data.list) ? data.list : []
+    total.value = data.total ?? organizations.value.length
+  } catch {
+    if (requestId !== contentRequestId) return
+    organizations.value = []
+    total.value = 0
+    loadFailed.value = true
+  } finally {
+    if (requestId === contentRequestId) contentLoading.value = false
+  }
+}
+
+async function loadProjects(): Promise<void> {
+  if (!selectedOrganizationId.value) return
+
+  const requestId = ++contentRequestId
+  contentLoading.value = true
+  loadFailed.value = false
+
+  try {
+    const data = await listProjects({
+      pageNum: currentPage.value,
+      pageSize: pageSize.value,
+      orgId: selectedOrganizationId.value,
+      name: searchKeyword.value.trim(),
+      code: '',
+    })
+    if (requestId !== contentRequestId) return
+    projects.value = Array.isArray(data.list) ? data.list : []
+    total.value = data.total ?? projects.value.length
+  } catch {
+    if (requestId !== contentRequestId) return
+    projects.value = []
+    total.value = 0
+    loadFailed.value = true
+  } finally {
+    if (requestId === contentRequestId) contentLoading.value = false
+  }
+}
+
+function loadCurrentLevel(): Promise<void> {
+  return resourceLevel.value === 'organization' ? loadOrganizations() : loadProjects()
+}
+
+async function refreshPage(): Promise<void> {
+  await loadHierarchy()
+  await loadCurrentLevel()
+}
+
+function canOpenCascadeLevel(level: CascadeLevel): boolean {
+  if (level === 'organization') return Boolean(selectedTenantId.value)
+  if (level === 'project') return Boolean(selectedOrganizationId.value)
+  return true
+}
+
+function openCascade(level: CascadeLevel): void {
+  if (!canOpenCascadeLevel(level)) return
+  cascadeLevel.value = level
+  cascadeSearch.value = ''
+  cascadeOpen.value = true
+}
+
+function selectTenant(item: TenantHierarchyOption): void {
+  selectedTenantId.value = item.id
+  selectedOrganizationId.value = ''
+  selectedProjectId.value = ''
+  currentPage.value = 1
+  resetResourceSearch()
+  cascadeLevel.value = 'organization'
+  cascadeSearch.value = ''
+  void loadOrganizations()
+}
+
+function selectAllOrganizations(): void {
+  selectedOrganizationId.value = ''
+  selectedProjectId.value = ''
+  currentPage.value = 1
+  resetResourceSearch()
+  cascadeOpen.value = false
+  void loadOrganizations()
+}
+
+function selectOrganization(item: TenantOrganizationOption): void {
+  selectedOrganizationId.value = item.id
+  selectedProjectId.value = ''
+  currentPage.value = 1
+  resetResourceSearch()
+  cascadeLevel.value = 'project'
+  cascadeSearch.value = ''
+  void loadProjects()
+}
+
+function selectAllProjects(): void {
+  selectedProjectId.value = ''
+  cascadeOpen.value = false
+  cascadeSearch.value = ''
+}
+
+function selectProject(item: TenantProjectOption): void {
+  selectedProjectId.value = item.id
+  cascadeOpen.value = false
+  cascadeSearch.value = ''
+}
+
+function onCascadeItemClick(item: CascadeItem): void {
+  if (cascadeLevel.value === 'tenant') selectTenant(item as TenantHierarchyOption)
+  else if (cascadeLevel.value === 'organization') {
+    selectOrganization(item as TenantOrganizationOption)
+  } else selectProject(item as TenantProjectOption)
+}
+
+function enterOrganization(item: Organization): void {
+  const hierarchyItem = tenantOrganizations.value.find((option) => option.id === item.id)
+  selectOrganization(hierarchyItem ?? { id: item.id, name: item.name, projectList: [] })
+  cascadeOpen.value = false
+}
+
+function enterProject(item: Project): void {
+  selectProject({ id: item.id, name: item.name })
+}
+
+function onPageChange(page: number): void {
+  currentPage.value = page
+  void loadCurrentLevel()
+}
+
+function toggleFavorite(item: ResourceItem): void {
+  if (favoriteIds.has(item.id)) favoriteIds.delete(item.id)
+  else favoriteIds.add(item.id)
+}
+
+const createDialogVisible = ref(false)
 
 function openCreate(): void {
-  resetCreateForm()
   createDialogVisible.value = true
 }
 
-async function onCreateSubmit(): Promise<void> {
-  if (!createFormRef.value) return
-  const valid = await createFormRef.value.validate().catch(() => false)
-  if (!valid) return
-  createSubmitting.value = true
-  try {
-    await orgStore.create({ ...createForm })
-    ElMessage.success('创建成功')
-    createDialogVisible.value = false
-  } catch (e) {
-    const msg = e instanceof ApiError ? e.message : '创建失败'
-    ElMessage.error(msg)
-  } finally {
-    createSubmitting.value = false
+async function onResourceCreated(payload: ResourceCreatedPayload): Promise<void> {
+  currentPage.value = 1
+  resetResourceSearch()
+  await loadHierarchy()
+
+  if (payload.type === 'tenant') {
+    const createdTenant = tenantHierarchy.value.find(
+      (tenant) => tenant.id === payload.resourceId || tenant.name === payload.name,
+    )
+    selectedTenantId.value = payload.resourceId ?? createdTenant?.id ?? selectedTenantId.value
+    selectedOrganizationId.value = ''
+    selectedProjectId.value = ''
+  } else if (payload.type === 'organization') {
+    selectedTenantId.value = payload.tenantId ?? selectedTenantId.value
+    selectedOrganizationId.value = ''
+    selectedProjectId.value = ''
+  } else {
+    selectedTenantId.value = payload.tenantId ?? selectedTenantId.value
+    selectedOrganizationId.value = payload.organizationId ?? ''
+    selectedProjectId.value = ''
   }
+
+  await loadCurrentLevel()
 }
 
-// ==================== 查看组织 ====================
-const viewDialogVisible = ref(false)
-const viewTarget = ref<Organization | null>(null)
-
-function openView(row: Organization): void {
-  viewTarget.value = row
-  viewDialogVisible.value = true
-}
-
-// ==================== 编辑组织 ====================
-const editDialogVisible = ref(false)
-const editSubmitting = ref(false)
-const editFormRef = ref<FormInstance>()
-const editTargetId = ref<string>('')
-const editTargetCode = ref<string>('')
-
-const editForm = reactive<{ name: string; comment: string }>({
-  name: '',
-  comment: '',
-})
-
-const editRules: FormRules<{ name: string; comment: string }> = {
-  name: [
-    { required: true, message: '请输入名称', trigger: 'blur' },
-    { max: 64, message: '长度不能超过 64', trigger: 'blur' },
-  ],
-  comment: [{ max: 256, message: '长度不能超过 256', trigger: 'blur' }],
-}
-
-function openEdit(row: Organization): void {
-  editTargetId.value = row.id
-  editTargetCode.value = row.code
-  editForm.name = row.name
-  editForm.comment = row.comment ?? ''
-  editFormRef.value?.clearValidate()
-  editDialogVisible.value = true
-}
-
-async function onEditSubmit(): Promise<void> {
-  if (!editFormRef.value) return
-  const valid = await editFormRef.value.validate().catch(() => false)
-  if (!valid) return
-  editSubmitting.value = true
-  const req: UpdateOrganizationRequest = {
-    id: editTargetId.value,
-    name: editForm.name.trim(),
-    comment: editForm.comment?.trim() || undefined,
-  }
-  try {
-    await orgStore.update(req)
-    ElMessage.success('已保存')
-    editDialogVisible.value = false
-  } catch (e) {
-    const msg = e instanceof ApiError ? e.message : '保存失败'
-    ElMessage.error(msg)
-  } finally {
-    editSubmitting.value = false
-  }
-}
-
-// ==================== 删除组织 ====================
-const deleteDialogVisible = ref(false)
-const deleteSubmitting = ref(false)
-const deleteTarget = ref<Organization | null>(null)
-const forceChecked = ref(false)
-
-function openDelete(row: Organization): void {
-  deleteTarget.value = row
-  forceChecked.value = false
-  deleteDialogVisible.value = true
-}
-
-/**
- * 后端默认 force=false:有 active child project 时返回 409。
- * 第一次不带 force 尝试;若 409,弹框继续显示,让用户勾选"级联删除"重试 force=true。
- * force=true 需 org:force_delete 权限(后端再校验 1403)。
- */
-async function onDeleteConfirm(): Promise<void> {
-  const target = deleteTarget.value
-  if (!target) return
-  if (forceChecked.value && !has(Permission.OrgForceDelete)) {
-    ElMessage.warning('当前账号没有级联删除权限')
+watch(searchKeyword, () => {
+  if (skipNextSearchReload) {
+    skipNextSearchReload = false
     return
   }
-  deleteSubmitting.value = true
-  try {
-    const res = await orgStore.remove({
-      id: target.id,
-      force: forceChecked.value || undefined,
-    })
-    if (res.deleted) {
-      ElMessage.success(forceChecked.value ? '已级联删除' : '已删除')
-      deleteDialogVisible.value = false
-    }
-  } catch (e) {
-    const msg = e instanceof ApiError ? e.message : '删除失败'
-    ElMessage.error(msg)
-  } finally {
-    deleteSubmitting.value = false
-  }
-}
-
-// ==================== 列表 ====================
-async function onRefresh(): Promise<void> {
-  try {
-    await orgStore.fetchList({
-      pageNum: orgStore.lastQuery.pageNum ?? 1,
-      pageSize: orgStore.lastQuery.pageSize ?? 20,
-    })
-  } catch (e) {
-    const msg = e instanceof ApiError ? e.message : '加载失败'
-    ElMessage.error(msg)
-  }
-}
-
-function onPageChange(pageNum: number, pageSize: number): void {
-  orgStore.fetchList({ pageNum, pageSize }).catch((e: unknown) => {
-    const msg = e instanceof ApiError ? e.message : '加载失败'
-    ElMessage.error(msg)
-  })
-}
-
-function onRowAction(action: 'view' | 'edit' | 'delete', row: Organization): void {
-  if (action === 'view') openView(row)
-  else if (action === 'edit') {
-    if (!has(Permission.OrgUpdate)) {
-      ElMessage.warning('当前账号没有 org:update 权限')
-      return
-    }
-    openEdit(row)
-  } else {
-    if (!has(Permission.OrgDelete)) {
-      ElMessage.warning('当前账号没有 org:delete 权限')
-      return
-    }
-    openDelete(row)
-  }
-}
+  window.clearTimeout(searchTimer)
+  searchTimer = window.setTimeout(() => {
+    selectedProjectId.value = ''
+    currentPage.value = 1
+    void loadCurrentLevel()
+  }, 300)
+})
 
 onMounted(() => {
-  onRefresh()
+  void refreshPage()
+})
+
+onBeforeUnmount(() => {
+  window.clearTimeout(searchTimer)
 })
 </script>
 
 <template>
-  <div class="org-page">
-    <!-- 页面标题区 -->
-    <header class="page-header">
-      <div>
-        <h1 class="page-header__title">组织管理</h1>
-        <p class="page-header__desc">维护平台中的组织,组织是最高的业务隔离单元。</p>
-      </div>
-      <div class="page-header__actions">
-        <el-button :icon="Refresh" @click="onRefresh">刷新</el-button>
+  <section class="organization-page">
+    <header class="organization-toolbar">
+      <el-popover
+        v-model:visible="cascadeOpen"
+        placement="bottom-start"
+        :width="336"
+        :show-arrow="false"
+        popper-class="organization-cascade-popper"
+        trigger="click"
+      >
+        <template #reference>
+          <button class="cascade-trigger" type="button" aria-label="选择租户、组织和项目">
+            <span class="cascade-trigger__part" @click.stop="openCascade('tenant')">
+              <el-icon><OfficeBuilding /></el-icon>
+              <span>{{
+                selectedTenant?.name || (hierarchyLoading ? '加载中...' : '暂无租户')
+              }}</span>
+            </span>
+            <el-icon class="cascade-trigger__separator"><ArrowRight /></el-icon>
+            <span class="cascade-trigger__part" @click.stop="openCascade('organization')">
+              <el-icon><OfficeBuilding /></el-icon>
+              <span>{{ selectedOrganization?.name || '全部组织' }}</span>
+            </span>
+            <el-icon class="cascade-trigger__separator"><ArrowRight /></el-icon>
+            <span
+              class="cascade-trigger__part"
+              :class="{ 'is-disabled': !selectedOrganizationId }"
+              @click.stop="openCascade('project')"
+            >
+              <el-icon><Folder /></el-icon>
+              <span>{{ selectedProject?.name || '全部项目' }}</span>
+            </span>
+            <el-icon class="cascade-trigger__arrow"><ArrowDown /></el-icon>
+          </button>
+        </template>
+
+        <div class="cascade-panel">
+          <el-input
+            v-model="cascadeSearch"
+            clearable
+            :placeholder="`搜索${cascadeLevel === 'tenant' ? '租户' : cascadeLevel === 'organization' ? '组织' : '项目'}...`"
+          >
+            <template #prefix
+              ><el-icon><Search /></el-icon
+            ></template>
+          </el-input>
+
+          <div class="cascade-tabs" role="tablist" aria-label="筛选层级">
+            <button
+              v-for="level in ['tenant', 'organization', 'project'] as CascadeLevel[]"
+              :key="level"
+              type="button"
+              role="tab"
+              class="cascade-tabs__item"
+              :class="{
+                'is-active': cascadeLevel === level,
+                'is-disabled': !canOpenCascadeLevel(level),
+              }"
+              :aria-selected="cascadeLevel === level"
+              :disabled="!canOpenCascadeLevel(level)"
+              @click="openCascade(level)"
+            >
+              <span>{{
+                level === 'tenant' ? '租户' : level === 'organization' ? '组织' : '项目'
+              }}</span>
+              <el-icon
+                v-if="
+                  (level === 'tenant' && selectedTenantId) ||
+                  (level === 'organization' && selectedOrganizationId) ||
+                  (level === 'project' && selectedProjectId)
+                "
+              >
+                <Check />
+              </el-icon>
+            </button>
+          </div>
+
+          <div class="cascade-panel__list">
+            <button
+              v-if="cascadeLevel === 'organization'"
+              type="button"
+              class="cascade-option"
+              :class="{ 'is-active': !selectedOrganizationId }"
+              @click="selectAllOrganizations"
+            >
+              <span class="cascade-option__icon"><OfficeBuilding /></span>
+              <span>全部组织</span>
+              <el-icon v-if="!selectedOrganizationId"><Check /></el-icon>
+            </button>
+            <button
+              v-if="cascadeLevel === 'project'"
+              type="button"
+              class="cascade-option"
+              :class="{ 'is-active': !selectedProjectId }"
+              @click="selectAllProjects"
+            >
+              <span class="cascade-option__icon is-project"><Folder /></span>
+              <span>全部项目</span>
+              <el-icon v-if="!selectedProjectId"><Check /></el-icon>
+            </button>
+            <button
+              v-for="item in cascadeItems"
+              :key="item.id"
+              type="button"
+              class="cascade-option"
+              :class="{
+                'is-active':
+                  cascadeLevel === 'tenant'
+                    ? selectedTenantId === item.id
+                    : cascadeLevel === 'organization'
+                      ? selectedOrganizationId === item.id
+                      : selectedProjectId === item.id,
+              }"
+              @click="onCascadeItemClick(item)"
+            >
+              <span
+                class="cascade-option__icon"
+                :class="{ 'is-project': cascadeLevel === 'project' }"
+              >
+                <Folder v-if="cascadeLevel === 'project'" />
+                <OfficeBuilding v-else />
+              </span>
+              <span>{{ item.name }}</span>
+              <el-icon
+                v-if="
+                  cascadeLevel === 'tenant'
+                    ? selectedTenantId === item.id
+                    : cascadeLevel === 'organization'
+                      ? selectedOrganizationId === item.id
+                      : selectedProjectId === item.id
+                "
+              >
+                <Check />
+              </el-icon>
+              <el-icon v-else-if="cascadeLevel !== 'project'"><ArrowRight /></el-icon>
+            </button>
+            <div v-if="!cascadeItems.length" class="cascade-panel__empty">暂无匹配项</div>
+          </div>
+        </div>
+      </el-popover>
+
+      <div class="organization-toolbar__actions">
         <el-input
           v-model="searchKeyword"
-          placeholder="按 code / 名称筛选"
           clearable
-          class="page-header__search"
+          class="organization-toolbar__search"
+          :placeholder="searchPlaceholder"
         >
-          <template #prefix>
-            <el-icon><Search /></el-icon>
-          </template>
+          <template #prefix
+            ><el-icon><Search /></el-icon
+          ></template>
         </el-input>
-        <el-button
-          type="primary"
-          :icon="Plus"
-          :disabled="!has(Permission.OrgCreate)"
-          :title="!has(Permission.OrgCreate) ? '当前账号没有 org:create 权限' : ''"
-          @click="openCreate"
-        >
-          新建组织
-        </el-button>
+        <el-tooltip content="新建" placement="bottom">
+          <button
+            type="button"
+            class="round-action round-action--primary"
+            aria-label="新建"
+            @click="openCreate"
+          >
+            <el-icon><Plus /></el-icon>
+          </button>
+        </el-tooltip>
+        <el-tooltip :content="favoriteOnly ? '显示全部' : '仅显示收藏'" placement="bottom">
+          <button
+            type="button"
+            class="round-action"
+            :class="{ 'is-active': favoriteOnly }"
+            :aria-pressed="favoriteOnly"
+            aria-label="筛选收藏"
+            @click="favoriteOnly = !favoriteOnly"
+          >
+            <el-icon><StarFilled v-if="favoriteOnly" /><Star v-else /></el-icon>
+          </button>
+        </el-tooltip>
       </div>
     </header>
 
-    <!-- 表格卡片 -->
-    <div class="org-page__surface">
-      <el-table
-        v-loading="orgStore.loading"
-        :data="orgStore.items"
-        class="org-page__table"
-        empty-text="暂无组织"
-      >
-        <el-table-column prop="code" label="Code" min-width="160">
-          <template #default="{ row }">
-            <span class="org-page__code">{{ row.code }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="name" label="名称" min-width="160" />
-        <el-table-column prop="comment" label="说明" min-width="220" show-overflow-tooltip>
-          <template #default="{ row }">
-            <span class="org-page__comment">{{ row.comment || '—' }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="createdByLabel" label="创建人" min-width="120">
-          <template #default="{ row }">
-            <span class="org-page__muted">
-              {{ row.createdByLabel || row.createdBy }}
+    <main v-loading="contentLoading" class="organization-content">
+      <div v-if="hasVisibleResources" class="resource-grid">
+        <article
+          v-for="item in resourceLevel === 'organization' ? visibleOrganizations : visibleProjects"
+          :key="item.id"
+          class="resource-card"
+          tabindex="0"
+          @click="isProject(item) ? enterProject(item) : enterOrganization(item)"
+          @keydown.enter="isProject(item) ? enterProject(item) : enterOrganization(item)"
+        >
+          <div class="resource-card__top">
+            <span class="resource-card__symbol" :class="`is-${cardTone(item)}`">
+              <el-icon><Folder v-if="isProject(item)" /><OfficeBuilding v-else /></el-icon>
             </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="创建时间" min-width="160">
-          <template #default="{ row }">
-            <span class="org-page__muted">{{ formatDateTime(row.createdAt) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
-          <template #default="{ row }">
-            <el-button
-              link
-              type="primary"
-              :icon="View"
-              @click="onRowAction('view', row as Organization)"
+            <button
+              type="button"
+              class="resource-card__favorite"
+              :class="{ 'is-active': favoriteIds.has(item.id) }"
+              :aria-label="favoriteIds.has(item.id) ? '取消收藏' : '收藏'"
+              @click.stop="toggleFavorite(item)"
             >
-              查看
-            </el-button>
-            <el-button
-              link
-              type="primary"
-              :icon="Edit"
-              :disabled="!has(Permission.OrgUpdate)"
-              @click="onRowAction('edit', row as Organization)"
-            >
-              编辑
-            </el-button>
-            <el-button
-              link
-              type="danger"
-              :icon="Delete"
-              :disabled="!has(Permission.OrgDelete)"
-              @click="onRowAction('delete', row as Organization)"
-            >
-              删除
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+              <el-icon>
+                <StarFilled v-if="favoriteIds.has(item.id)" />
+                <Star v-else />
+              </el-icon>
+            </button>
+          </div>
 
-      <div class="org-page__pager">
+          <h2>{{ item.name }}</h2>
+          <p>{{ resourceDescription(item) }}</p>
+
+          <footer class="resource-card__footer">
+            <span class="resource-card__owner">
+              <span class="resource-card__avatar" :class="`is-${avatarTone(item)}`">
+                {{ avatarText(item) }}
+              </span>
+              <span>{{ resourceAdmin(item) }}</span>
+            </span>
+            <span class="resource-card__stats">
+              <template v-if="isProject(item)">
+                <span>
+                  <el-icon><CollectionTag /></el-icon>
+                  {{ projectEnvironmentCount(item) ?? '--' }} 个环境
+                </span>
+              </template>
+              <span v-else>
+                <el-icon><Folder /></el-icon>
+                {{ organizationProjectCount(item) }} 个项目
+              </span>
+              <span>
+                <el-icon><User /></el-icon>
+                {{ memberCount(item) ?? '--' }} 人
+              </span>
+            </span>
+          </footer>
+        </article>
+      </div>
+
+      <div v-else-if="!contentLoading" class="resource-empty">
+        <span class="resource-empty__icon">
+          <Folder v-if="resourceLevel === 'project'" />
+          <OfficeBuilding v-else />
+        </span>
+        <strong>{{ emptyTitle }}</strong>
+        <span>{{ loadFailed ? '请稍后重试' : '当前筛选条件下没有数据' }}</span>
+        <el-button v-if="loadFailed" type="primary" plain @click="loadCurrentLevel">
+          重新加载
+        </el-button>
+      </div>
+
+      <div
+        v-if="total > pageSize && !selectedProjectId && !favoriteOnly"
+        class="resource-pagination"
+      >
         <el-pagination
           background
-          layout="total, prev, pager, next, sizes"
-          :total="orgStore.total"
-          :current-page="orgStore.lastQuery.pageNum ?? 1"
-          :page-size="orgStore.lastQuery.pageSize ?? 20"
-          :page-sizes="[10, 20, 50, 100]"
-          @current-change="(p: number) => onPageChange(p, orgStore.lastQuery.pageSize ?? 20)"
-          @size-change="(s: number) => onPageChange(1, s)"
+          layout="prev, pager, next"
+          :current-page="currentPage"
+          :page-size="pageSize"
+          :total="total"
+          @current-change="onPageChange"
         />
       </div>
-    </div>
+    </main>
 
-    <!-- 新建 -->
-    <el-dialog
+    <ResourceCreateDialog
       v-model="createDialogVisible"
-      width="480px"
-      :close-on-click-modal="false"
-      @closed="resetCreateForm"
-    >
-      <template #header>
-        <div class="org-page__dialog-header">
-          <span class="org-page__dialog-icon org-page__dialog-icon--create">
-            <el-icon><Plus /></el-icon>
-          </span>
-          <span>新建组织</span>
-        </div>
-      </template>
-      <el-form
-        ref="createFormRef"
-        :model="createForm"
-        :rules="createRules"
-        label-position="top"
-      >
-        <el-form-item label="Code" prop="code">
-          <el-input v-model="createForm.code" placeholder="例如 default-org" />
-        </el-form-item>
-        <el-form-item label="名称" prop="name">
-          <el-input v-model="createForm.name" placeholder="默认组织" />
-        </el-form-item>
-        <el-form-item label="说明" prop="comment">
-          <el-input v-model="createForm.comment" type="textarea" :rows="3" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="createDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="createSubmitting" @click="onCreateSubmit">
-          创建
-        </el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 查看 -->
-    <el-dialog v-model="viewDialogVisible" width="520px">
-      <template #header>
-        <div class="org-page__dialog-header">
-          <span class="org-page__dialog-icon org-page__dialog-icon--view">
-            <el-icon><View /></el-icon>
-          </span>
-          <span>组织详情</span>
-        </div>
-      </template>
-      <el-descriptions v-if="viewTarget" :column="1" border>
-        <el-descriptions-item label="Code">
-          <span class="org-page__code">{{ viewTarget.code }}</span>
-        </el-descriptions-item>
-        <el-descriptions-item label="名称">{{ viewTarget.name }}</el-descriptions-item>
-        <el-descriptions-item label="说明">
-          {{ viewTarget.comment || '—' }}
-        </el-descriptions-item>
-        <el-descriptions-item label="创建人">
-          {{ viewTarget.createdByLabel || viewTarget.createdBy }}
-        </el-descriptions-item>
-        <el-descriptions-item label="创建时间">
-          {{ formatDateTime(viewTarget.createdAt) }}
-        </el-descriptions-item>
-        <el-descriptions-item label="更新人">
-          {{ viewTarget.updatedByLabel || viewTarget.updatedBy }}
-        </el-descriptions-item>
-        <el-descriptions-item label="更新时间">
-          {{ formatDateTime(viewTarget.updatedAt) }}
-        </el-descriptions-item>
-        <el-descriptions-item label="ID">
-          <span class="org-page__id">{{ viewTarget.id }}</span>
-        </el-descriptions-item>
-      </el-descriptions>
-      <template #footer>
-        <el-button @click="viewDialogVisible = false">关闭</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 编辑 -->
-    <el-dialog
-      v-model="editDialogVisible"
-      width="480px"
-      :close-on-click-modal="false"
-    >
-      <template #header>
-        <div class="org-page__dialog-header">
-          <span class="org-page__dialog-icon org-page__dialog-icon--edit">
-            <el-icon><Edit /></el-icon>
-          </span>
-          <span>编辑组织</span>
-        </div>
-      </template>
-      <el-form ref="editFormRef" :model="editForm" :rules="editRules" label-position="top">
-        <el-form-item label="Code">
-          <el-input v-model="editTargetCode" disabled />
-          <span class="org-page__hint">Code 创建后不可修改</span>
-        </el-form-item>
-        <el-form-item label="名称" prop="name">
-          <el-input v-model="editForm.name" />
-        </el-form-item>
-        <el-form-item label="说明" prop="comment">
-          <el-input v-model="editForm.comment" type="textarea" :rows="3" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="editDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="editSubmitting" @click="onEditSubmit">
-          保存
-          <el-icon class="el-icon--right"><ArrowRight /></el-icon>
-        </el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 删除 -->
-    <el-dialog
-      v-model="deleteDialogVisible"
-      width="460px"
-      :close-on-click-modal="false"
-    >
-      <template #header>
-        <div class="org-page__dialog-header">
-          <span class="org-page__dialog-icon org-page__dialog-icon--delete">
-            <el-icon><Delete /></el-icon>
-          </span>
-          <span>删除组织</span>
-        </div>
-      </template>
-      <p v-if="deleteTarget" class="org-page__confirm-text">
-        确定要删除组织 <b>{{ deleteTarget.name }}</b>(<code>{{ deleteTarget.code }}</code>)吗?
-      </p>
-      <p class="org-page__confirm-warn">删除后不可恢复,请谨慎操作。</p>
-      <el-checkbox
-        v-model="forceChecked"
-        :disabled="!has(Permission.OrgForceDelete)"
-        class="org-page__force"
-      >
-        级联删除(含其下所有项目、环境、目录、密钥)
-      </el-checkbox>
-      <p v-if="!has(Permission.OrgForceDelete)" class="org-page__hint">
-        当前账号没有 <code>org:force_delete</code> 权限,如需级联删除请联系管理员。
-      </p>
-      <template #footer>
-        <el-button @click="deleteDialogVisible = false">取消</el-button>
-        <el-button
-          type="danger"
-          :loading="deleteSubmitting"
-          @click="onDeleteConfirm"
-        >
-          {{ forceChecked ? '级联删除' : '删除' }}
-        </el-button>
-      </template>
-    </el-dialog>
-  </div>
+      :tenants="tenantHierarchy"
+      @created="onResourceCreated"
+    />
+  </section>
 </template>
 
 <style lang="scss" scoped>
-.org-page {
-  max-width: 1200px;
-  margin: 0 auto;
+.organization-page {
+  height: 100%;
+  min-height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 20px;
-
-  &__surface {
-    background: var(--v-surface-bg);
-    border: 1px solid var(--v-surface-border);
-    border-radius: var(--v-radius-lg);
-    overflow: hidden;
-    box-shadow: var(--v-shadow-sm);
-  }
-
-  &__table {
-    width: 100%;
-  }
-
-  &__code {
-    font-family: var(--el-font-family-monospace, ui-monospace, SFMono-Regular, monospace);
-    font-size: 13px;
-    color: var(--v-text-primary);
-    background: var(--v-surface-bg-subtle);
-    padding: 2px 8px;
-    border-radius: var(--v-radius-sm);
-  }
-
-  &__comment {
-    color: var(--v-text-secondary);
-  }
-
-  &__muted {
-    color: var(--v-text-secondary);
-    font-size: 13px;
-  }
-
-  &__row-trigger {
-    color: var(--v-text-tertiary) !important;
-
-    &:hover {
-      color: var(--v-text-primary) !important;
-      background: var(--v-surface-row-hover) !important;
-    }
-  }
-
-  &__pager {
-    display: flex;
-    justify-content: flex-end;
-    padding: 12px 16px;
-    border-top: 1px solid var(--v-divider);
-  }
-
-  &__id {
-    font-family: var(--el-font-family-monospace, ui-monospace, SFMono-Regular, monospace);
-    font-size: 12px;
-    color: var(--v-text-secondary);
-    word-break: break-all;
-  }
-
-  &__hint {
-    display: block;
-    margin-top: 4px;
-    color: var(--v-text-secondary);
-    font-size: 12px;
-  }
-
-  &__confirm-text {
-    margin: 0 0 8px;
-    color: var(--v-text-primary);
-  }
-
-  &__confirm-warn {
-    margin: 0 0 12px;
-    color: var(--v-color-warning);
-    font-size: 13px;
-  }
-
-  &__force {
-    margin-top: 4px;
-  }
-
-  &__dialog-header {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--v-text-primary);
-  }
-
-  &__dialog-icon {
-    width: 32px;
-    height: 32px;
-    border-radius: var(--v-radius-md);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 16px;
-
-    &--create {
-      background: rgba(124, 58, 237, 0.1);
-      color: var(--el-color-primary);
-    }
-
-    &--view {
-      background: rgba(37, 99, 235, 0.1);
-      color: var(--v-color-info);
-    }
-
-    &--edit {
-      background: rgba(245, 158, 11, 0.1);
-      color: var(--v-color-warning);
-    }
-
-    &--delete {
-      background: rgba(220, 38, 38, 0.1);
-      color: var(--v-color-danger);
-    }
-  }
+  overflow-y: auto;
+  background: var(--v-page-bg);
+  color: var(--v-text-primary);
 }
 
-.page-header {
+.organization-toolbar {
+  min-height: 60px;
+  padding: 0 24px;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 16px;
-
-  &__title {
-    margin: 0 0 4px;
-    font-size: 22px;
-    font-weight: 600;
-    letter-spacing: -0.2px;
-    color: var(--v-text-primary);
-  }
-
-  &__desc {
-    margin: 0;
-    color: var(--v-text-secondary);
-    font-size: 13px;
-  }
+  gap: 20px;
+  background: var(--v-surface-bg);
+  border-bottom: 1px solid var(--v-divider);
 
   &__actions {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
   }
 
   &__search {
-    width: 240px;
+    width: 176px;
+
+    :deep(.el-input__wrapper) {
+      min-height: 34px;
+      border-radius: 999px !important;
+      background: var(--v-surface-bg-subtle);
+      box-shadow: none;
+    }
   }
 }
 
-code {
-  font-family: var(--el-font-family-monospace, ui-monospace, SFMono-Regular, monospace);
-  font-size: 0.92em;
-  background: var(--v-fill-color-light, #f4f4f5);
-  padding: 0 4px;
-  border-radius: 3px;
+.cascade-trigger {
+  height: 36px;
+  max-width: min(650px, 62vw);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid var(--v-surface-border);
+  border-radius: 9px;
+  background: var(--v-surface-bg);
+  color: var(--v-text-primary);
+  cursor: pointer;
+
+  &__part {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 13px;
+    font-weight: 600;
+
+    > span {
+      max-width: 150px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .el-icon {
+      flex: 0 0 auto;
+      color: var(--v-text-secondary);
+      font-size: 16px;
+    }
+
+    &.is-disabled {
+      cursor: default;
+      opacity: 0.55;
+    }
+  }
+
+  &__separator,
+  &__arrow {
+    flex: 0 0 auto;
+    color: var(--v-text-tertiary);
+    font-size: 12px;
+  }
+}
+
+.round-action {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--v-surface-border);
+  border-radius: 50%;
+  background: var(--v-surface-bg);
+  color: var(--v-text-secondary);
+  cursor: pointer;
+  transition:
+    border-color 0.18s ease,
+    color 0.18s ease,
+    background 0.18s ease;
+
+  &:hover {
+    border-color: rgb(23, 93, 251);
+    color: rgb(23, 93, 251);
+  }
+
+  &.is-active {
+    border-color: #f4b400;
+    background: rgba(244, 180, 0, 0.08);
+    color: #f4b400;
+  }
+
+  &--primary {
+    border-color: rgb(23, 93, 251);
+    background: rgb(23, 93, 251);
+    color: #fff;
+
+    &:hover {
+      background: rgb(18, 76, 214);
+      color: #fff;
+    }
+  }
+
+  &.is-disabled {
+    cursor: not-allowed;
+    opacity: 0.48;
+  }
+
+  .el-icon {
+    font-size: 16px;
+  }
+}
+
+.organization-content {
+  flex: 1;
+  min-height: 360px;
+  padding: 20px 24px 28px;
+}
+
+.resource-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 252px));
+  align-items: start;
+  gap: 14px;
+}
+
+.resource-card {
+  min-width: 0;
+  height: 183px;
+  min-height: 183px;
+  padding: 16px 16px 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--v-surface-bg);
+  border: 1px solid var(--v-surface-border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
+
+  &:hover,
+  &:focus-visible {
+    border-color: var(--el-color-primary-light-5);
+    box-shadow: var(--v-shadow-md);
+    outline: none;
+    transform: translateY(-1px);
+  }
+
+  &__top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+
+  &__symbol {
+    width: 34px;
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    font-size: 18px;
+
+    &.is-blue {
+      color: #2563eb;
+      background: #eef4ff;
+    }
+    &.is-violet {
+      color: #7c3aed;
+      background: #f4efff;
+    }
+    &.is-teal {
+      color: #059669;
+      background: #eaf8f2;
+    }
+    &.is-rose {
+      color: #e11d48;
+      background: #fff0f3;
+    }
+  }
+
+  &__favorite {
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--v-text-tertiary);
+    cursor: pointer;
+
+    &:hover,
+    &.is-active {
+      color: #f4b400;
+      background: rgba(244, 180, 0, 0.08);
+    }
+  }
+
+  h2 {
+    margin: 0 0 7px;
+    overflow: hidden;
+    color: var(--v-text-primary);
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  > p {
+    min-height: 36px;
+    margin: 0 0 12px;
+    display: -webkit-box;
+    overflow: hidden;
+    color: var(--v-text-secondary);
+    font-size: 11.5px;
+    line-height: 1.55;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  &__footer {
+    min-height: 44px;
+    margin-top: auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 7px;
+    border-top: 1px solid var(--v-divider);
+    color: var(--v-text-secondary);
+    font-size: 10px;
+  }
+
+  &__owner,
+  &__stats,
+  &__stats > span {
+    display: flex;
+    align-items: center;
+  }
+
+  &__owner {
+    min-width: 0;
+    gap: 6px;
+
+    > span:last-child {
+      max-width: 48px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+
+  &__stats {
+    flex: 0 0 auto;
+    gap: 7px;
+
+    > span {
+      gap: 3px;
+      white-space: nowrap;
+    }
+
+    .el-icon {
+      font-size: 12px;
+    }
+  }
+
+  &__avatar {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 20px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    color: #fff;
+    font-size: 9px;
+    font-weight: 600;
+
+    &.is-1 {
+      background: #2563eb;
+    }
+    &.is-2 {
+      background: #7c3aed;
+    }
+    &.is-3 {
+      background: #059669;
+    }
+    &.is-4 {
+      background: #e36c09;
+    }
+    &.is-5 {
+      background: #db2777;
+    }
+  }
+}
+
+.resource-empty {
+  min-height: 340px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: var(--v-text-secondary);
+  font-size: 13px;
+
+  &__icon {
+    width: 46px;
+    height: 46px;
+    margin-bottom: 3px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--v-surface-bg-subtle);
+    color: var(--v-text-tertiary);
+    font-size: 23px;
+  }
+
+  strong {
+    color: var(--v-text-primary);
+    font-size: 14px;
+  }
+}
+
+.resource-pagination {
+  display: flex;
+  justify-content: center;
+  padding-top: 24px;
+}
+
+:global(.organization-cascade-popper.el-popper) {
+  padding: 10px 0 8px;
+  border: 1px solid var(--v-surface-border);
+  border-radius: 8px;
+  background: var(--v-surface-bg);
+  box-shadow: var(--v-shadow-md);
+}
+
+.cascade-panel {
+  > .el-input {
+    padding: 0 10px;
+  }
+
+  :deep(.el-input__wrapper) {
+    min-height: 36px;
+    margin-bottom: 8px;
+    border-radius: 999px !important;
+    background: var(--v-surface-bg-subtle);
+    box-shadow: none;
+  }
+
+  &__list {
+    max-height: 270px;
+    padding: 6px 8px 0;
+    overflow-y: auto;
+  }
+
+  &__empty {
+    padding: 22px 10px;
+    color: var(--v-text-tertiary);
+    font-size: 12px;
+    text-align: center;
+  }
+}
+
+.cascade-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border-top: 1px solid var(--v-divider);
+  border-bottom: 1px solid var(--v-divider);
+
+  &__item {
+    position: relative;
+    height: 38px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--v-text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+
+    &::after {
+      position: absolute;
+      right: 0;
+      bottom: -1px;
+      left: 0;
+      height: 2px;
+      background: transparent;
+      content: '';
+    }
+
+    &.is-active {
+      color: var(--el-color-primary);
+
+      &::after {
+        background: var(--el-color-primary);
+      }
+    }
+
+    &.is-disabled {
+      cursor: not-allowed;
+      opacity: 0.42;
+    }
+
+    .el-icon {
+      color: #059669;
+      font-size: 13px;
+    }
+  }
+}
+
+.cascade-option {
+  width: 100%;
+  min-height: 38px;
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--v-text-secondary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover,
+  &.is-active {
+    background: var(--v-surface-bg-subtle);
+    color: var(--v-text-primary);
+  }
+
+  &.is-active {
+    color: var(--el-color-primary);
+    font-weight: 600;
+  }
+
+  &__icon {
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 5px;
+    background: #eef4ff;
+    color: #2563eb;
+
+    &.is-project {
+      background: #f4efff;
+      color: #7c3aed;
+    }
+  }
+
+  > span:nth-child(2) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 760px) {
+  .organization-toolbar {
+    min-height: 108px;
+    padding: 12px 16px;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+
+    &__actions {
+      width: 100%;
+    }
+
+    &__search {
+      width: auto;
+      flex: 1;
+    }
+  }
+
+  .cascade-trigger {
+    width: 100%;
+    max-width: none;
+    gap: 5px;
+    justify-content: flex-start;
+
+    &__part {
+      gap: 4px;
+
+      > span {
+        max-width: 72px;
+      }
+    }
+  }
+
+  .organization-content {
+    padding: 14px 16px 22px;
+  }
+
+  .resource-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 </style>

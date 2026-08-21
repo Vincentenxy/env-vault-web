@@ -10,6 +10,7 @@ export interface Environment extends Actor {
   code: string
   name: string
   comment: string
+  isCheckPerm?: boolean
   createdAt: string
   updatedAt: string
 }
