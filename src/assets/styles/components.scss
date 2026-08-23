@@ -55,6 +55,13 @@
   background: var(--v-surface-row-hover);
 }
 
+/* ---------- Toast: 统一圆角与页面浮层规范 ---------- */
+.el-message {
+  max-width: calc(100vw - 32px);
+  border-radius: var(--v-radius-dialog);
+  box-shadow: var(--v-shadow-lg);
+}
+
 /* ---------- Dialog: 紫 icon header、紧凑 padding ---------- */
 .el-dialog {
   --el-dialog-border-radius: var(--v-radius-lg);
@@ -87,6 +94,320 @@
   background: var(--v-surface-bg-subtle);
 }
 
+/* ---------- Card edit dialog: 租户 / 组织 / 项目 / 配置目录共用 ---------- */
+.vault-card-edit-dialog.el-dialog {
+  --el-dialog-border-radius: var(--v-radius-dialog);
+  --el-dialog-padding-primary: 0;
+  width: 620px;
+  max-width: calc(100vw - 32px);
+  max-height: 90vh;
+  margin: auto;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--v-surface-border);
+  border-radius: var(--v-radius-dialog);
+  background: var(--v-surface-bg);
+  box-shadow: var(--v-shadow-lg);
+
+  .el-dialog__header {
+    min-height: 56px;
+    margin: 0;
+    padding: 0 22px;
+    display: flex;
+    align-items: center;
+    border-bottom: 1px solid var(--v-divider);
+  }
+
+  .el-dialog__headerbtn {
+    top: 10px;
+    right: 13px;
+    width: 36px;
+    height: 36px;
+    border-radius: 9px;
+
+    &:hover {
+      background: var(--v-surface-bg-subtle);
+    }
+  }
+
+  .el-dialog__body {
+    min-height: 0;
+    padding: 0;
+    overflow: hidden;
+    color: var(--v-text-primary);
+  }
+
+  .el-dialog__footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 14px 22px;
+    border-top: 1px solid var(--v-divider);
+    background: var(--v-surface-bg);
+  }
+
+  .el-dialog__footer .el-button {
+    min-width: 58px;
+    height: 32px;
+    margin-left: 0;
+    padding: 0 16px;
+    border-radius: var(--v-radius-dialog-action);
+    font-size: var(--v-font-sm);
+    font-weight: 600;
+  }
+
+  .el-dialog__footer .el-button:not(.el-button--primary) {
+    border-color: var(--v-surface-border);
+    background: var(--v-surface-bg);
+    color: var(--v-text-secondary);
+
+    &:hover,
+    &:focus-visible {
+      border-color: #176dfb;
+      color: #176dfb;
+    }
+  }
+
+  .el-dialog__footer .el-button--primary {
+    border-color: #176dfb;
+    background: #176dfb;
+    color: #fff;
+    box-shadow: 0 3px 8px rgba(23, 109, 251, 0.24);
+
+    &:hover,
+    &:focus-visible {
+      border-color: #125bd6;
+      background: #125bd6;
+    }
+  }
+
+  .el-form-item:last-child {
+    margin-bottom: 0;
+  }
+
+  .el-input__wrapper {
+    min-height: 36px;
+    border-radius: 9px !important;
+    background: var(--v-surface-bg-subtle);
+    box-shadow: 0 0 0 1px var(--v-surface-border) inset;
+  }
+
+  .el-textarea__inner {
+    min-height: 96px !important;
+    padding: 10px 12px;
+    resize: vertical;
+    border-radius: 9px !important;
+    background: var(--v-surface-bg-subtle);
+    box-shadow: 0 0 0 1px var(--v-surface-border) inset;
+  }
+}
+
+.vault-card-edit-dialog__title {
+  color: var(--v-text-primary);
+  font-size: var(--v-font-lg);
+  font-weight: 700;
+}
+
+.vault-card-edit-dialog__body {
+  padding: 18px 22px 20px;
+  overflow-y: auto;
+}
+
+/* ---------- Tenant edit dialog: 大尺寸 + 顶部菜单 ---------- */
+.vault-card-edit-dialog.tenant-edit-dialog.el-dialog {
+  width: 860px;
+
+  .el-dialog__header {
+    padding: 0 52px 0 14px;
+  }
+
+  .el-dialog__footer {
+    min-height: 61px;
+  }
+}
+
+.tenant-edit-tabs {
+  width: 100%;
+  min-height: 56px;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+
+  &__item {
+    min-width: 92px;
+    padding: 0 14px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: var(--v-text-secondary);
+    font-size: var(--v-font-sm);
+    font-weight: 600;
+    cursor: pointer;
+
+    &:hover,
+    &:focus-visible,
+    &.is-active {
+      color: #176dfb;
+      outline: none;
+    }
+
+    &.is-active {
+      border-bottom-color: #176dfb;
+    }
+  }
+}
+
+.tenant-edit-dialog__content {
+  min-height: 360px;
+  padding: 22px 24px 24px;
+  overflow-y: auto;
+}
+
+.tenant-edit-dialog__form {
+  max-width: 620px;
+}
+
+.tenant-edit-dialog__members-placeholder {
+  min-height: 312px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--v-text-tertiary);
+
+  strong {
+    color: var(--v-text-primary);
+    font-size: var(--v-font-lg);
+    font-weight: 600;
+  }
+
+  > span:last-child {
+    font-size: var(--v-font-sm);
+  }
+}
+
+.tenant-edit-dialog__members-icon {
+  width: 44px;
+  height: 44px;
+  margin-bottom: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--v-surface-bg-subtle);
+  color: #176dfb;
+  font-size: 21px;
+}
+
+@media (max-width: 720px) {
+  .tenant-edit-tabs {
+    min-height: 56px;
+  }
+
+  .tenant-edit-dialog__content {
+    min-height: 320px;
+    padding: 18px 16px 20px;
+  }
+}
+
+/* ---------- Confirm dialog: 与业务 ElDialog 保持同一壳体和底部按钮 ---------- */
+.vault-confirm-message-box.el-message-box {
+  --el-messagebox-width: 440px;
+  width: min(440px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--v-surface-border);
+  border-radius: var(--v-radius-dialog);
+  background: var(--v-surface-bg);
+  box-shadow: var(--v-shadow-lg);
+
+  .el-message-box__header {
+    display: flex;
+    min-height: 56px;
+    align-items: center;
+    margin: 0;
+    padding: 0 22px;
+    border-bottom: 1px solid var(--v-divider);
+  }
+
+  .el-message-box__title {
+    color: var(--v-text-primary);
+    font-size: var(--v-font-lg);
+    font-weight: 600;
+  }
+
+  .el-message-box__content {
+    padding: 18px 22px 20px;
+    color: var(--v-text-secondary);
+  }
+
+  .el-message-box__message {
+    line-height: var(--v-leading-relaxed);
+  }
+
+  .el-message-box__btns {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 14px 22px;
+    border-top: 1px solid var(--v-divider);
+    background: var(--v-surface-bg);
+  }
+
+  .el-message-box__btns .el-button {
+    min-width: 58px;
+    height: 32px;
+    margin: 0;
+    padding: 0 16px;
+    border-radius: var(--v-radius-dialog-action);
+    font-size: var(--v-font-sm);
+    font-weight: 600;
+  }
+
+  .el-message-box__btns .el-button:not(.el-button--primary) {
+    border-color: var(--v-surface-border);
+    background: var(--v-surface-bg);
+    color: var(--v-text-secondary);
+
+    &:hover,
+    &:focus-visible {
+      border-color: rgb(23, 93, 251);
+      color: rgb(23, 93, 251);
+    }
+  }
+
+  .el-message-box__btns .el-button--primary {
+    border-color: rgb(23, 93, 251);
+    background: rgb(23, 93, 251);
+    color: #fff;
+    box-shadow: 0 3px 8px rgba(23, 93, 251, 0.24);
+
+    &:hover,
+    &:focus-visible {
+      border-color: rgb(18, 76, 214);
+      background: rgb(18, 76, 214);
+    }
+  }
+
+  .el-message-box__btns .vault-delete-confirm-button.el-button--primary {
+    border-color: var(--v-color-danger);
+    background: var(--v-color-danger);
+    box-shadow: 0 3px 8px rgba(220, 38, 38, 0.22);
+
+    &:hover,
+    &:focus-visible {
+      border-color: #b91c1c;
+      background: #b91c1c;
+    }
+  }
+}
+
 /* ---------- Button: 圆角 6px、紧凑 padding ---------- */
 .el-button {
   --el-button-border-radius: var(--v-radius-md);
@@ -99,6 +420,31 @@
 
 .el-button.is-link {
   font-weight: 500;
+}
+
+/* 删除操作图标必须直接约束 SVG，避免组件状态色覆盖外层 currentColor。 */
+.vault-delete-action {
+  color: #ef4444 !important;
+
+  .el-icon,
+  .el-icon svg {
+    color: #ef4444 !important;
+  }
+
+  .el-icon svg path {
+    fill: #ef4444 !important;
+  }
+}
+
+.vault-edit-action {
+  .el-icon,
+  .el-icon svg {
+    color: #176dfb !important;
+  }
+
+  .el-icon svg path {
+    fill: #176dfb !important;
+  }
 }
 
 /* ---------- Form: 紧凑间距 ---------- */

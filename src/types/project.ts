@@ -8,8 +8,9 @@ export interface Project extends Actor {
   name: string
   comment: string
   remark?: string
+  managerId?: Uuid
   admin?: string
-  environmentCount?: number
+  folderCount?: number
   memberCount?: number
   createdAt: string
   updatedAt: string

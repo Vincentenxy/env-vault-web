@@ -11,13 +11,14 @@ import { ElMessage, type MessageOptions } from 'element-plus'
 type NotifyType = 'success' | 'warning' | 'info' | 'error'
 
 const DEFAULT_DURATION = 3000
+const ERROR_DURATION = 5000
 const DEFAULT_OFFSET = 60
 
 function show(type: NotifyType, message: string, options?: MessageOptions): void {
   ElMessage({
     type,
     message,
-    duration: DEFAULT_DURATION,
+    duration: type === 'error' ? ERROR_DURATION : DEFAULT_DURATION,
     offset: DEFAULT_OFFSET,
     showClose: true,
     // 短时间内同一消息合并,避免连续失败时 toast 堆叠

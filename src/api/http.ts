@@ -1,8 +1,13 @@
-import axios, { type AxiosInstance, type AxiosRequestConfig, type InternalAxiosRequestConfig } from 'axios'
+import axios, {
+  type AxiosInstance,
+  type AxiosRequestConfig,
+  type InternalAxiosRequestConfig,
+} from 'axios'
 import { ApiError } from '@/types/api'
 import { ErrorCode } from '@/constants/error-code'
-import { tokenStore } from '@/utils/token'
+import { AUTH_TOKEN_STORAGE_KEY, tokenStore } from '@/utils/token'
 import { notify } from '@/utils/notify'
+import { storage } from '@/utils/storage'
 
 /**
  * 全局唯一的 Axios 实例。
@@ -92,6 +97,33 @@ function notifyApiError(err: ApiError): void {
   notify.error(friendlyMessage(err))
 }
 
+let redirectingToLogin = false
+
+function isUnauthorized(err: ApiError): boolean {
+  return err.httpStatus === 401 || err.code === 401 || err.code === ErrorCode.Unauthorized
+}
+
+function redirectToLogin(): void {
+  if (
+    typeof window === 'undefined' ||
+    redirectingToLogin ||
+    window.location.pathname === '/login'
+  ) {
+    return
+  }
+  redirectingToLogin = true
+  tokenStore.clear()
+  storage.remove(AUTH_TOKEN_STORAGE_KEY)
+  const redirect = `${window.location.pathname}${window.location.search}${window.location.hash}`
+  window.location.replace(`/login?redirect=${encodeURIComponent(redirect)}`)
+}
+
+function handleApiError(err: ApiError, silent = false): void {
+  // silent 只控制提示,认证失效仍必须清理 token 并返回登录页。
+  if (!silent) notifyApiError(err)
+  if (isUnauthorized(err)) redirectToLogin()
+}
+
 http.interceptors.response.use(
   (response) => {
     const data = response.data
@@ -105,7 +137,7 @@ http.interceptors.response.use(
         msg: '服务器返回了非预期格式',
         requestId,
       })
-      if (!response.config.silent) notifyApiError(err)
+      handleApiError(err, response.config.silent)
       throw err
     }
 
@@ -120,7 +152,7 @@ http.interceptors.response.use(
       msg: data.msg || '请求失败',
       requestId,
     })
-    if (!response.config.silent) notifyApiError(err)
+    handleApiError(err, response.config.silent)
     throw err
   },
   (error) => {
@@ -147,7 +179,7 @@ http.interceptors.response.use(
         requestId,
       })
     }
-    if (!error?.config?.silent) notifyApiError(err)
+    handleApiError(err, error?.config?.silent)
     throw err
   },
 )

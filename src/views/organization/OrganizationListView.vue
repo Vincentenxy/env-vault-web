@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import {
   ArrowDown,
   ArrowRight,
   Check,
   CollectionTag,
+  Edit,
   Folder,
   OfficeBuilding,
   Plus,
@@ -13,27 +15,34 @@ import {
   StarFilled,
   User,
 } from '@element-plus/icons-vue'
-import { listOrganizations } from '@/api/organization'
-import { listProjects } from '@/api/project'
+import { listOrganizations, updateOrganization } from '@/api/organization'
+import { listProjects, updateProject } from '@/api/project'
 import {
   getTenantWithOrgProject,
+  listTenants,
+  updateTenant,
+  type Tenant,
   type TenantHierarchyOption,
   type TenantOrganizationOption,
   type TenantProjectOption,
 } from '@/api/tenant'
+import CardEditDialog, { type CardEditPayload } from '@/components/CardEditDialog.vue'
+import TenantEditDialog from '@/components/TenantEditDialog.vue'
 import ResourceCreateDialog, {
   type ResourceCreatedPayload,
 } from './components/ResourceCreateDialog.vue'
 import type { Organization } from '@/types/organization'
 import type { Project } from '@/types/project'
+import { ApiError } from '@/types/api'
 
 type CascadeLevel = 'tenant' | 'organization' | 'project'
-type ResourceLevel = 'organization' | 'project'
+type ResourceLevel = 'tenant' | 'organization' | 'project'
 type CascadeItem = TenantHierarchyOption | TenantOrganizationOption | TenantProjectOption
-type ResourceItem = Organization | Project
+type ResourceItem = Tenant | Organization | Project
 type CardTone = 'blue' | 'violet' | 'teal' | 'rose'
 
 const tenantHierarchy = ref<TenantHierarchyOption[]>([])
+const tenants = ref<Tenant[]>([])
 const organizations = ref<Organization[]>([])
 const projects = ref<Project[]>([])
 const selectedTenantId = ref('')
@@ -57,13 +66,18 @@ let contentRequestId = 0
 let searchTimer: number | undefined
 let skipNextSearchReload = false
 
-const resourceLevel = computed<ResourceLevel>(() =>
-  selectedOrganizationId.value ? 'project' : 'organization',
-)
+const resourceLevel = computed<ResourceLevel>(() => {
+  if (!selectedTenantId.value) return 'tenant'
+  return selectedOrganizationId.value ? 'project' : 'organization'
+})
 
-const selectedTenant = computed(() =>
-  tenantHierarchy.value.find((item) => item.id === selectedTenantId.value),
-)
+const selectedTenant = computed<TenantHierarchyOption | undefined>(() => {
+  const hierarchyItem = tenantHierarchy.value.find((item) => item.id === selectedTenantId.value)
+  if (hierarchyItem) return hierarchyItem
+
+  const listItem = tenants.value.find((item) => item.id === selectedTenantId.value)
+  return listItem ? { id: listItem.id, name: listItem.name, orgList: [] } : undefined
+})
 
 const tenantOrganizations = computed(() => selectedTenant.value?.orgList ?? [])
 
@@ -106,6 +120,10 @@ const visibleOrganizations = computed(() =>
     : organizations.value,
 )
 
+const visibleTenants = computed(() =>
+  favoriteOnly.value ? tenants.value.filter((item) => favoriteIds.has(item.id)) : tenants.value,
+)
+
 const visibleProjects = computed<Project[]>(() => {
   let items = projects.value
   if (selectedProjectId.value) {
@@ -119,21 +137,27 @@ const visibleProjects = computed<Project[]>(() => {
   return favoriteOnly.value ? items.filter((item) => favoriteIds.has(item.id)) : items
 })
 
-const hasVisibleResources = computed(() =>
-  resourceLevel.value === 'organization'
-    ? visibleOrganizations.value.length > 0
-    : visibleProjects.value.length > 0,
+const visibleResources = computed<ResourceItem[]>(() =>
+  resourceLevel.value === 'tenant'
+    ? visibleTenants.value
+    : resourceLevel.value === 'organization'
+      ? visibleOrganizations.value
+      : visibleProjects.value,
 )
 
-const searchPlaceholder = computed(() =>
-  resourceLevel.value === 'organization' ? '搜索组织...' : '搜索项目...',
-)
+const hasVisibleResources = computed(() => visibleResources.value.length > 0)
+
+const searchPlaceholder = computed(() => `搜索${resourceLabel(resourceLevel.value)}...`)
 
 const emptyTitle = computed(() => {
-  if (loadFailed.value)
-    return resourceLevel.value === 'organization' ? '组织加载失败' : '项目加载失败'
-  return resourceLevel.value === 'organization' ? '暂无组织' : '暂无项目'
+  const label = resourceLabel(resourceLevel.value)
+  return loadFailed.value ? `${label}加载失败` : `暂无${label}`
 })
+
+function resourceLabel(level: ResourceLevel): string {
+  if (level === 'tenant') return '租户'
+  return level === 'organization' ? '组织' : '项目'
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
@@ -160,12 +184,20 @@ function firstNumber(value: unknown, keys: string[]): number | undefined {
 function resourceDescription(item: ResourceItem): string {
   return (
     firstString(item, ['remark', 'comment', 'description']) ??
-    `暂无${isProject(item) ? '项目' : '组织'}说明，等待后台补充该字段`
+    `暂无${resourceLabel(resourceLevel.value)}说明`
   )
 }
 
+function resourceRemark(item: ResourceItem): string {
+  return firstString(item, ['remark', 'comment', 'description']) ?? ''
+}
+
 function resourceAdmin(item: ResourceItem): string {
+  const managerName = firstString(item, ['managerName'])
+  if (isTenantItem(item)) return managerName ?? '暂无负责人'
+
   return (
+    managerName ??
     firstString(item, [
       'admin',
       'adminName',
@@ -173,8 +205,13 @@ function resourceAdmin(item: ResourceItem): string {
       'createdByLabel',
       'updatedBy',
       'createdBy',
-    ]) ?? '待补充'
+    ]) ??
+    '暂无负责人'
   )
+}
+
+function tenantOrganizationCount(item: Tenant): number | undefined {
+  return firstNumber(item, ['orgCount', 'organizationCount', 'orgNum'])
 }
 
 function organizationProjectCount(item: Organization): number {
@@ -187,16 +224,21 @@ function memberCount(item: ResourceItem): number | undefined {
   return firstNumber(item, ['memberCount', 'memberNum', 'userCount'])
 }
 
-function projectEnvironmentCount(item: Project): number | undefined {
-  return firstNumber(item, ['environmentCount', 'envCount', 'environmentNum', 'envNum'])
+function projectFolderCount(item: Project): number | undefined {
+  return firstNumber(item, ['folderCount'])
 }
 
 function isProject(item: ResourceItem): item is Project {
   return 'orgId' in item
 }
 
+function isTenantItem(item: ResourceItem): item is Tenant {
+  return !isProject(item) && tenants.value.some((tenant) => tenant.id === item.id)
+}
+
 function avatarText(item: ResourceItem): string {
-  return resourceAdmin(item).slice(0, 1)
+  const manager = resourceAdmin(item)
+  return manager === '暂无负责人' ? '未' : manager.slice(0, 1)
 }
 
 function stableIndex(value: string, modulo: number): number {
@@ -242,8 +284,11 @@ async function loadHierarchy(): Promise<void> {
     const data = await getTenantWithOrgProject()
     tenantHierarchy.value = Array.isArray(data.tenantList) ? data.tenantList : []
 
-    if (!tenantHierarchy.value.some((item) => item.id === selectedTenantId.value)) {
-      selectedTenantId.value = tenantHierarchy.value[0]?.id ?? ''
+    if (
+      selectedTenantId.value &&
+      !tenantHierarchy.value.some((item) => item.id === selectedTenantId.value)
+    ) {
+      selectedTenantId.value = ''
       selectedOrganizationId.value = ''
       selectedProjectId.value = ''
     }
@@ -251,6 +296,33 @@ async function loadHierarchy(): Promise<void> {
     tenantHierarchy.value = []
   } finally {
     hierarchyLoading.value = false
+  }
+}
+
+async function loadTenants(): Promise<void> {
+  const requestId = ++contentRequestId
+  contentLoading.value = true
+  loadFailed.value = false
+  organizations.value = []
+  projects.value = []
+
+  try {
+    const data = await listTenants({
+      pageNum: currentPage.value,
+      pageSize: pageSize.value,
+      name: searchKeyword.value.trim(),
+      code: '',
+    })
+    if (requestId !== contentRequestId) return
+    tenants.value = Array.isArray(data.list) ? data.list : []
+    total.value = data.total ?? tenants.value.length
+  } catch {
+    if (requestId !== contentRequestId) return
+    tenants.value = []
+    total.value = 0
+    loadFailed.value = true
+  } finally {
+    if (requestId === contentRequestId) contentLoading.value = false
   }
 }
 
@@ -310,6 +382,7 @@ async function loadProjects(): Promise<void> {
 }
 
 function loadCurrentLevel(): Promise<void> {
+  if (resourceLevel.value === 'tenant') return loadTenants()
   return resourceLevel.value === 'organization' ? loadOrganizations() : loadProjects()
 }
 
@@ -340,6 +413,17 @@ function selectTenant(item: TenantHierarchyOption): void {
   cascadeLevel.value = 'organization'
   cascadeSearch.value = ''
   void loadOrganizations()
+}
+
+function selectAllTenants(): void {
+  selectedTenantId.value = ''
+  selectedOrganizationId.value = ''
+  selectedProjectId.value = ''
+  currentPage.value = 1
+  resetResourceSearch()
+  cascadeOpen.value = false
+  cascadeSearch.value = ''
+  void loadTenants()
 }
 
 function selectAllOrganizations(): void {
@@ -386,6 +470,21 @@ function enterOrganization(item: Organization): void {
   cascadeOpen.value = false
 }
 
+function enterTenant(item: Tenant): void {
+  selectTenant({
+    id: item.id,
+    name: item.name,
+    orgList: tenantHierarchy.value.find((tenant) => tenant.id === item.id)?.orgList ?? [],
+  })
+  cascadeOpen.value = false
+}
+
+function enterResource(item: ResourceItem): void {
+  if (resourceLevel.value === 'tenant') enterTenant(item as Tenant)
+  else if (resourceLevel.value === 'organization') enterOrganization(item as Organization)
+  else enterProject(item as Project)
+}
+
 function enterProject(item: Project): void {
   selectProject({ id: item.id, name: item.name })
 }
@@ -401,9 +500,43 @@ function toggleFavorite(item: ResourceItem): void {
 }
 
 const createDialogVisible = ref(false)
+const editDialogVisible = ref(false)
+const editSubmitting = ref(false)
+const editingResource = ref<ResourceItem | null>(null)
+const editingResourceLevel = ref<ResourceLevel>('tenant')
+const editDialogTitle = computed(() => `编辑${resourceLabel(editingResourceLevel.value)}`)
 
 function openCreate(): void {
   createDialogVisible.value = true
+}
+
+function openResourceEdit(item: ResourceItem): void {
+  editingResource.value = item
+  editingResourceLevel.value = resourceLevel.value
+  editDialogVisible.value = true
+}
+
+async function submitResourceEdit(payload: CardEditPayload): Promise<void> {
+  const resource = editingResource.value
+  if (!resource || editSubmitting.value) return
+
+  editSubmitting.value = true
+  try {
+    const request = { id: resource.id, name: payload.name, remark: payload.remark }
+    if (editingResourceLevel.value === 'tenant') await updateTenant(request)
+    else if (editingResourceLevel.value === 'organization') await updateOrganization(request)
+    else await updateProject(request)
+
+    ElMessage.success(`${resourceLabel(editingResourceLevel.value)}更新成功`)
+    editDialogVisible.value = false
+    await Promise.all([loadHierarchy(), loadCurrentLevel()])
+  } catch (error) {
+    if (!(error instanceof ApiError)) {
+      ElMessage.error(`${resourceLabel(editingResourceLevel.value)}更新失败`)
+    }
+  } finally {
+    editSubmitting.value = false
+  }
 }
 
 async function onResourceCreated(payload: ResourceCreatedPayload): Promise<void> {
@@ -469,11 +602,15 @@ onBeforeUnmount(() => {
             <span class="cascade-trigger__part" @click.stop="openCascade('tenant')">
               <el-icon><OfficeBuilding /></el-icon>
               <span>{{
-                selectedTenant?.name || (hierarchyLoading ? '加载中...' : '暂无租户')
+                selectedTenant?.name || (hierarchyLoading ? '加载中...' : '全部租户')
               }}</span>
             </span>
             <el-icon class="cascade-trigger__separator"><ArrowRight /></el-icon>
-            <span class="cascade-trigger__part" @click.stop="openCascade('organization')">
+            <span
+              class="cascade-trigger__part"
+              :class="{ 'is-disabled': !selectedTenantId }"
+              @click.stop="openCascade('organization')"
+            >
               <el-icon><OfficeBuilding /></el-icon>
               <span>{{ selectedOrganization?.name || '全部组织' }}</span>
             </span>
@@ -532,6 +669,17 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="cascade-panel__list">
+            <button
+              v-if="cascadeLevel === 'tenant'"
+              type="button"
+              class="cascade-option"
+              :class="{ 'is-active': !selectedTenantId }"
+              @click="selectAllTenants"
+            >
+              <span class="cascade-option__icon"><OfficeBuilding /></span>
+              <span>全部租户</span>
+              <el-icon v-if="!selectedTenantId"><Check /></el-icon>
+            </button>
             <button
               v-if="cascadeLevel === 'organization'"
               type="button"
@@ -634,29 +782,43 @@ onBeforeUnmount(() => {
     <main v-loading="contentLoading" class="organization-content">
       <div v-if="hasVisibleResources" class="resource-grid">
         <article
-          v-for="item in resourceLevel === 'organization' ? visibleOrganizations : visibleProjects"
+          v-for="item in visibleResources"
           :key="item.id"
           class="resource-card"
           tabindex="0"
-          @click="isProject(item) ? enterProject(item) : enterOrganization(item)"
-          @keydown.enter="isProject(item) ? enterProject(item) : enterOrganization(item)"
+          @click="enterResource(item)"
+          @keydown.enter.self="enterResource(item)"
         >
           <div class="resource-card__top">
             <span class="resource-card__symbol" :class="`is-${cardTone(item)}`">
               <el-icon><Folder v-if="isProject(item)" /><OfficeBuilding v-else /></el-icon>
             </span>
-            <button
-              type="button"
-              class="resource-card__favorite"
-              :class="{ 'is-active': favoriteIds.has(item.id) }"
-              :aria-label="favoriteIds.has(item.id) ? '取消收藏' : '收藏'"
-              @click.stop="toggleFavorite(item)"
-            >
-              <el-icon>
-                <StarFilled v-if="favoriteIds.has(item.id)" />
-                <Star v-else />
-              </el-icon>
-            </button>
+            <span class="resource-card__actions">
+              <el-tooltip :content="`编辑${resourceLabel(resourceLevel)}`" placement="top">
+                <button
+                  type="button"
+                  class="resource-card__edit vault-edit-action"
+                  :aria-label="`编辑${item.name}`"
+                  @click.stop="openResourceEdit(item)"
+                  @keydown.enter.stop
+                >
+                  <el-icon><Edit /></el-icon>
+                </button>
+              </el-tooltip>
+              <button
+                type="button"
+                class="resource-card__favorite"
+                :class="{ 'is-active': favoriteIds.has(item.id) }"
+                :aria-label="favoriteIds.has(item.id) ? '取消收藏' : '收藏'"
+                @click.stop="toggleFavorite(item)"
+                @keydown.enter.stop
+              >
+                <el-icon>
+                  <StarFilled v-if="favoriteIds.has(item.id)" />
+                  <Star v-else />
+                </el-icon>
+              </button>
+            </span>
           </div>
 
           <h2>{{ item.name }}</h2>
@@ -667,19 +829,27 @@ onBeforeUnmount(() => {
               <span class="resource-card__avatar" :class="`is-${avatarTone(item)}`">
                 {{ avatarText(item) }}
               </span>
-              <span>{{ resourceAdmin(item) }}</span>
+              <span :title="resourceAdmin(item)">{{ resourceAdmin(item) }}</span>
             </span>
             <span class="resource-card__stats">
-              <template v-if="isProject(item)">
+              <template v-if="isTenantItem(item)">
                 <span>
-                  <el-icon><CollectionTag /></el-icon>
-                  {{ projectEnvironmentCount(item) ?? '--' }} 个环境
+                  <el-icon><OfficeBuilding /></el-icon>
+                  {{ tenantOrganizationCount(item) ?? '--' }} 个组织
                 </span>
               </template>
-              <span v-else>
-                <el-icon><Folder /></el-icon>
-                {{ organizationProjectCount(item) }} 个项目
-              </span>
+              <template v-else-if="isProject(item)">
+                <span>
+                  <el-icon><CollectionTag /></el-icon>
+                  {{ projectFolderCount(item) ?? '--' }} 个密钥集
+                </span>
+              </template>
+              <template v-else>
+                <span>
+                  <el-icon><Folder /></el-icon>
+                  {{ organizationProjectCount(item) }} 个项目
+                </span>
+              </template>
               <span>
                 <el-icon><User /></el-icon>
                 {{ memberCount(item) ?? '--' }} 人
@@ -720,6 +890,24 @@ onBeforeUnmount(() => {
       v-model="createDialogVisible"
       :tenants="tenantHierarchy"
       @created="onResourceCreated"
+    />
+    <TenantEditDialog
+      v-if="editingResourceLevel === 'tenant'"
+      :key="editingResource?.id ?? 'tenant-edit'"
+      v-model="editDialogVisible"
+      :name="editingResource?.name ?? ''"
+      :remark="editingResource ? resourceRemark(editingResource) : ''"
+      :submitting="editSubmitting"
+      @submit="submitResourceEdit"
+    />
+    <CardEditDialog
+      v-else
+      v-model="editDialogVisible"
+      :title="editDialogTitle"
+      :name="editingResource?.name ?? ''"
+      :remark="editingResource ? resourceRemark(editingResource) : ''"
+      :submitting="editSubmitting"
+      @submit="submitResourceEdit"
     />
   </section>
 </template>
@@ -932,6 +1120,13 @@ onBeforeUnmount(() => {
     }
   }
 
+  &__actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  &__edit,
   &__favorite {
     width: 26px;
     height: 26px;
@@ -944,7 +1139,19 @@ onBeforeUnmount(() => {
     background: transparent;
     color: var(--v-text-tertiary);
     cursor: pointer;
+  }
 
+  &__edit {
+    color: #176dfb;
+
+    &:hover,
+    &:focus-visible {
+      background: rgba(23, 109, 251, 0.08);
+      outline: none;
+    }
+  }
+
+  &__favorite {
     &:hover,
     &.is-active {
       color: #f4b400;

@@ -1,12 +1,13 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { User } from '@/types/user'
-import { tokenStore } from '@/utils/token'
+import { AUTH_TOKEN_STORAGE_KEY, tokenStore } from '@/utils/token'
 import { storage } from '@/utils/storage'
 import { getMe } from '@/api/me'
 import { useRbacStore } from '@/stores/rbac'
+import { useUserStore } from '@/stores/user'
 
-const STORAGE_KEY = 'envvault.auth.token'
+const STORAGE_KEY = AUTH_TOKEN_STORAGE_KEY
 
 /**
  * 认证 store。**唯一**能直接读写 token 持久化的地方。
@@ -14,7 +15,7 @@ const STORAGE_KEY = 'envvault.auth.token'
  * 流程:
  *  - 应用启动时 useAuthStore() 读 localStorage 拿回 token,塞到 tokenStore,提供 isAuthenticated
  *  - login(token) 只把 token 写持久化 + tokenStore,不在前端预校验 JWT claims
- *  - 启动时如果有 token,后台静默 /me 拉用户信息;失败不清除用户提供的 token
+ *  - 启动时如果有 token,后台静默 /user/me 拉用户信息;失败不清除用户提供的 token
  *  - logout 清空 token + tokenStore + currentUser
  */
 export const useAuthStore = defineStore('auth', () => {
@@ -49,21 +50,19 @@ export const useAuthStore = defineStore('auth', () => {
     setToken(rawToken)
     setCurrentUser(null)
     useRbacStore().clear()
+    useUserStore().clear()
   }
 
   /** 静默刷新当前用户。失败不抛且不清空 token:
    *  - token 由用户显式提供,前端不判断 claims 或签名是否有效。
-   *  - `/me` 失败只表示拿不到用户资料,后续请求仍照常携带 Authorization。
+   *  - `/user/me` 失败只表示拿不到用户资料,后续请求仍照常携带 Authorization。
    *  启动期刷新不希望弹错误 toast,通过 `silent: true` 抑制。
-   *  顺手拉一次 global 权限,让 usePermission 启动即可用。
    */
   async function refreshMe(): Promise<void> {
     if (!token.value) return
     try {
       const me = await getMe({ silent: true })
       setCurrentUser(me)
-      const rbac = useRbacStore()
-      await rbac.fetchMyPermissions({ scopeType: 'global' }).catch(() => undefined)
     } catch {
       setCurrentUser(null)
     }
@@ -74,6 +73,7 @@ export const useAuthStore = defineStore('auth', () => {
     setCurrentUser(null)
     // 顺手清掉 RBAC 缓存,避免换账号后看到旧权限
     useRbacStore().clear()
+    useUserStore().clear()
   }
 
   return {

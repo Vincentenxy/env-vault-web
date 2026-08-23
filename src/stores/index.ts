@@ -2,6 +2,7 @@
  * 全部 store 聚合导出。
  */
 export { useAuthStore } from './auth'
+export { useUserStore } from './user'
 export { useThemeStore } from './theme'
 export { useOrganizationStore } from './organization'
 export { useProjectStore } from './project'

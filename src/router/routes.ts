@@ -8,6 +8,7 @@ import type { RouteRecordRaw } from 'vue-router'
  *  - /app/projects/:projectId(项目详情:env 多选 + 目录树 + Secrets/Folder Tab)
  *  - /app/envs(环境管理)
  *  - /app/secrets(密钥管理)
+ *  - /app/settings/profile(个人信息)
  *
  * 注:原 /app/folders 已合并到 /app/projects/:projectId,目录管理与密钥的浏览、
  * 创建、删除都在项目详情页内完成。
@@ -56,16 +57,10 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: '秘钥中心', requiresAuth: true },
       },
       {
-        path: 'rbac',
-        name: 'Rbac',
-        component: () => import('@/views/rbac/RbacView.vue'),
-        meta: { title: '权限管理', requiresAuth: true },
-      },
-      {
-        path: 'users',
-        name: 'UserList',
-        component: () => import('@/views/user/UsersView.vue'),
-        meta: { title: '用户管理', requiresAuth: true },
+        path: 'settings/profile',
+        name: 'UserProfile',
+        component: () => import('@/views/settings/UserProfileView.vue'),
+        meta: { title: '个人信息', requiresAuth: true },
       },
     ],
   },

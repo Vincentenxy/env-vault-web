@@ -57,12 +57,5 @@ export function getSecretEntries(group: SecretGroup): SecretEntry[] {
   return out
 }
 
-/** reveal 接口返回的明文,仅在弹窗内局部持有。 */
-export interface SecretReveal {
-  id: Uuid
-  value: string
-  version: number
-}
-
 // 旧 SecretMeta 保留作为 alias,旧代码引用 SecretMeta 不会立刻全断
 export type SecretMeta = SecretEntry

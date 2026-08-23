@@ -9,6 +9,9 @@
 
 let currentToken = ''
 
+/** 与 auth store 共用的持久化 token key,避免网络层处理 401 时引入 store 循环依赖。 */
+export const AUTH_TOKEN_STORAGE_KEY = 'envvault.auth.token'
+
 export const tokenStore = {
   get(): string {
     return currentToken

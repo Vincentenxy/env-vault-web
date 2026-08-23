@@ -1,4 +1,4 @@
-import type { SecretEntry, SecretGroup, SecretReveal } from '@/types/secret'
+import type { SecretEntry, SecretGroup } from '@/types/secret'
 import type { PageRequest, PageResp, Uuid } from '@/types/api'
 import { http } from './http'
 
@@ -56,9 +56,8 @@ export interface UpdateFolderGroupSecretValueRequest {
 export interface UpdateFolderGroupSecretItemRequest {
   groupId: Uuid
   key: string
-  remark: string
-  commitMsg?: string
-  values: UpdateFolderGroupSecretValueRequest[]
+  remark?: string
+  values?: UpdateFolderGroupSecretValueRequest[]
 }
 
 export interface UpdateFolderGroupSecretsRequest {
@@ -76,6 +75,68 @@ export function updateFolderGroupSecrets(
   return http.post('/secret/update', req)
 }
 
+/** 删除一个逻辑密钥及其在所有项目环境下的值。 */
+export interface DeleteFolderGroupSecretRequest {
+  groupId: Uuid
+}
+
+export function deleteFolderGroupSecret(req: DeleteFolderGroupSecretRequest): Promise<null> {
+  return http.post('/secret/delete', req)
+}
+
+/** 查询一个逻辑密钥在各项目环境下的全部历史版本。 */
+export interface SecretHistoryItem {
+  id: Uuid
+  secretId: Uuid
+  batchId: Uuid
+  groupId: Uuid
+  folderId: Uuid
+  envCode: string
+  value: string
+  valueType: string
+  version: number
+  commitMsg: string
+  createBy: string
+  createByName: string
+  createAt: string
+}
+
+export interface SecretEnvironmentHistory {
+  total: number
+  list: SecretHistoryItem[]
+}
+
+/** 响应以环境 ID 为动态键。 */
+export type SecretHistoryResponse = Record<Uuid, SecretEnvironmentHistory>
+
+export interface GetSecretHistoryRequest extends PageRequest {
+  groupId: Uuid
+}
+
+export function getSecretHistory(req: GetSecretHistoryRequest): Promise<SecretHistoryResponse> {
+  return http.post('/secret/history', req)
+}
+
+/** POST /api/v1/secret/history，通过 batchId 查询提交批次内的全部修改。 */
+export interface SecretBatchDetailItem {
+  groupId: Uuid
+  key: string
+  remark: string
+  versions: Record<Uuid, SecretHistoryItem>
+}
+
+export interface GetSecretBatchDetailRequest {
+  batchId: Uuid
+}
+
+export type SecretBatchDetailResponse = SecretBatchDetailItem[]
+
+export function getSecretBatchDetail(
+  req: GetSecretBatchDetailRequest,
+): Promise<SecretBatchDetailResponse> {
+  return http.post('/secret/history', req)
+}
+
 /**
  * POST /api/v1/secret/list
  *
@@ -84,13 +145,11 @@ export function updateFolderGroupSecrets(
  *  - 项目详情页仍兼容 projectId + folderCode + envList 的旧调用方式
  *  - key 为空时,返回该 folder 下所有 secret
  *  - 响应是平铺的 `SecretAcrossEnvs[]`,每个对象顶层 `key` + `projectCode`,
- *    加上 `envCode` 索引的 {value, version, updatedAt} 块
- *    (dev/test/sim/prod 这种 —— 4 个环境一份打平)
+ *    加上动态 `envCode` 索引的 {value, version, updatedAt} 块
  *
  * 与旧 /secret/list 的区别:
  *  - 旧:按 env 列表,每条一个 env entry(同一个 key 在 4 个 env 下是 4 行)
- *  - 新:按 key 列表,每个 key 一行 4 列 (4 个 env 横向并列),与新增/编辑
- *    弹窗里"一行 key 下面 4 个 env 输入框"的视觉一致
+ *  - 新:按 key 列表,每个 key 一行 N 个环境列,与项目的环境列表一致
  */
 export type ListSecretsAcrossEnvsRequest =
   | {
@@ -169,35 +228,6 @@ export function pickEnvEntries(
 }
 
 /**
- * POST /api/v1/secret/create
- * - folderId 必填
- * - key 必填,后端校验 `^[A-Z][A-Z0-9_]*$`
- * - value 必填
- * - comment 可选
- */
-export interface CreateSecretRequest {
-  folderId: Uuid
-  key: string
-  value: string
-  comment?: string
-}
-export function createSecret(req: CreateSecretRequest): Promise<SecretEntry> {
-  return http.post('/secret/create', req)
-}
-
-/**
- * POST /api/v1/secret/reveal
- * 仅返回明文 value + 版本号。需要 `secret:reveal` 权限。
- * - id 必填(env 专属 id,见 SecretEntry.id)
- */
-export interface RevealSecretRequest {
-  id: Uuid
-}
-export function revealSecret(req: RevealSecretRequest): Promise<SecretReveal> {
-  return http.post('/secret/reveal', req)
-}
-
-/**
  * POST /api/v1/secret/update (旧接口,仍需保留兼容)
  * - id 必填(env 专属 id,定位要更新的 secret)
  * - value 可选:填写则轮换密钥值,后端会 version+1;不填则保持原值
@@ -215,7 +245,7 @@ export function updateSecret(req: UpdateSecretRequest): Promise<SecretEntry> {
 }
 
 /**
- * POST /api/v1/secrets/update (新接口)
+ * POST /api/v1/secret/update
  * 一次提交一个 key 在所有 env 上的值和说明，无需 per-env 循环调用。
  * values 数组中只放有变更的 env（含 id + value），comment 可清空。
  */
@@ -229,33 +259,26 @@ export interface UpdateSecretsRequest {
   values: UpdateSecretsValueEntry[]
 }
 export function updateSecrets(req: UpdateSecretsRequest): Promise<null> {
-  return http.post('/secrets/batchUpdate', req)
+  return http.post('/secret/update', req)
 }
 
 /**
- * POST /api/v1/secrets/batchCreate
- * 批量创建密钥(新格式):
- *  - secretList[] 每项 = 一个 key 的完整定义(key + comment + 4 env 的值)
- *  - 每项里 envList 是 `[{envCode, folderId, value}]` 数组 —— 数组结构
- *    不再依赖 key 的索引签名,字段含义显式、易扩展
- *  - 后端按 envList 在每个 env 下创建一条 secret(挂到该 env 的 folderId 下)
- *  - folderId 必须是「该 folder 在该 env 下的专属 id」,不能共用逻辑 folderId
+ * POST /api/v1/secret/create
+ * 一次提交多行密钥及其所有项目环境值。
  */
-export interface BatchCreateEnvEntry {
-  envCode: string
-  /** 该 env 下该 folder 的专属 folderId(从 FolderEnvBinding.folderId 取) */
-  folderId: Uuid
-  /** 写入该 env 的明文 value;空串 = 该 env 不写值(由后端决定) */
+export interface BatchCreateSecretValue {
+  envId: Uuid
   value: string
 }
 export interface BatchCreateSecretItem {
+  folderGroupId: Uuid
   key: string
-  comment: string
-  envList: BatchCreateEnvEntry[]
+  remark: string
+  values: BatchCreateSecretValue[]
 }
 export interface BatchCreateSecretsRequest {
   secretList: BatchCreateSecretItem[]
 }
 export function batchCreateSecrets(req: BatchCreateSecretsRequest): Promise<null> {
-  return http.post('/secrets/batchCreate', req)
+  return http.post('/secret/create', req)
 }

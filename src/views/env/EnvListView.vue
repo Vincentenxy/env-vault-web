@@ -1,16 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import {
-  ElMessage,
-  type FormInstance,
-  type FormRules,
-} from 'element-plus'
+import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import {
   ArrowRight,
   CircleClose,
-  Delete,
-  Edit,
   FolderOpened,
   Plus,
   Refresh,
@@ -173,95 +167,6 @@ function openView(row: Environment): void {
   viewDialogVisible.value = true
 }
 
-// ==================== 编辑 ====================
-const editDialogVisible = ref(false)
-const editSubmitting = ref(false)
-const editFormRef = ref<FormInstance>()
-const editTargetId = ref<string>('')
-const editTargetCode = ref<string>('')
-
-const editForm = reactive<{ name: string; comment: string }>({
-  name: '',
-  comment: '',
-})
-
-const editRules: FormRules<{ name: string; comment: string }> = {
-  name: [
-    { required: true, message: '请输入名称', trigger: 'blur' },
-    { max: 64, message: '长度不能超过 64', trigger: 'blur' },
-  ],
-  comment: [{ max: 256, message: '长度不能超过 256', trigger: 'blur' }],
-}
-
-function openEdit(row: Environment): void {
-  editTargetId.value = row.id
-  editTargetCode.value = row.code
-  editForm.name = row.name
-  editForm.comment = row.comment ?? ''
-  editFormRef.value?.clearValidate()
-  editDialogVisible.value = true
-}
-
-async function onEditSubmit(): Promise<void> {
-  if (!editFormRef.value) return
-  const valid = await editFormRef.value.validate().catch(() => false)
-  if (!valid) return
-  editSubmitting.value = true
-  try {
-    await envStore.update({
-      id: editTargetId.value,
-      parentId: selectedProjectId.value,
-      name: editForm.name.trim(),
-      comment: editForm.comment?.trim() || undefined,
-    })
-    ElMessage.success('已保存')
-    editDialogVisible.value = false
-  } catch (e) {
-    const msg = e instanceof ApiError ? e.message : '保存失败'
-    ElMessage.error(msg)
-  } finally {
-    editSubmitting.value = false
-  }
-}
-
-// ==================== 删除 ====================
-const deleteDialogVisible = ref(false)
-const deleteSubmitting = ref(false)
-const deleteTarget = ref<Environment | null>(null)
-const forceChecked = ref(false)
-
-function openDelete(row: Environment): void {
-  deleteTarget.value = row
-  forceChecked.value = false
-  deleteDialogVisible.value = true
-}
-
-async function onDeleteConfirm(): Promise<void> {
-  const target = deleteTarget.value
-  if (!target) return
-  if (forceChecked.value && !has(Permission.EnvForceDelete)) {
-    ElMessage.warning('当前账号没有级联删除权限')
-    return
-  }
-  deleteSubmitting.value = true
-  try {
-    const res = await envStore.remove({
-      id: target.id,
-      parentId: selectedProjectId.value,
-      force: forceChecked.value || undefined,
-    })
-    if (res.deleted) {
-      ElMessage.success(forceChecked.value ? '已级联删除' : '已删除')
-      deleteDialogVisible.value = false
-    }
-  } catch (e) {
-    const msg = e instanceof ApiError ? e.message : '删除失败'
-    ElMessage.error(msg)
-  } finally {
-    deleteSubmitting.value = false
-  }
-}
-
 // ==================== 跳转到项目详情(目录与密钥在项目详情页内浏览) ====================
 function goToFolders(row: Environment): void {
   router.push({
@@ -274,29 +179,14 @@ function goToFolders(row: Environment): void {
   })
 }
 
-function onRowAction(
-  action: 'view' | 'edit' | 'delete' | 'goFolders',
-  row: Environment,
-): void {
+function onRowAction(action: 'view' | 'goFolders', row: Environment): void {
   if (action === 'view') openView(row)
-  else if (action === 'edit') {
-    if (!has(Permission.EnvUpdate)) {
-      ElMessage.warning('当前账号没有 env:update 权限')
-      return
-    }
-    openEdit(row)
-  } else if (action === 'goFolders') {
+  else if (action === 'goFolders') {
     if (!has(Permission.FolderRead)) {
       ElMessage.warning('当前账号没有 folder:read 权限')
       return
     }
     goToFolders(row)
-  } else {
-    if (!has(Permission.EnvDelete)) {
-      ElMessage.warning('当前账号没有 env:delete 权限')
-      return
-    }
-    openDelete(row)
   }
 }
 
@@ -357,8 +247,8 @@ watch(
       <div>
         <h1 class="page-header__title">环境管理</h1>
         <p class="page-header__desc">
-          环境从属于项目,如 dev / test / prod。环境创建后不会自动建任何 folder,需要在
-          folder 页补建。
+          环境从属于项目,如 dev / test / prod。环境创建后不会自动建任何 folder,需要在 folder
+          页补建。
         </p>
       </div>
       <div class="page-header__actions">
@@ -372,14 +262,11 @@ watch(
           filterable
           @change="onOrgChange"
         >
-          <el-option
-            v-for="o in orgOptions"
-            :key="o.id"
-            :label="o.name"
-            :value="o.id"
-          >
-            <span style="float:left">{{ o.name }}</span>
-            <span style="float:right;color:var(--v-text-tertiary);font-size:12px;margin-left:8px">
+          <el-option v-for="o in orgOptions" :key="o.id" :label="o.name" :value="o.id">
+            <span style="float: left">{{ o.name }}</span>
+            <span
+              style="float: right; color: var(--v-text-tertiary); font-size: 12px; margin-left: 8px"
+            >
               {{ o.code }}
             </span>
           </el-option>
@@ -392,14 +279,11 @@ watch(
           :disabled="!selectedOrgId"
           @change="onProjectChange"
         >
-          <el-option
-            v-for="p in projectOptions"
-            :key="p.id"
-            :label="p.name"
-            :value="p.id"
-          >
-            <span style="float:left">{{ p.name }}</span>
-            <span style="float:right;color:var(--v-text-tertiary);font-size:12px;margin-left:8px">
+          <el-option v-for="p in projectOptions" :key="p.id" :label="p.name" :value="p.id">
+            <span style="float: left">{{ p.name }}</span>
+            <span
+              style="float: right; color: var(--v-text-tertiary); font-size: 12px; margin-left: 8px"
+            >
               {{ p.code }}
             </span>
           </el-option>
@@ -469,29 +353,11 @@ watch(
             <el-button
               link
               type="primary"
-              :icon="Edit"
-              :disabled="!has(Permission.EnvUpdate)"
-              @click="onRowAction('edit', row as Environment)"
-            >
-              编辑
-            </el-button>
-            <el-button
-              link
-              type="primary"
               :icon="FolderOpened"
               :disabled="!has(Permission.FolderRead)"
               @click="onRowAction('goFolders', row as Environment)"
             >
               目录
-            </el-button>
-            <el-button
-              link
-              type="danger"
-              :icon="Delete"
-              :disabled="!has(Permission.EnvDelete)"
-              @click="onRowAction('delete', row as Environment)"
-            >
-              删除
             </el-button>
           </template>
         </el-table-column>
@@ -531,12 +397,7 @@ watch(
           <span>新建环境</span>
         </div>
       </template>
-      <el-form
-        ref="createFormRef"
-        :model="createForm"
-        :rules="createRules"
-        label-position="top"
-      >
+      <el-form ref="createFormRef" :model="createForm" :rules="createRules" label-position="top">
         <el-form-item label="所属项目" prop="parentId">
           <el-input
             :model-value="
@@ -570,11 +431,7 @@ watch(
       </el-form>
       <template #footer>
         <el-button @click="createDialogVisible = false">取消</el-button>
-        <el-button
-          type="primary"
-          :loading="createSubmitting"
-          @click="onCreateSubmit"
-        >
+        <el-button type="primary" :loading="createSubmitting" @click="onCreateSubmit">
           创建
           <el-icon class="el-icon--right"><ArrowRight /></el-icon>
         </el-button>
@@ -617,77 +474,6 @@ watch(
       </el-descriptions>
       <template #footer>
         <el-button @click="viewDialogVisible = false">关闭</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 编辑 -->
-    <el-dialog v-model="editDialogVisible" width="480px" :close-on-click-modal="false">
-      <template #header>
-        <div class="env-page__dialog-header">
-          <span class="env-page__dialog-icon env-page__dialog-icon--edit">
-            <el-icon><Edit /></el-icon>
-          </span>
-          <span>编辑环境</span>
-        </div>
-      </template>
-      <el-form ref="editFormRef" :model="editForm" :rules="editRules" label-position="top">
-        <el-form-item label="Code">
-          <el-input v-model="editTargetCode" disabled />
-          <span class="env-page__hint">Code 创建后不可修改</span>
-        </el-form-item>
-        <el-form-item label="名称" prop="name">
-          <el-input v-model="editForm.name" />
-        </el-form-item>
-        <el-form-item label="说明" prop="comment">
-          <el-input v-model="editForm.comment" type="textarea" :rows="3" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="editDialogVisible = false">取消</el-button>
-        <el-button
-          type="primary"
-          :loading="editSubmitting"
-          @click="onEditSubmit"
-        >
-          保存
-          <el-icon class="el-icon--right"><ArrowRight /></el-icon>
-        </el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 删除 -->
-    <el-dialog v-model="deleteDialogVisible" width="460px" :close-on-click-modal="false">
-      <template #header>
-        <div class="env-page__dialog-header">
-          <span class="env-page__dialog-icon env-page__dialog-icon--delete">
-            <el-icon><Delete /></el-icon>
-          </span>
-          <span>删除环境</span>
-        </div>
-      </template>
-      <p v-if="deleteTarget" class="env-page__confirm-text">
-        确定要删除环境 <b>{{ deleteTarget.name }}</b>(<code>{{ deleteTarget.code }}</code>)吗?
-      </p>
-      <p class="env-page__confirm-warn">删除后不可恢复,请谨慎操作。</p>
-      <el-checkbox
-        v-model="forceChecked"
-        :disabled="!has(Permission.EnvForceDelete)"
-        class="env-page__force"
-      >
-        级联删除(含其下所有目录、密钥)
-      </el-checkbox>
-      <p v-if="!has(Permission.EnvForceDelete)" class="env-page__hint">
-        当前账号没有 <code>env:force_delete</code> 权限,如需级联删除请联系管理员。
-      </p>
-      <template #footer>
-        <el-button @click="deleteDialogVisible = false">取消</el-button>
-        <el-button
-          type="danger"
-          :loading="deleteSubmitting"
-          @click="onDeleteConfirm"
-        >
-          {{ forceChecked ? '级联删除' : '删除' }}
-        </el-button>
       </template>
     </el-dialog>
   </div>

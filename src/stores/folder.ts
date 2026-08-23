@@ -12,8 +12,8 @@ import { withApiCall } from '@/composables/use-api-call'
 
 /**
  * 当前 folder 列表的"查询上下文":
- *  - level=1 时,parent 字段存的是 envId
- *  - level=2 时,parent 字段存的是 folderParentId
+ *  - level=1 时,parent 字段存的是 projectId
+ *  - level=2 时,parent 字段存的是 parentFolderId
  */
 interface FolderContext {
   level: FolderLevel
@@ -38,13 +38,11 @@ export const useFolderStore = defineStore('folder', () => {
   async function fetchList(req: ListFoldersRequest): Promise<PageResp<Folder>> {
     loading.value = true
     let stampedLevel: FolderLevel
-    let envId: Uuid | undefined
-    if ('environmentId' in req && req.environmentId) {
-      context.value = { level: 1, parent: req.environmentId }
+    if ('projectId' in req && req.projectId) {
+      context.value = { level: 1, parent: req.projectId }
       stampedLevel = 1
-      envId = req.environmentId
-    } else if ('folderParentId' in req && req.folderParentId) {
-      context.value = { level: 2, parent: req.folderParentId }
+    } else if ('parentFolderId' in req && req.parentFolderId) {
+      context.value = { level: 2, parent: req.parentFolderId }
       stampedLevel = 2
     } else {
       // 防御:理论上不会到这里
@@ -56,23 +54,10 @@ export const useFolderStore = defineStore('folder', () => {
       const resp = await withApiCall(() => listFolders(merged))
       // 业务上 total>0 才有数据;list 为 null 时兜底为 []
       // 后端不返回 level,这里按上下文回填,保证视图层 f.level 过滤可用
-      items.value = ((resp.total > 0 ? resp.list : null) ?? []).map((f) => {
-        // env 模式 + includeSubfolders=true → 后端在 L1 上挂了 subfolders
-        // L2 子项缺 level/environmentId/subfolders,需要回填
-        if (stampedLevel === 1 && envId !== undefined && f.subfolders) {
-          return {
-            ...f,
-            level: 1 as const,
-            subfolders: f.subfolders.map((c) => ({
-              ...c,
-              level: 2 as const,
-              environmentId: envId,
-              subfolders: undefined,
-            })),
-          }
-        }
-        return { ...f, level: stampedLevel }
-      })
+      items.value = ((resp.total > 0 ? resp.list : null) ?? []).map((f) => ({
+        ...f,
+        level: stampedLevel,
+      }))
       total.value = resp.total
       return resp
     } finally {

@@ -6,14 +6,9 @@ import {
   listEnvironments,
   createEnvironment,
   getEnvironment,
-  updateEnvironment,
-  deleteEnvironment,
   type ListEnvironmentsRequest,
   type CreateEnvironmentRequest,
   type EnvironmentLookup,
-  type UpdateEnvironmentRequest,
-  type DeleteEnvironmentRequest,
-  type DeleteEnvironmentResponse,
 } from '@/api/env'
 import { withApiCall } from '@/composables/use-api-call'
 
@@ -67,32 +62,6 @@ export const useEnvStore = defineStore('env', () => {
     return withApiCall(() => getEnvironment(req))
   }
 
-  /**
-   * 更新 env 后,若命中当前 page 视图则就地替换;未命中则仅返回 updated。
-   */
-  async function update(req: UpdateEnvironmentRequest): Promise<Environment> {
-    const updated = await withApiCall(() => updateEnvironment(req))
-    const idx = items.value.findIndex((e) => e.id === updated.id)
-    if (idx >= 0) items.value[idx] = updated
-    return updated
-  }
-
-  /**
-   * 删除 env。
-   * - 后端默认 force=false:有 active child folder/secret 时返回 409
-   * - 后端 force=true:级联软删 folder→secret,需 env:force_delete 权限
-   */
-  async function remove(req: DeleteEnvironmentRequest): Promise<DeleteEnvironmentResponse> {
-    const result = await withApiCall(() => deleteEnvironment(req))
-    const targetId = 'id' in req && req.id ? req.id : null
-    const before = items.value.length
-    items.value = items.value.filter((e) => (targetId ? e.id !== targetId : true))
-    if (items.value.length < before) {
-      total.value = Math.max(0, total.value - 1)
-    }
-    return result
-  }
-
   function clear(): void {
     items.value = []
     total.value = 0
@@ -108,8 +77,6 @@ export const useEnvStore = defineStore('env', () => {
     fetchList,
     create,
     fetchOne,
-    update,
-    remove,
     clear,
   }
 })

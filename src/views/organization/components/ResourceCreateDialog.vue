@@ -7,6 +7,8 @@ import { createOrganization } from '@/api/organization'
 import { createProject } from '@/api/project'
 import type { TenantHierarchyOption } from '@/api/tenant'
 import type { EnvSpec } from '@/types/project'
+import ManagerSelect from '@/components/ManagerSelect.vue'
+import { useManagerSelection } from '@/composables/use-manager-selection'
 
 export type CreateResourceType = 'tenant' | 'organization' | 'project'
 
@@ -27,6 +29,7 @@ interface CreateResourceForm {
   organizationId: string
   code: string
   name: string
+  managerId: string
   remark: string
   environments: ProjectEnvironmentForm[]
 }
@@ -51,6 +54,7 @@ const dialogVisible = computed({
 const formRef = ref<FormInstance>()
 const submitting = ref(false)
 const activeType = ref<CreateResourceType>('tenant')
+const { resolveManagerId } = useManagerSelection()
 let environmentRowId = 0
 
 const form = reactive<CreateResourceForm>({
@@ -58,6 +62,7 @@ const form = reactive<CreateResourceForm>({
   organizationId: '',
   code: '',
   name: '',
+  managerId: '',
   remark: '',
   environments: [],
 })
@@ -106,6 +111,7 @@ function clearForm(): void {
   form.organizationId = ''
   form.code = ''
   form.name = ''
+  form.managerId = ''
   form.remark = ''
   form.environments = []
   activeType.value = 'tenant'
@@ -137,6 +143,7 @@ function restoreDraft(): void {
       typeof draftForm.organizationId === 'string' ? draftForm.organizationId : ''
     form.code = typeof draftForm.code === 'string' ? draftForm.code : ''
     form.name = typeof draftForm.name === 'string' ? draftForm.name : ''
+    form.managerId = typeof draftForm.managerId === 'string' ? draftForm.managerId : ''
     form.remark = typeof draftForm.remark === 'string' ? draftForm.remark : ''
     const environments = Array.isArray(draftForm.environments) ? draftForm.environments : []
     form.environments = environments.filter(isRecord).map((environment) => ({
@@ -162,6 +169,7 @@ function persistDraft(): void {
       form.organizationId ||
       form.code ||
       form.name ||
+      form.managerId ||
       form.remark ||
       form.environments.length,
     )
@@ -178,6 +186,7 @@ function persistDraft(): void {
       organizationId: form.organizationId,
       code: form.code,
       name: form.name,
+      managerId: form.managerId,
       remark: form.remark,
       environments: form.environments.map(({ name, code, remark, isCheckPerm }) => ({
         name,
@@ -264,17 +273,23 @@ async function submit(): Promise<void> {
   try {
     const code = form.code.trim()
     const name = form.name.trim()
+    const managerId = await resolveManagerId(form.managerId)
+    if (!managerId) {
+      ElMessage.error('无法获取当前用户，请选择管理员后重试')
+      return
+    }
     const remark = form.remark.trim() || undefined
     let resourceId: string | undefined
 
     if (activeType.value === 'tenant') {
-      const created = await createTenant({ code, name, remark })
+      const created = await createTenant({ code, name, managerId, remark })
       resourceId = created?.id
     } else if (activeType.value === 'organization') {
       const created = await createOrganization({
         tenantId: form.tenantId,
         code,
         name,
+        managerId,
         remark,
       })
       resourceId = created?.id
@@ -289,6 +304,7 @@ async function submit(): Promise<void> {
         orgId: form.organizationId,
         code,
         name,
+        managerId,
         remark,
         environments,
       })
@@ -434,6 +450,10 @@ watch([activeType, form], persistDraft, { deep: true })
           />
         </el-form-item>
 
+        <el-form-item label="管理员" prop="managerId">
+          <ManagerSelect v-model="form.managerId" :disabled="submitting" />
+        </el-form-item>
+
         <el-form-item label="备注" prop="remark">
           <el-input v-model="form.remark" type="textarea" :rows="3" placeholder="可选描述" />
         </el-form-item>
@@ -485,7 +505,7 @@ watch([activeType, form], persistDraft, { deep: true })
               <el-tooltip content="删除环境" placement="top">
                 <button
                   type="button"
-                  class="environment-editor__delete"
+                  class="environment-editor__delete vault-delete-action"
                   :aria-label="`删除第 ${index + 1} 个环境`"
                   @click="removeEnvironment(index)"
                 >
@@ -715,12 +735,12 @@ watch([activeType, form], persistDraft, { deep: true })
     border: 0;
     border-radius: 6px;
     background: transparent;
-    color: var(--v-text-tertiary);
+    color: #ef4444;
     cursor: pointer;
 
     &:hover {
       background: rgba(220, 38, 38, 0.08);
-      color: var(--v-color-danger);
+      color: #ef4444;
     }
   }
 

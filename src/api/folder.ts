@@ -5,20 +5,22 @@ import { http } from './http'
 
 /**
  * POST /api/v1/folder/list
- * environmentId 与 folderParentId 二选一:
- *  - environmentId: 列 env 下的 level=1 folder
- *    - includeSubfolders=true 时,响应每条 L1 携带 subfolders 数组(L2,单层)
- *    - includeSubfolders=false(或省略)时,响应只含 L1,subfolders 为 []
- *  - folderParentId: 列该 folder 下的 level=2 folder(只查单层)
+ * 查询范围二选一:
+ *  - projectId:列出项目下的一级 folder
+ *  - parentFolderId:列出 groups folder 下的二级 folder(只查单层)
  */
-export type ListFoldersRequest = PageRequest &
-  (
+export type ListFoldersRequest = PageRequest & {
+  code?: string | null
+  name?: string | null
+} & (
     | {
-        environmentId: Uuid
-        folderParentId?: never
-        includeSubfolders?: boolean
+        projectId: Uuid
+        parentFolderId?: never
       }
-    | { environmentId?: never; folderParentId: Uuid }
+    | {
+        parentFolderId: Uuid
+        projectId?: never
+      }
   )
 
 export function listFolders(
@@ -28,44 +30,52 @@ export function listFolders(
   return http.post('/folder/list', req, config)
 }
 
-/** 当前秘钥中心按 project 分页读取配置目录。 */
-export interface ListProjectFoldersRequest extends PageRequest {
+export interface ListProjectFolderTreeRequest {
   projectId: Uuid
-  code?: string | null
-  name?: string | null
-}
-
-export function listProjectFolders(
-  req: ListProjectFoldersRequest,
-  config?: AxiosRequestConfig,
-): Promise<PageResp<Folder>> {
-  return http.post('/folder/list', req, config)
-}
-
-/**
- * POST /api/v1/folder/listByProject
- * 一次拉取整个 project 下的 folder 树(L1 + L2 + 每个节点的 envList)。
- *
- * 适用于:项目详情页的"目录列表"区,扁平表 + 每行带 env 勾选列。
- * 不再需要按 env 多次拉。
- */
-export interface ListFoldersByProjectRequest {
-  projectId: Uuid
-  /**
-   * 是否在响应中携带 L1 的 L2 children。
-   * 默认 true(本接口存在的意义就是一次拿全);
-   * 显式传 false 时,后端 subFolders 始终返回 [],客户端可按需补拉。
-   */
-  includeSubfolders?: boolean
 }
 export interface FolderListByProjectData {
   folderList: FolderNode[]
 }
-export function listFoldersByProject(
-  req: ListFoldersByProjectRequest,
+
+function toFolderNode(folder: Folder, subFolders: FolderNode[] = []): FolderNode {
+  const raw = folder as Folder & Record<string, unknown>
+  const folderGroupId = [raw.groupId, raw.group_id, raw.folderGroupId, raw.folder_group_id].find(
+    (value): value is string => typeof value === 'string' && value.length > 0,
+  )
+  return {
+    id: folder.id,
+    folderGroupId: folderGroupId ?? '',
+    code: folder.code,
+    name: folder.name,
+    comment: folder.comment,
+    envList: [],
+    subFolders,
+  }
+}
+
+/** 使用最新 `/folder/list` 组合项目目录树。 */
+export async function listProjectFolderTree(
+  req: ListProjectFolderTreeRequest,
   config?: AxiosRequestConfig,
 ): Promise<FolderListByProjectData> {
-  return http.post('/folder/listByProject', req, config)
+  const roots = await listFolders({ projectId: req.projectId, pageNum: 1, pageSize: 200 }, config)
+  const folderList = await Promise.all(
+    (roots.list ?? []).map(async (folder) => {
+      const raw = folder as Folder & Record<string, unknown>
+      const type = typeof raw.type === 'string' ? raw.type.toLowerCase() : ''
+      const hasChildren = folder.code.toLowerCase() === 'groups' || type === 'groups'
+      if (!hasChildren) return toFolderNode(folder)
+      const children = await listFolders(
+        { parentFolderId: folder.id, pageNum: 1, pageSize: 200 },
+        config,
+      )
+      return toFolderNode(
+        folder,
+        (children.list ?? []).map((child) => toFolderNode(child)),
+      )
+    }),
+  )
+  return { folderList }
 }
 
 /**
@@ -85,6 +95,7 @@ export interface CreateFolderRequest {
   level: FolderLevel
   code: string
   name: string
+  managerId: Uuid
   /** 至少 1 个 env id */
   envList: Uuid[]
   /** level=2 时必填:父 L1 folder 的 code */
@@ -100,13 +111,14 @@ export function createFolder(
 
 /**
  * POST /api/v1/folder/create
- * 秘钥中心创建顶级配置目录使用的请求格式。
+ * 秘钥中心创建配置目录使用的请求格式;groups 子目录携带 parentFolderId。
  * type 由秘钥中心创建文件夹弹框选择:common 表示通用配置,customer 表示用户配置。
  */
 export interface CreateSecretFolderRequest {
   projectId: Uuid
   code: string
   name: string
+  managerId: Uuid
   remark?: string
   type: 'common' | 'customer'
   parentFolderId?: Uuid
@@ -119,18 +131,11 @@ export function createSecretFolder(
   return http.post('/folder/create', req, config)
 }
 
-/**
- * POST /api/v1/folder/update
- *  - id/code 二选一;按 code 更新时必须同时传 parentId(env id)
- *  - name 必填
- *  - code 创建后不可改,前端不传
- */
+/** POST /api/v1/folder/update，按逻辑分组统一更新各环境下的配置目录。 */
 export interface UpdateFolderRequest {
-  id?: Uuid
-  code?: string
-  parentId?: Uuid
+  groupId: Uuid
   name: string
-  comment?: string
+  remark: string
 }
 export function updateFolder(
   req: UpdateFolderRequest,

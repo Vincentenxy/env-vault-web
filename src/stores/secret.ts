@@ -1,19 +1,15 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { SecretEntry, SecretGroup, SecretReveal } from '@/types/secret'
+import type { SecretEntry, SecretGroup } from '@/types/secret'
 import type { PageRequest, PageResp, Uuid } from '@/types/api'
 import {
   listSecrets,
   listSecretsAcrossEnvs,
-  createSecret,
-  revealSecret,
   updateSecret,
   batchCreateSecrets,
   type ListSecretsRequest,
   type ListSecretsAcrossEnvsRequest,
   type SecretAcrossEnvs,
-  type CreateSecretRequest,
-  type RevealSecretRequest,
   type UpdateSecretRequest,
   type BatchCreateSecretsRequest,
 } from '@/api/secret'
@@ -70,9 +66,7 @@ export const useSecretStore = defineStore('secret', () => {
    * - key 传具体值:返回该 key 的 4-env 数据(用于编辑/查看回填)
    * 响应:扁平数组,每项的 env 块以 envCode 为键。
    */
-  async function fetchAcrossEnvs(
-    req: ListSecretsAcrossEnvsRequest,
-  ): Promise<SecretAcrossEnvs[]> {
+  async function fetchAcrossEnvs(req: ListSecretsAcrossEnvsRequest): Promise<SecretAcrossEnvs[]> {
     acrossEnvsLoading.value = true
     try {
       const data = await withApiCall(() => listSecretsAcrossEnvs(req))
@@ -81,35 +75,6 @@ export const useSecretStore = defineStore('secret', () => {
     } finally {
       acrossEnvsLoading.value = false
     }
-  }
-
-  async function create(req: CreateSecretRequest): Promise<SecretEntry> {
-    const created = await withApiCall(() => createSecret(req))
-    // 创建到当前上下文时刷新第一页
-    if (context.value && context.value.kind === 'folder' && context.value.parent === req.folderId) {
-      await fetchList({
-        folderId: req.folderId,
-        pageNum: 1,
-        pageSize: lastQuery.value.pageSize ?? 20,
-      })
-    } else if (context.value && context.value.kind === 'env') {
-      // env 视图下新建到任何 folder,都刷新一遍(后端会按 env 过滤)
-      const ctx = context.value
-      await fetchList({
-        environmentId: ctx.parent,
-        pageNum: 1,
-        pageSize: lastQuery.value.pageSize ?? 20,
-      })
-    }
-    return created
-  }
-
-  /**
-   * 拉取单条 secret 的明文。需要 `secret:reveal` 权限。
-   * 不写入 items(列表不带 value,避免泄露)。
-   */
-  async function fetchReveal(req: RevealSecretRequest): Promise<SecretReveal> {
-    return withApiCall(() => revealSecret(req))
   }
 
   /**
@@ -125,8 +90,8 @@ export const useSecretStore = defineStore('secret', () => {
   }
 
   /**
-   * 批量创建 secret。后端会按 env 拆分,一条 secretList 项可以拆出多条 secret
-   * (每个 env 一条)。响应是 data: null,成功时 store 仅返回 null。
+   * 批量创建 secret。每条 secretList 项通过 folderGroupId 定位逻辑文件夹，
+   * values 使用 envId 写入项目下各环境。响应是 data: null。
    * 刷新策略:按当前 list 上下文(folder 或 env)拉第一页,本批的 folder 不一定和当前
    * 选中 folder 一致,所以不强行按 folderId 命中。
    */
@@ -169,8 +134,6 @@ export const useSecretStore = defineStore('secret', () => {
     acrossEnvsLoading,
     fetchList,
     fetchAcrossEnvs,
-    create,
-    fetchReveal,
     update,
     batchCreate,
     clear,

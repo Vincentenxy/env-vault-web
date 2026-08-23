@@ -1,12 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import {
-  ElMessage,
-  ElMessageBox,
-  type FormInstance,
-  type FormRules,
-} from 'element-plus'
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import {
   ArrowLeft,
   Check,
@@ -31,7 +26,7 @@ import { formatDateTime } from '@/utils/format'
 import { getEnvProjectId } from '@/utils/env'
 import { usePermission } from '@/composables/use-permission'
 import { Permission } from '@/constants/permission'
-import { listFoldersByProject, createFolder, deleteFolder, updateFolder } from '@/api/folder'
+import { listProjectFolderTree, createFolder, deleteFolder, updateFolder } from '@/api/folder'
 import type { Environment } from '@/types/env'
 import type { FolderLevel, FolderNode } from '@/types/folder'
 import type { Project } from '@/types/project'
@@ -40,8 +35,10 @@ import type {
   SecretAcrossEnvsEntry,
   UpdateSecretsRequest as UpdateSecretsReq,
   BatchCreateSecretsRequest,
-  BatchCreateEnvEntry,
+  BatchCreateSecretValue,
 } from '@/api/secret'
+import ManagerSelect from '@/components/ManagerSelect.vue'
+import { useManagerSelection } from '@/composables/use-manager-selection'
 
 const route = useRoute()
 const router = useRouter()
@@ -50,6 +47,7 @@ const orgStore = useOrganizationStore()
 const projectStore = useProjectStore()
 const secretStore = useSecretStore()
 const { has, rbac } = usePermission()
+const { resolveManagerId } = useManagerSelection()
 
 const projectId = computed<string>(() => String(route.params.projectId ?? ''))
 const orgId = computed<string>(() => String(route.query.orgId ?? ''))
@@ -77,7 +75,7 @@ const envOptions = computed<Environment[]>(() =>
   envStore.items.filter((e) => getEnvProjectId(e) === projectId.value),
 )
 
-// ==================== folder 树(来自 /folder/listByProject)================
+// ==================== folder 树(由 /folder/list 组合)================
 //
 // 旧版本:每个 env 一棵树(treesByEnv),顶部多选 env 控制显示哪些树。
 // 新版本:一次拿整个 project 下的 folder 树,每个节点带 envList,
@@ -146,8 +144,17 @@ async function loadFolderTree(): Promise<void> {
   if (!projectId.value) return
   folderTreeLoading.value = true
   try {
-    const resp = await listFoldersByProject({ projectId: projectId.value })
-    folderTree.value = resp.folderList ?? []
+    const resp = await listProjectFolderTree({ projectId: projectId.value })
+    const bindProjectEnvironments = (nodes: FolderNode[]): FolderNode[] =>
+      nodes.map((node) => ({
+        ...node,
+        envList: envOptions.value.map((environment) => ({
+          id: environment.id,
+          code: environment.code,
+        })),
+        subFolders: bindProjectEnvironments(node.subFolders ?? []),
+      }))
+    folderTree.value = bindProjectEnvironments(resp.folderList ?? [])
     // 校验:之前选中的节点如果不在新树里,清掉
     if (
       selectedFolderNode.value &&
@@ -218,7 +225,7 @@ const currentSubfolders = computed<FolderNode[]>(() => {
 type TabKey = 'secrets' | 'subfolders' | 'info'
 const activeTab = ref<TabKey>('secrets')
 
-// ==================== Secret 列表(走新 /secrets/list 接口)====================
+// ==================== Secret 列表(走 /secret/list 接口)====================
 //
 // 新接口一次拿一个 key 在 4 个 env 上的值(与新增/编辑弹窗的"一行 key + 4 个
 // env 输入框"视觉一致),与旧接口(单行单 env)并存,这里只用新接口。
@@ -268,6 +275,7 @@ const createFolderForm = reactive<{
   parentCode: string
   code: string
   name: string
+  managerId: string
   comment: string
 }>({
   level: 1,
@@ -275,6 +283,7 @@ const createFolderForm = reactive<{
   parentCode: '',
   code: '',
   name: '',
+  managerId: '',
   comment: '',
 })
 
@@ -335,6 +344,7 @@ function resetCreateFolderForm(): void {
   createFolderForm.parentCode = ''
   createFolderForm.code = ''
   createFolderForm.name = ''
+  createFolderForm.managerId = ''
   createFolderForm.comment = ''
   createFolderFormRef.value?.clearValidate()
 }
@@ -382,15 +392,18 @@ async function onCreateFolderSubmit(): Promise<void> {
   if (!valid) return
   createFolderSubmitting.value = true
   try {
+    const managerId = await resolveManagerId(createFolderForm.managerId)
+    if (!managerId) {
+      ElMessage.error('无法获取当前用户，请选择管理员后重试')
+      return
+    }
     await createFolder({
       level: createFolderForm.level,
       code: createFolderForm.code,
       name: createFolderForm.name,
+      managerId,
       envList: [...createFolderForm.envList],
-      parentCode:
-        createFolderForm.level === 2
-          ? createFolderForm.parentCode.trim()
-          : undefined,
+      parentCode: createFolderForm.level === 2 ? createFolderForm.parentCode.trim() : undefined,
       comment: createFolderForm.comment || undefined,
     })
     ElMessage.success('创建成功')
@@ -416,7 +429,13 @@ async function onDeleteFolder(folder: FolderNode): Promise<void> {
     await ElMessageBox.confirm(
       `确定要删除目录 "${folder.name} (${folder.code})" 吗?\n该目录及其下所有密钥(覆盖 envList 中所有 env)都会被软删除。`,
       '删除目录',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+      {
+        type: 'warning',
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        customClass: 'vault-confirm-message-box',
+        confirmButtonClass: 'vault-delete-confirm-button',
+      },
     )
   } catch {
     return // 取消
@@ -446,12 +465,12 @@ const editFolderSubmitting = ref(false)
 const editFolderFormRef = ref<FormInstance>()
 
 const editFolderForm = reactive<{
-  id: string
+  groupId: string
   code: string
   name: string
   comment: string
 }>({
-  id: '',
+  groupId: '',
   code: '',
   name: '',
   comment: '',
@@ -474,7 +493,7 @@ const editFolderRules: FormRules<typeof editFolderForm> = {
 }
 
 function resetEditFolderForm(): void {
-  editFolderForm.id = ''
+  editFolderForm.groupId = ''
   editFolderForm.code = ''
   editFolderForm.name = ''
   editFolderForm.comment = ''
@@ -482,7 +501,7 @@ function resetEditFolderForm(): void {
 }
 
 function openEditFolder(folder: FolderNode): void {
-  editFolderForm.id = folder.id
+  editFolderForm.groupId = folder.folderGroupId
   editFolderForm.code = folder.code
   editFolderForm.name = folder.name
   editFolderForm.comment = folder.comment ?? ''
@@ -499,12 +518,16 @@ async function onEditFolderSubmit(): Promise<void> {
   }
   const valid = await editFolderFormRef.value.validate().catch(() => false)
   if (!valid) return
+  if (!editFolderForm.groupId) {
+    ElMessage.error('当前配置目录缺少 groupId，无法更新')
+    return
+  }
   editFolderSubmitting.value = true
   try {
     await updateFolder({
-      id: editFolderForm.id,
+      groupId: editFolderForm.groupId,
       name: editFolderForm.name.trim(),
-      comment: editFolderForm.comment?.trim() || undefined,
+      remark: editFolderForm.comment.trim(),
     })
     ElMessage.success('更新成功')
     editFolderDialogVisible.value = false
@@ -553,7 +576,7 @@ function getSortedEnvEntries(
 // ==================== 行内新建 secret ====================
 //
 // 去掉旧版的批量创建弹窗,改为表格底部常驻新建行。
-// folder 锁定为当前 selectedFolderNode,secret 创建到所有已挂载 env。
+// folder 锁定为当前 selectedFolderNode,secret 创建到项目的所有 env。
 const newSecretCreating = ref(false)
 const newSecretSubmitting = ref(false)
 
@@ -590,7 +613,7 @@ function openNewSecretRow(): void {
     return
   }
   if (currentEnvCodes.value.length === 0) {
-    ElMessage.warning('当前目录尚未挂载到任何环境,无法创建 secret')
+    ElMessage.warning('当前项目没有可用环境,无法创建 secret')
     return
   }
   const vals: Record<string, string> = {}
@@ -633,23 +656,28 @@ async function submitNewSecret(): Promise<void> {
 
   if (!selectedFolderNode.value) return
   const picked = selectedFolderNode.value
+  if (!picked.folderGroupId) {
+    ElMessage.error('当前配置集缺少 folderGroupId,无法创建 secret')
+    return
+  }
   newSecretSubmitting.value = true
   try {
     const envBindingByCode = new Map(picked.envList.map((b) => [b.code, b]))
-    const envList: BatchCreateEnvEntry[] = []
+    const values: BatchCreateSecretValue[] = []
     for (const envCode of currentEnvCodes.value) {
       const value = newSecretForm.values[envCode] ?? ''
       const binding = envBindingByCode.get(envCode)
       if (binding) {
-        envList.push({ envCode, folderId: binding.folderId, value })
+        values.push({ envId: binding.id, value })
       }
     }
     const req: BatchCreateSecretsRequest = {
       secretList: [
         {
+          folderGroupId: picked.folderGroupId,
           key: k,
-          comment: newSecretForm.comment?.trim() ?? '',
-          envList,
+          remark: newSecretForm.comment?.trim() ?? '',
+          values,
         },
       ],
     }
@@ -862,9 +890,7 @@ watch(
         </div>
       </div>
       <div class="proj-header__actions">
-        <el-button :icon="Refresh" :disabled="!projectId" @click="refreshAll">
-          刷新
-        </el-button>
+        <el-button :icon="Refresh" :disabled="!projectId" @click="refreshAll"> 刷新 </el-button>
       </div>
     </header>
 
@@ -899,9 +925,7 @@ watch(
             :data="flatFolders"
             class="folder-list__table"
             :empty-text="
-              folderTree.length === 0
-                ? '该项目下暂无目录,点击上方「新建顶级」创建'
-                : '暂无数据'
+              folderTree.length === 0 ? '该项目下暂无目录,点击上方「新建顶级」创建' : '暂无数据'
             "
             @row-click="onFlatRowClick"
           >
@@ -1031,7 +1055,9 @@ watch(
                       'crumb__item--current': c.id === selectedFolderNode.id,
                     }"
                     :title="`跳到 ${c.name}`"
-                    @click="onTreeNodeClick(findFolderNode(folderTree, c.id)?.node ?? selectedFolderNode)"
+                    @click="
+                      onTreeNodeClick(findFolderNode(folderTree, c.id)?.node ?? selectedFolderNode)
+                    "
                   >
                     {{ c.name }}
                   </span>
@@ -1082,8 +1108,10 @@ watch(
                 <div class="tab-pane__actions">
                   <el-button
                     type="primary"
+                    plain
                     size="small"
                     :icon="Edit"
+                    class="vault-edit-action"
                     :disabled="!has(Permission.FolderUpdate)"
                     :title="!has(Permission.FolderUpdate) ? '当前账号没有 folder:update 权限' : ''"
                     @click="openEditFolder(selectedFolderNode)"
@@ -1094,6 +1122,7 @@ watch(
                     type="danger"
                     size="small"
                     :icon="Delete"
+                    class="folder-delete-button vault-delete-action"
                     :disabled="!has(Permission.FolderDelete)"
                     :title="!has(Permission.FolderDelete) ? '当前账号没有 folder:delete 权限' : ''"
                     @click="onDeleteFolder(selectedFolderNode)"
@@ -1121,7 +1150,7 @@ watch(
                     size="small"
                     effect="plain"
                     class="env-tag"
-                    :title="`env 专属 folderId: ${binding.folderId}`"
+                    :title="`${binding.code} 环境`"
                   >
                     {{ envOptions.find((e) => e.id === binding.id)?.name ?? binding.code }}
                   </el-tag>
@@ -1197,12 +1226,7 @@ watch(
                     </div>
                   </template>
                 </el-table-column>
-                <el-table-column
-                  prop="comment"
-                  label="说明"
-                  min-width="200"
-                  show-overflow-tooltip
-                >
+                <el-table-column prop="comment" label="说明" min-width="200" show-overflow-tooltip>
                   <template #default="{ row }">
                     <span class="muted">{{ row.comment || '—' }}</span>
                   </template>
@@ -1238,9 +1262,7 @@ watch(
                 <p v-if="!selectedFolderNode.subFolders">
                   当前为 L2 子目录,系统最多支持 2 级目录,无法再挂载下一级。
                 </p>
-                <p v-else>
-                  该 L1 目录下还没有子目录,点击右上「新建子目录」开始创建。
-                </p>
+                <p v-else>该 L1 目录下还没有子目录,点击右上「新建子目录」开始创建。</p>
               </div>
             </section>
 
@@ -1256,7 +1278,10 @@ watch(
                     type="primary"
                     size="small"
                     :icon="Plus"
-                    :disabled="!newSecretCreating && (selectedFolderNode.envList.length === 0 || !has(Permission.SecretCreate))"
+                    :disabled="
+                      !newSecretCreating &&
+                      (selectedFolderNode.envList.length === 0 || !has(Permission.SecretCreate))
+                    "
                     :title="!has(Permission.SecretCreate) ? '当前账号没有 secret:create 权限' : ''"
                     @click="openNewSecretRow"
                   >
@@ -1288,11 +1313,21 @@ watch(
                       <el-table-column label="值" min-width="320">
                         <template #default="{ row: subRow }">
                           <!-- 编辑态 -->
-                          <div v-if="isRowEditing((row as SecretAcrossEnvs).key)" class="secret-sub-value">
+                          <div
+                            v-if="isRowEditing((row as SecretAcrossEnvs).key)"
+                            class="secret-sub-value"
+                          >
                             <input
                               class="editing-input"
-                              :value="_editingValues[editingValueKey((row as SecretAcrossEnvs).key, subRow.envCode)] ?? ''"
-                              @input="(e: Event) => onEditValueInput((row as SecretAcrossEnvs).key, subRow.envCode, e)"
+                              :value="
+                                _editingValues[
+                                  editingValueKey((row as SecretAcrossEnvs).key, subRow.envCode)
+                                ] ?? ''
+                              "
+                              @input="
+                                (e: Event) =>
+                                  onEditValueInput((row as SecretAcrossEnvs).key, subRow.envCode, e)
+                              "
                               :placeholder="`${subRow.envCode} 新值`"
                             />
                           </div>
@@ -1366,6 +1401,7 @@ watch(
                       size="small"
                       type="primary"
                       :icon="Edit"
+                      class="vault-edit-action"
                       :disabled="!has(Permission.SecretUpdate)"
                       @click="startEditRow(row as SecretAcrossEnvs)"
                     >
@@ -1404,7 +1440,7 @@ watch(
                     </div>
                     <!-- 新建 env 值:与上方展示框一致的列表布局 -->
                     <el-table
-                      :data="currentEnvCodes.map(code => ({ envCode: code }))"
+                      :data="currentEnvCodes.map((code) => ({ envCode: code }))"
                       size="small"
                       class="new-secret-card__env-table"
                     >
@@ -1478,11 +1514,7 @@ watch(
           </el-radio-group>
         </el-form-item>
 
-        <el-form-item
-          v-if="createFolderForm.level === 2"
-          label="父级 code"
-          prop="parentCode"
-        >
+        <el-form-item v-if="createFolderForm.level === 2" label="父级 code" prop="parentCode">
           <el-input
             v-model="createFolderForm.parentCode"
             placeholder="父 level=1 folder 的 code,例如 payment"
@@ -1520,10 +1552,10 @@ watch(
         <el-form-item label="名称" prop="name">
           <el-input v-model="createFolderForm.name" placeholder="Globals" />
         </el-form-item>
-        <el-form-item
-          v-if="!createFolderForm.code && createFolderForm.level === 1"
-          label="预设"
-        >
+        <el-form-item label="管理员" prop="managerId">
+          <ManagerSelect v-model="createFolderForm.managerId" :disabled="createFolderSubmitting" />
+        </el-form-item>
+        <el-form-item v-if="!createFolderForm.code && createFolderForm.level === 1" label="预设">
           <div class="presets">
             <el-button
               v-for="p in PRESET_FOLDERS"
@@ -1542,11 +1574,7 @@ watch(
       </el-form>
       <template #footer>
         <el-button @click="createFolderDialogVisible = false">取消</el-button>
-        <el-button
-          type="primary"
-          :loading="createFolderSubmitting"
-          @click="onCreateFolderSubmit"
-        >
+        <el-button type="primary" :loading="createFolderSubmitting" @click="onCreateFolderSubmit">
           创建
         </el-button>
       </template>
@@ -2060,7 +2088,9 @@ watch(
     cursor: pointer;
     padding: 2px 6px;
     border-radius: var(--v-radius-sm);
-    transition: background 0.15s ease, color 0.15s ease;
+    transition:
+      background 0.15s ease,
+      color 0.15s ease;
 
     &:hover:not(.crumb__item--current):not(.is-disabled) {
       background: var(--v-surface-row-hover);
@@ -2104,7 +2134,9 @@ watch(
     margin-left: 2px;
     font-size: 12px;
     opacity: 0.65;
-    transition: transform 0.15s ease, opacity 0.15s ease;
+    transition:
+      transform 0.15s ease,
+      opacity 0.15s ease;
   }
 
   &__item--root:hover &__back-hint {
@@ -2170,6 +2202,10 @@ watch(
     display: flex;
     gap: 8px;
   }
+}
+
+.folder-delete-button :deep(.el-icon) {
+  color: #ef4444;
 }
 
 .secret-table {
@@ -2333,7 +2369,7 @@ watch(
 
 .batch-form__row-head {
   display: grid;
-  grid-template-columns: 1fr 1.4fr 36px;  // key / 说明 / 删除
+  grid-template-columns: 1fr 1.4fr 36px; // key / 说明 / 删除
   gap: 8px;
   align-items: start;
 }

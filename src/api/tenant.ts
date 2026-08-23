@@ -1,4 +1,5 @@
 import type { AxiosRequestConfig } from 'axios'
+import type { PageRequest, PageResp } from '@/types/api'
 import { http } from './http'
 
 export interface TenantProjectOption {
@@ -27,6 +28,10 @@ export interface Tenant {
   code: string
   name: string
   remark?: string
+  managerId?: string
+  orgCount?: number
+  memberCount?: number
+  managerName?: string
   createdAt?: string
   updatedAt?: string
 }
@@ -34,7 +39,19 @@ export interface Tenant {
 export interface CreateTenantRequest {
   code: string
   name: string
+  managerId: string
   remark?: string
+}
+
+export interface ListTenantsRequest extends PageRequest {
+  code?: string
+  name?: string
+}
+
+export interface UpdateTenantRequest {
+  id: string
+  name: string
+  remark: string
 }
 
 /** GET /api/v1/tenant/withOrgProject */
@@ -47,4 +64,14 @@ export function getTenantWithOrgProject(
 /** POST /api/v1/tenant/create */
 export function createTenant(req: CreateTenantRequest): Promise<Tenant> {
   return http.post('/tenant/create', req)
+}
+
+/** POST /api/v1/tenant/list */
+export function listTenants(req: ListTenantsRequest = {}): Promise<PageResp<Tenant>> {
+  return http.post('/tenant/list', req)
+}
+
+/** POST /api/v1/tenant/update */
+export function updateTenant(req: UpdateTenantRequest): Promise<Tenant> {
+  return http.post('/tenant/update', req)
 }

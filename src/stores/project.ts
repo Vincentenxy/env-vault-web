@@ -6,14 +6,9 @@ import {
   listProjects,
   createProject,
   getProject,
-  updateProject,
-  deleteProject,
   type ListProjectsRequest,
   type CreateProjectRequest,
   type ProjectLookup,
-  type UpdateProjectRequest,
-  type DeleteProjectRequest,
-  type DeleteProjectResponse,
 } from '@/api/project'
 import { withApiCall } from '@/composables/use-api-call'
 
@@ -67,37 +62,6 @@ export const useProjectStore = defineStore('project', () => {
     return withApiCall(() => getProject(req))
   }
 
-  /**
-   * 更新 project 后,若命中当前 page 视图则就地替换;未命中则仅返回 updated。
-   */
-  async function update(req: UpdateProjectRequest): Promise<Project> {
-    const updated = await withApiCall(() => updateProject(req))
-    const idx = items.value.findIndex((o) => o.id === updated.id)
-    if (idx >= 0) items.value[idx] = updated
-    return updated
-  }
-
-  /**
-   * 删除 project。
-   * - 后端默认 force=false:有 active child env 时返回 409,需 view 层提示重试
-   * - 后端 force=true:级联软删 env→folder→secret,需 project:force_delete 权限
-   */
-  async function remove(req: DeleteProjectRequest): Promise<DeleteProjectResponse> {
-    const result = await withApiCall(() => deleteProject(req))
-    const targetId = 'id' in req && req.id ? req.id : null
-    const targetCode = 'code' in req && req.code ? req.code : null
-    const before = items.value.length
-    items.value = items.value.filter((o) => {
-      if (targetId) return o.id !== targetId
-      if (targetCode) return o.code !== targetCode
-      return true
-    })
-    if (items.value.length < before) {
-      total.value = Math.max(0, total.value - 1)
-    }
-    return result
-  }
-
   return {
     items,
     total,
@@ -107,7 +71,5 @@ export const useProjectStore = defineStore('project', () => {
     fetchList,
     fetchOne,
     create,
-    update,
-    remove,
   }
 })

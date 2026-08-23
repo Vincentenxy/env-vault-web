@@ -3,9 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import {
-  ArrowRight,
   CircleClose,
-  Delete,
   Edit,
   Files,
   MoreFilled,
@@ -24,12 +22,17 @@ import { usePermission } from '@/composables/use-permission'
 import { Permission } from '@/constants/permission'
 import type { Project } from '@/types/project'
 import type { Organization } from '@/types/organization'
-import type { CreateProjectRequest, UpdateProjectRequest } from '@/api/project'
+import type { CreateProjectRequest } from '@/api/project'
+import { updateProject } from '@/api/project'
 import type { EnvSpec } from '@/types/project'
+import CardEditDialog, { type CardEditPayload } from '@/components/CardEditDialog.vue'
+import ManagerSelect from '@/components/ManagerSelect.vue'
+import { useManagerSelection } from '@/composables/use-manager-selection'
 
 const projectStore = useProjectStore()
 const orgStore = useOrganizationStore()
 const { has, rbac } = usePermission()
+const { resolveManagerId } = useManagerSelection()
 const router = useRouter()
 
 const selectedOrgId = ref<string>('')
@@ -86,6 +89,7 @@ interface ProjectFormModel {
   parentId: string
   code: string
   name: string
+  managerId: string
   comment: string
   environments: EnvSpec[]
 }
@@ -94,6 +98,7 @@ const createForm = reactive<ProjectFormModel>({
   parentId: '',
   code: '',
   name: '',
+  managerId: '',
   comment: '',
   environments: [],
 })
@@ -139,6 +144,7 @@ function resetCreateForm(): void {
   createForm.parentId = selectedOrgId.value
   createForm.code = ''
   createForm.name = ''
+  createForm.managerId = ''
   createForm.comment = ''
   createForm.environments = []
   createFormRef.value?.clearValidate()
@@ -171,10 +177,16 @@ async function onCreateSubmit(): Promise<void> {
   if (!valid) return
   createSubmitting.value = true
   try {
+    const managerId = await resolveManagerId(createForm.managerId)
+    if (!managerId) {
+      ElMessage.error('无法获取当前用户，请选择管理员后重试')
+      return
+    }
     const req: CreateProjectRequest = {
       orgId: createForm.parentId,
       code: createForm.code,
       name: createForm.name,
+      managerId,
       remark: createForm.comment,
       environments: createForm.environments.length > 0 ? createForm.environments : undefined,
     }
@@ -198,98 +210,37 @@ function openView(row: Project): void {
   viewDialogVisible.value = true
 }
 
-// ==================== 编辑项目 ====================
+// ==================== 卡片操作 ====================
+type CardAction = 'view' | 'goEnvs'
 const editDialogVisible = ref(false)
 const editSubmitting = ref(false)
-const editFormRef = ref<FormInstance>()
-const editTargetId = ref<string>('')
-const editTargetCode = ref<string>('')
+const editTarget = ref<Project | null>(null)
 
-const editForm = reactive<{ name: string; comment: string }>({
-  name: '',
-  comment: '',
-})
-
-const editRules: FormRules<{ name: string; comment: string }> = {
-  name: [
-    { required: true, message: '请输入名称', trigger: 'blur' },
-    { max: 64, message: '长度不能超过 64', trigger: 'blur' },
-  ],
-  comment: [{ max: 256, message: '长度不能超过 256', trigger: 'blur' }],
-}
-
-function openEdit(row: Project): void {
-  editTargetId.value = row.id
-  editTargetCode.value = row.code
-  editForm.name = row.name
-  editForm.comment = row.comment ?? ''
-  editFormRef.value?.clearValidate()
+function openProjectEdit(row: Project): void {
+  editTarget.value = row
   editDialogVisible.value = true
 }
 
-async function onEditSubmit(): Promise<void> {
-  if (!editFormRef.value) return
-  const valid = await editFormRef.value.validate().catch(() => false)
-  if (!valid) return
+async function submitProjectEdit(payload: CardEditPayload): Promise<void> {
+  const project = editTarget.value
+  if (!project || editSubmitting.value) return
+
   editSubmitting.value = true
-  const req: UpdateProjectRequest = {
-    id: editTargetId.value,
-    parentId: selectedOrgId.value,
-    name: editForm.name.trim(),
-    comment: editForm.comment?.trim() || undefined,
-  }
   try {
-    await projectStore.update(req)
-    ElMessage.success('已保存')
+    await updateProject({
+      id: project.id,
+      name: payload.name,
+      remark: payload.remark,
+    })
+    ElMessage.success('项目更新成功')
     editDialogVisible.value = false
-  } catch (e) {
-    const msg = e instanceof ApiError ? e.message : '保存失败'
-    ElMessage.error(msg)
+    await onRefresh()
+  } catch (error) {
+    if (!(error instanceof ApiError)) ElMessage.error('项目更新失败')
   } finally {
     editSubmitting.value = false
   }
 }
-
-// ==================== 删除项目 ====================
-const deleteDialogVisible = ref(false)
-const deleteSubmitting = ref(false)
-const deleteTarget = ref<Project | null>(null)
-const forceChecked = ref(false)
-
-function openDelete(row: Project): void {
-  deleteTarget.value = row
-  forceChecked.value = false
-  deleteDialogVisible.value = true
-}
-
-async function onDeleteConfirm(): Promise<void> {
-  const target = deleteTarget.value
-  if (!target) return
-  if (forceChecked.value && !has(Permission.ProjectForceDelete)) {
-    ElMessage.warning('当前账号没有级联删除权限')
-    return
-  }
-  deleteSubmitting.value = true
-  try {
-    const res = await projectStore.remove({
-      id: target.id,
-      parentId: selectedOrgId.value,
-      force: forceChecked.value || undefined,
-    })
-    if (res.deleted) {
-      ElMessage.success(forceChecked.value ? '已级联删除' : '已删除')
-      deleteDialogVisible.value = false
-    }
-  } catch (e) {
-    const msg = e instanceof ApiError ? e.message : '删除失败'
-    ElMessage.error(msg)
-  } finally {
-    deleteSubmitting.value = false
-  }
-}
-
-// ==================== 卡片操作 ====================
-type CardAction = 'view' | 'edit' | 'delete' | 'goEnvs'
 
 function onCardEnter(row: Project): void {
   router.push({
@@ -301,19 +252,7 @@ function onCardEnter(row: Project): void {
 
 function onCardMenuCommand(command: CardAction, row: Project): void {
   if (command === 'view') openView(row)
-  else if (command === 'edit') {
-    if (!has(Permission.ProjectUpdate)) {
-      ElMessage.warning('当前账号没有 project:update 权限')
-      return
-    }
-    openEdit(row)
-  } else if (command === 'delete') {
-    if (!has(Permission.ProjectDelete)) {
-      ElMessage.warning('当前账号没有 project:delete 权限')
-      return
-    }
-    openDelete(row)
-  } else if (command === 'goEnvs') {
+  else if (command === 'goEnvs') {
     if (!has(Permission.EnvRead)) {
       ElMessage.warning('当前账号没有 env:read 权限')
       return
@@ -342,8 +281,7 @@ onMounted(async () => {
   }
 })
 
-// 选中组织后,切 rbac 当前 scope 到 organization 级别,
-// 这样 has(Permission.ProjectForceDelete) 等判断会按"我在该 org 是否有权限"来走。
+// 记录当前组织 scope；后端仍负责最终权限校验。
 watch(
   () => selectedOrgId.value,
   (orgId) => {
@@ -418,58 +356,53 @@ watch(
             <div class="project-card__icon">
               <el-icon><Files /></el-icon>
             </div>
-            <el-dropdown
-              trigger="click"
-              placement="bottom-end"
-              class="project-card__menu"
-              @click.stop
-              @command="(cmd: CardAction) => onCardMenuCommand(cmd, row)"
-            >
-              <el-button
-                text
-                circle
-                size="small"
-                :icon="MoreFilled"
-                class="project-card__menu-trigger"
+            <div class="project-card__actions">
+              <el-tooltip content="编辑项目" placement="top">
+                <button
+                  type="button"
+                  class="project-card__edit vault-edit-action"
+                  :aria-label="`编辑${row.name}`"
+                  @click.stop="openProjectEdit(row)"
+                >
+                  <el-icon><Edit /></el-icon>
+                </button>
+              </el-tooltip>
+              <el-dropdown
+                trigger="click"
+                placement="bottom-end"
+                class="project-card__menu"
                 @click.stop
-              />
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <!-- 查看详情:有 project:read 即可(读权限) -->
-                  <el-dropdown-item :icon="View" command="view">查看详情</el-dropdown-item>
-                  <!-- 编辑:需要 project:update -->
-                  <el-dropdown-item
-                    :icon="Edit"
-                    command="edit"
-                    :disabled="!has(Permission.ProjectUpdate)"
-                  >
-                    编辑
-                  </el-dropdown-item>
-                  <!-- 环境管理:跳到 env 列表,需要 env:read(本项目下的 env) -->
-                  <el-dropdown-item
-                    :icon="Position"
-                    command="goEnvs"
-                    :disabled="!has(Permission.EnvRead)"
-                  >
-                    环境管理
-                  </el-dropdown-item>
-                  <!-- 删除:需要 project:delete -->
-                  <el-dropdown-item
-                    divided
-                    :icon="Delete"
-                    command="delete"
-                    :disabled="!has(Permission.ProjectDelete)"
-                  >
-                    删除
-                  </el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+                @command="(cmd: CardAction) => onCardMenuCommand(cmd, row)"
+              >
+                <el-button
+                  text
+                  circle
+                  size="small"
+                  :icon="MoreFilled"
+                  class="project-card__menu-trigger"
+                  @click.stop
+                />
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <!-- 查看详情:有 project:read 即可(读权限) -->
+                    <el-dropdown-item :icon="View" command="view">查看详情</el-dropdown-item>
+                    <!-- 环境管理:跳到 env 列表,需要 env:read(本项目下的 env) -->
+                    <el-dropdown-item
+                      :icon="Position"
+                      command="goEnvs"
+                      :disabled="!has(Permission.EnvRead)"
+                    >
+                      环境管理
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
           </div>
           <div class="project-card__body">
             <h3 class="project-card__name" :title="row.name">{{ row.name }}</h3>
             <code class="project-card__code">{{ row.code }}</code>
-            <p class="project-card__desc">{{ row.comment || '—' }}</p>
+            <p class="project-card__desc">{{ row.remark || row.comment || '—' }}</p>
           </div>
           <footer class="project-card__foot">
             <span class="project-card__meta">
@@ -539,6 +472,9 @@ watch(
         <el-form-item label="名称" prop="name">
           <el-input v-model="createForm.name" placeholder="项目 A" />
         </el-form-item>
+        <el-form-item label="管理员" prop="managerId">
+          <ManagerSelect v-model="createForm.managerId" :disabled="createSubmitting" />
+        </el-form-item>
         <el-form-item label="说明" prop="comment">
           <el-input v-model="createForm.comment" type="textarea" :rows="2" />
         </el-form-item>
@@ -593,6 +529,15 @@ watch(
       </template>
     </el-dialog>
 
+    <CardEditDialog
+      v-model="editDialogVisible"
+      title="编辑项目"
+      :name="editTarget?.name ?? ''"
+      :remark="editTarget?.remark ?? editTarget?.comment ?? ''"
+      :submitting="editSubmitting"
+      @submit="submitProjectEdit"
+    />
+
     <!-- 查看 -->
     <el-dialog v-model="viewDialogVisible" width="520px">
       <template #header>
@@ -609,7 +554,7 @@ watch(
         </el-descriptions-item>
         <el-descriptions-item label="名称">{{ viewTarget.name }}</el-descriptions-item>
         <el-descriptions-item label="说明">
-          {{ viewTarget.comment || '—' }}
+          {{ viewTarget.remark || viewTarget.comment || '—' }}
         </el-descriptions-item>
         <el-descriptions-item label="创建人">
           {{ viewTarget.createdByLabel || viewTarget.createdBy }}
@@ -629,71 +574,6 @@ watch(
       </el-descriptions>
       <template #footer>
         <el-button @click="viewDialogVisible = false">关闭</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 编辑 -->
-    <el-dialog v-model="editDialogVisible" width="480px" :close-on-click-modal="false">
-      <template #header>
-        <div class="project-page__dialog-header">
-          <span class="project-page__dialog-icon project-page__dialog-icon--edit">
-            <el-icon><Edit /></el-icon>
-          </span>
-          <span>编辑项目</span>
-        </div>
-      </template>
-      <el-form ref="editFormRef" :model="editForm" :rules="editRules" label-position="top">
-        <el-form-item label="Code">
-          <el-input v-model="editTargetCode" disabled />
-          <span class="project-page__hint">Code 创建后不可修改</span>
-        </el-form-item>
-        <el-form-item label="名称" prop="name">
-          <el-input v-model="editForm.name" />
-        </el-form-item>
-        <el-form-item label="说明" prop="comment">
-          <el-input v-model="editForm.comment" type="textarea" :rows="3" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="editDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="editSubmitting" @click="onEditSubmit">
-          保存
-          <el-icon class="el-icon--right"><ArrowRight /></el-icon>
-        </el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 删除 -->
-    <el-dialog v-model="deleteDialogVisible" width="460px" :close-on-click-modal="false">
-      <template #header>
-        <div class="project-page__dialog-header">
-          <span class="project-page__dialog-icon project-page__dialog-icon--delete">
-            <el-icon><Delete /></el-icon>
-          </span>
-          <span>删除项目</span>
-        </div>
-      </template>
-      <p v-if="deleteTarget" class="project-page__confirm-text">
-        确定要删除项目 <b>{{ deleteTarget.name }}</b
-        >(<code>{{ deleteTarget.code }}</code
-        >)吗?
-      </p>
-      <p class="project-page__confirm-warn">删除后不可恢复,请谨慎操作。</p>
-      <el-checkbox
-        v-model="forceChecked"
-        :disabled="!has(Permission.ProjectForceDelete)"
-        class="project-page__force"
-      >
-        级联删除(含其下所有环境、目录、密钥)
-      </el-checkbox>
-      <p v-if="!has(Permission.ProjectForceDelete)" class="project-page__hint">
-        当前账号没有 <code>project:force_delete</code> 权限,如需级联删除请联系管理员。
-      </p>
-      <template #footer>
-        <el-button @click="deleteDialogVisible = false">取消</el-button>
-        <el-button type="danger" :loading="deleteSubmitting" @click="onDeleteConfirm">
-          {{ forceChecked ? '级联删除' : '删除' }}
-        </el-button>
       </template>
     </el-dialog>
   </div>
@@ -886,6 +766,34 @@ watch(
   &__menu {
     position: relative;
     z-index: 1;
+  }
+
+  &__actions {
+    position: relative;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  &__edit {
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: #176dfb;
+    cursor: pointer;
+
+    &:hover,
+    &:focus-visible {
+      background: rgba(23, 109, 251, 0.08);
+      outline: none;
+    }
   }
 
   &__menu-trigger {

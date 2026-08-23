@@ -476,6 +476,9 @@ total.value = resp.total
 - 暗色主题:Element Plus 主题变量覆盖 + 命名空间 `html.dark`,主题切换通过 `useTheme` composable 切换 `data-theme`。
 - 全屏加载使用 `ElLoading.service`,局部加载使用按钮 `loading` 属性。
 - 所有弹窗统一 `ElDialog` + `append-to-body`,避免嵌套滚动问题。
+- 业务弹框外层统一使用 `16px` 圆角(`--v-radius-dialog`)、`1px` surface 边框和 `--v-shadow-lg`;header 高度为 `56px`,footer 使用顶部边线与 `14px 22px` 内边距。
+- 弹框底部“取消 / 确认”按钮统一为 `32px` 高、最小宽度 `58px`、水平内边距 `16px`、`16px` 圆角(`--v-radius-dialog-action`),按钮间距 `10px`;普通确认使用主色蓝,删除等危险确认使用 danger 红色。
+- `ElMessageBox.confirm` 必须传 `customClass: 'vault-confirm-message-box'`;危险操作同时传 `confirmButtonClass: 'vault-delete-confirm-button'`,不得在业务页面重复定义确认框壳体与按钮样式。
 - 复制成功使用 `ElMessage.success('已复制')`,不允许 toast 滥用。
 - **Secret 明文展示**:使用 `ElDialog` + `ElInput(type=textarea, readonly)`,关闭时清空本地变量,且按钮触发后才调 `reveal`,不做进入页面自动拉明文。
 

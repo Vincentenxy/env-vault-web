@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, type Component } from 'vue'
+import { computed, ref, watch, type Component } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import { OfficeBuilding } from '@element-plus/icons-vue'
-import { Bell, KeyRound, LogOut, Moon, Sun } from '@lucide/vue'
+import { Bell, ChevronDown, KeyRound, LogOut, Moon, Settings, Sun, UserRound } from '@lucide/vue'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 
@@ -16,6 +16,7 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const theme = useThemeStore()
+const settingsExpanded = ref(true)
 
 const navItems: NavItem[] = [
   { path: '/app/organizations', label: '组织管理', icon: OfficeBuilding },
@@ -23,10 +24,18 @@ const navItems: NavItem[] = [
 ]
 const userName = computed(() => auth.currentUser?.name ?? auth.currentUser?.userId ?? '管理员')
 const userEmail = computed(
-  () => auth.currentUser?.email ?? auth.currentUser?.userId ?? 'admin@company.com',
+  () => auth.currentUser?.email ?? auth.currentUser?.userId ?? '暂无账号信息',
 )
 const userInitial = computed(() =>
   auth.currentUser ? userName.value.slice(0, 1).toUpperCase() : 'AD',
+)
+const isSettingsActive = computed(() => route.path.startsWith('/app/settings/'))
+
+watch(
+  () => route.path,
+  (path) => {
+    if (path.startsWith('/app/settings/')) settingsExpanded.value = true
+  },
 )
 
 function navigate(path: string): void {
@@ -121,8 +130,10 @@ async function onLogout(): Promise<void> {
         <span class="ops-layout__tool-divider"></span>
 
         <el-dropdown trigger="click" placement="bottom-end" popper-class="ops-user-dropdown">
-          <button type="button" class="ops-layout__avatar" :aria-label="userName">
-            {{ userInitial }}
+          <button type="button" class="ops-layout__account-trigger" :aria-label="userName">
+            <span class="ops-layout__avatar">{{ userInitial }}</span>
+            <span class="ops-layout__account-name">{{ userName }}</span>
+            <ChevronDown class="ops-layout__account-arrow" :size="14" :stroke-width="1.8" />
           </button>
           <template #dropdown>
             <el-dropdown-menu>
@@ -130,7 +141,11 @@ async function onLogout(): Promise<void> {
                 <strong>{{ userName }}</strong>
                 <span>{{ userEmail }}</span>
               </div>
-              <el-dropdown-item divided @click="onLogout">
+              <el-dropdown-item divided @click="navigate('/app/settings/profile')">
+                <UserRound :size="14" :stroke-width="1.8" />
+                <span>个人信息</span>
+              </el-dropdown-item>
+              <el-dropdown-item @click="onLogout">
                 <LogOut :size="14" :stroke-width="1.8" />
                 <span>退出登录</span>
               </el-dropdown-item>
@@ -156,6 +171,41 @@ async function onLogout(): Promise<void> {
           <el-icon><component :is="item.icon" /></el-icon>
           <span>{{ item.label }}</span>
         </button>
+      </nav>
+
+      <nav class="ops-layout__nav ops-layout__nav--settings" aria-label="设置导航">
+        <button
+          type="button"
+          class="ops-layout__nav-item ops-layout__nav-item--parent"
+          :class="{ 'is-parent-active': isSettingsActive }"
+          :aria-expanded="settingsExpanded"
+          aria-controls="settings-menu"
+          aria-label="设置"
+          title="设置"
+          @click="settingsExpanded = !settingsExpanded"
+        >
+          <el-icon><Settings :stroke-width="1.8" /></el-icon>
+          <span>设置</span>
+          <ChevronDown
+            class="ops-layout__nav-arrow"
+            :class="{ 'is-expanded': settingsExpanded }"
+            :size="14"
+            :stroke-width="1.8"
+          />
+        </button>
+        <div v-show="settingsExpanded" id="settings-menu" class="ops-layout__nav-submenu">
+          <button
+            type="button"
+            class="ops-layout__nav-item ops-layout__nav-item--child"
+            :class="{ 'is-active': isNavActive('/app/settings/profile') }"
+            aria-label="个人信息"
+            title="个人信息"
+            @click="navigate('/app/settings/profile')"
+          >
+            <el-icon><UserRound :stroke-width="1.8" /></el-icon>
+            <span>个人信息</span>
+          </button>
+        </div>
       </nav>
     </aside>
 
@@ -307,34 +357,56 @@ async function onLogout(): Promise<void> {
     background: var(--v-divider);
   }
 
+  &__account-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 36px;
+    max-width: 180px;
+    padding: 0 6px 0 3px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--v-text-primary);
+    font: inherit;
+    cursor: pointer;
+    transition:
+      background 0.15s ease,
+      box-shadow 0.15s ease;
+
+    &:hover,
+    &:focus-visible {
+      background: var(--v-surface-row-hover);
+      box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+      outline: none;
+    }
+  }
+
   &__avatar {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     width: 28px;
     height: 28px;
-    padding: 0;
-    border: 0;
+    flex: 0 0 28px;
     border-radius: 50%;
     background: #2563eb;
     color: #fff;
-    font: inherit;
     font-size: 12px;
     font-weight: 650;
-    cursor: pointer;
-    transition:
-      box-shadow 0.15s ease,
-      transform 0.15s ease;
+  }
 
-    &:hover,
-    &:focus-visible {
-      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
-      outline: none;
-    }
+  &__account-name {
+    overflow: hidden;
+    font-size: 12px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
-    &:active {
-      transform: scale(0.96);
-    }
+  &__account-arrow {
+    flex: 0 0 auto;
+    color: var(--v-text-tertiary);
   }
 
   &__account-menu {
@@ -370,10 +442,13 @@ async function onLogout(): Promise<void> {
 
   &__nav {
     display: flex;
-    flex: 1;
     flex-direction: column;
     gap: 4px;
     padding: 0 12px;
+
+    &--settings {
+      margin-top: 12px;
+    }
   }
 
   &__nav-item {
@@ -410,6 +485,36 @@ async function onLogout(): Promise<void> {
       flex: 0 0 auto;
       font-size: 17px;
     }
+
+    &--parent.is-parent-active {
+      color: #e2e8f0;
+      background: #111c31;
+    }
+
+    &--child {
+      height: 32px;
+      padding-left: 39px;
+      font-size: 13px;
+
+      .el-icon {
+        font-size: 15px;
+      }
+    }
+  }
+
+  &__nav-arrow {
+    margin-left: auto;
+    transition: transform 0.18s ease;
+
+    &.is-expanded {
+      transform: rotate(180deg);
+    }
+  }
+
+  &__nav-submenu {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
   }
 
   &__main {
@@ -521,19 +626,27 @@ async function onLogout(): Promise<void> {
     }
 
     &__nav-caption,
-    &__nav-item span {
+    &__nav-item span,
+    &__nav-arrow {
       display: none;
     }
 
     &__nav {
-      flex: 1;
       width: 100%;
-      padding: 12px 8px;
+      padding: 0 8px;
+
+      &:first-of-type {
+        padding-top: 12px;
+      }
     }
 
     &__nav-item {
       justify-content: center;
       padding: 0;
+
+      &--child {
+        padding: 0;
+      }
     }
   }
 }
@@ -552,6 +665,17 @@ async function onLogout(): Promise<void> {
       span {
         display: none;
       }
+    }
+
+    &__account-name,
+    &__account-arrow {
+      display: none;
+    }
+
+    &__account-trigger {
+      width: 34px;
+      justify-content: center;
+      padding: 0;
     }
   }
 }

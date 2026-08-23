@@ -12,5 +12,8 @@ export interface User {
   userId: string
   name: string
   email?: string
+  avatarUrl?: string
+  departmentName?: string
+  organizationName?: string
   roles?: Array<{ resourceType: string; resourceId?: Uuid; roleType: string }>
 }

@@ -12,9 +12,16 @@ export interface CreateProjectRequest {
   orgId: string
   code: string
   name: string
+  managerId: Uuid
   remark?: string
   /** 可选;若不传,project 下不创建任何 env,后续在 env 页补建。 */
   environments?: EnvSpec[]
+}
+
+export interface UpdateProjectRequest {
+  id: Uuid
+  name: string
+  remark: string
 }
 
 /** POST /api/v1/project/list */
@@ -27,6 +34,11 @@ export function createProject(req: CreateProjectRequest): Promise<Project> {
   return http.post('/project/create', req)
 }
 
+/** POST /api/v1/project/update */
+export function updateProject(req: UpdateProjectRequest): Promise<Project> {
+  return http.post('/project/update', req)
+}
+
 /**
  * `id` 与 `code` 互斥,任选其一。
  * 对应 core.yaml `IdOrCodeRequest`;对 project 而言 `parentId` 必填(orgId 由后端根据
@@ -36,43 +48,18 @@ export type ProjectLookup =
   | { id: Uuid; code?: never; parentId: Uuid }
   | { id?: never; code: string; parentId: Uuid }
 
-/** POST /api/v1/project/info */
+/** 最新接口没有 project/info,通过 project/list 定位单个项目。 */
 export function getProject(req: ProjectLookup): Promise<Project> {
-  return http.post('/project/info', req)
-}
-
-/**
- * POST /api/v1/project/update
- * - id/code 互斥
- * - name 必填
- * - code 字段后端不允许修改,前端不传
- */
-export type UpdateProjectRequest = {
-  id?: Uuid
-  code?: string
-  parentId: Uuid
-  name: string
-  comment?: string
-}
-export function updateProject(req: UpdateProjectRequest): Promise<Project> {
-  return http.post('/project/update', req)
-}
-
-/**
- * POST /api/v1/project/delete
- * - id/code 互斥
- * - `force` 默认 false:有 active child env/folder/secret 时返回 409
- * - `force=true` 级联软删 env→folder→secret,需 `project:force_delete` 权限
- */
-export type DeleteProjectRequest = {
-  id?: Uuid
-  code?: string
-  parentId: Uuid
-  force?: boolean
-}
-export interface DeleteProjectResponse {
-  deleted: boolean
-}
-export function deleteProject(req: DeleteProjectRequest): Promise<DeleteProjectResponse> {
-  return http.post('/project/delete', req)
+  return listProjects({
+    orgId: req.parentId,
+    pageNum: 1,
+    pageSize: 200,
+    ...('code' in req && req.code ? { code: req.code } : {}),
+  }).then((response) => {
+    const project = response.list.find((item) =>
+      'id' in req && req.id ? item.id === req.id : item.code === req.code,
+    )
+    if (!project) throw new Error('project not found')
+    return project
+  })
 }
