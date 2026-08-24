@@ -18,6 +18,7 @@ import {
   OfficeBuilding,
   Plus,
   Search,
+  Setting,
   Star,
   StarFilled,
   View,
@@ -28,7 +29,7 @@ import ManagerSelect from '@/components/ManagerSelect.vue'
 import { useManagerSelection } from '@/composables/use-manager-selection'
 import { listEnvironments } from '@/api/env'
 import { getOrganizationsWithProjects } from '@/api/organization'
-import { createSecretFolder, listFolders, updateFolder } from '@/api/folder'
+import { createSecretFolder, deleteFolder, listFolders, updateFolder } from '@/api/folder'
 import {
   batchCreateSecrets,
   deleteFolderGroupSecret,
@@ -145,6 +146,7 @@ const cascadeOpen = ref(false)
 const folderListSearch = ref('')
 const folderSearch = ref('')
 const favoriteOnly = ref(false)
+const managementMode = ref(false)
 const folderPage = ref(1)
 const folderPageSize = 6
 const folderTotal = ref(0)
@@ -211,6 +213,7 @@ const createFolderForm = reactive({
 const folderEditDialogVisible = ref(false)
 const folderEditSubmitting = ref(false)
 const editingFolder = ref<VaultFolder | null>(null)
+const deletingFolderGroupId = ref('')
 const favoriteFolderIds = new Set<string>()
 let folderRequestSequence = 0
 let groupRequestSequence = 0
@@ -946,6 +949,50 @@ function toggleFavorite(folder: VaultFolder): void {
   if (folder.favorite) favoriteFolderIds.add(folder.id)
   else favoriteFolderIds.delete(folder.id)
   persistFavoriteFolders()
+}
+
+function toggleManagementMode(): void {
+  managementMode.value = !managementMode.value
+}
+
+async function confirmFolderDelete(folder: VaultFolder): Promise<void> {
+  if (!folder.folderGroupId) {
+    ElMessage.warning('当前配置目录缺少 groupId，无法删除')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(`确定删除配置目录“${folder.name}”吗？`, '删除配置目录', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      customClass: 'vault-confirm-message-box',
+      confirmButtonClass: 'vault-delete-confirm-button',
+    })
+  } catch {
+    return
+  }
+
+  deletingFolderGroupId.value = folder.folderGroupId
+  try {
+    await deleteFolder({ groupId: folder.folderGroupId })
+    favoriteFolderIds.delete(folder.id)
+    persistFavoriteFolders()
+    ElMessage.success('配置目录已删除')
+    if (
+      activeFolder.value?.type === 'groups' &&
+      serviceGroups.value.some((item) => item.id === folder.id)
+    ) {
+      await loadGroupFolders(activeFolder.value)
+    } else {
+      await loadFolders()
+    }
+  } catch (error) {
+    const message = error instanceof ApiError ? error.message : '配置目录删除失败'
+    ElMessage.error(message)
+  } finally {
+    deletingFolderGroupId.value = ''
+  }
 }
 
 function isEnvironmentVisible(code: string): boolean {
@@ -1965,6 +2012,18 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
               <el-icon><StarFilled v-if="favoriteOnly" /><Star v-else /></el-icon>
             </button>
           </el-tooltip>
+          <el-tooltip :content="managementMode ? '退出管理' : '管理卡片'" placement="bottom">
+            <button
+              type="button"
+              class="vault-round-action"
+              :class="{ 'is-managing': managementMode }"
+              :aria-pressed="managementMode"
+              :aria-label="managementMode ? '退出管理' : '管理卡片'"
+              @click="toggleManagementMode"
+            >
+              <el-icon><Setting /></el-icon>
+            </button>
+          </el-tooltip>
         </div>
       </div>
 
@@ -1989,17 +2048,6 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
                     <span class="vault-folder__tag" :class="`is-${folder.type}`">
                       {{ folderMeta(folder.type).label }}
                     </span>
-                    <el-tooltip content="编辑配置目录" placement="top">
-                      <button
-                        type="button"
-                        class="vault-folder__edit vault-edit-action"
-                        :aria-label="`编辑${folder.name}`"
-                        @click.stop="openFolderEdit(folder)"
-                        @keydown.enter.stop
-                      >
-                        <el-icon><Edit /></el-icon>
-                      </button>
-                    </el-tooltip>
                     <button
                       type="button"
                       class="vault-folder__favorite"
@@ -2013,6 +2061,39 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
                         <Star v-else />
                       </el-icon>
                     </button>
+                    <template v-if="managementMode">
+                      <el-tooltip content="编辑配置目录" placement="top">
+                        <button
+                          type="button"
+                          class="vault-folder__edit vault-edit-action"
+                          :disabled="!!deletingFolderGroupId"
+                          :aria-label="`编辑${folder.name}`"
+                          @click.stop="openFolderEdit(folder)"
+                          @keydown.enter.stop
+                        >
+                          <el-icon><Edit /></el-icon>
+                        </button>
+                      </el-tooltip>
+                      <el-tooltip content="删除配置目录" placement="top">
+                        <button
+                          type="button"
+                          class="vault-folder__delete vault-delete-action"
+                          :disabled="!!deletingFolderGroupId"
+                          :aria-label="`删除${folder.name}`"
+                          @click.stop="confirmFolderDelete(folder)"
+                          @keydown.enter.stop
+                        >
+                          <el-icon
+                            :class="{
+                              'is-loading': deletingFolderGroupId === folder.folderGroupId,
+                            }"
+                          >
+                            <Loading v-if="deletingFolderGroupId === folder.folderGroupId" />
+                            <Delete v-else />
+                          </el-icon>
+                        </button>
+                      </el-tooltip>
+                    </template>
                   </span>
                 </div>
 
@@ -2130,6 +2211,18 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
               <el-icon><Plus /></el-icon>
             </button>
           </el-tooltip>
+          <el-tooltip :content="managementMode ? '退出管理' : '管理卡片'" placement="bottom">
+            <button
+              type="button"
+              class="vault-round-action"
+              :class="{ 'is-managing': managementMode }"
+              :aria-pressed="managementMode"
+              :aria-label="managementMode ? '退出管理' : '管理卡片'"
+              @click="toggleManagementMode"
+            >
+              <el-icon><Setting /></el-icon>
+            </button>
+          </el-tooltip>
         </div>
         <div v-else class="vault-page__toolbar-actions">
           <el-input
@@ -2176,17 +2269,37 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
             </div>
             <span>{{ group.count ?? '--' }} 个密钥</span>
             <span class="vault-groups__actions">
-              <el-tooltip content="编辑配置目录" placement="top">
-                <button
-                  type="button"
-                  class="vault-groups__edit vault-edit-action"
-                  :aria-label="`编辑${group.name}`"
-                  @click.stop="openFolderEdit(group)"
-                  @keydown.enter.stop
-                >
-                  <el-icon><Edit /></el-icon>
-                </button>
-              </el-tooltip>
+              <template v-if="managementMode">
+                <el-tooltip content="编辑配置目录" placement="top">
+                  <button
+                    type="button"
+                    class="vault-groups__edit vault-edit-action"
+                    :disabled="!!deletingFolderGroupId"
+                    :aria-label="`编辑${group.name}`"
+                    @click.stop="openFolderEdit(group)"
+                    @keydown.enter.stop
+                  >
+                    <el-icon><Edit /></el-icon>
+                  </button>
+                </el-tooltip>
+                <el-tooltip content="删除配置目录" placement="top">
+                  <button
+                    type="button"
+                    class="vault-groups__delete vault-delete-action"
+                    :disabled="!!deletingFolderGroupId"
+                    :aria-label="`删除${group.name}`"
+                    @click.stop="confirmFolderDelete(group)"
+                    @keydown.enter.stop
+                  >
+                    <el-icon
+                      :class="{ 'is-loading': deletingFolderGroupId === group.folderGroupId }"
+                    >
+                      <Loading v-if="deletingFolderGroupId === group.folderGroupId" />
+                      <Delete v-else />
+                    </el-icon>
+                  </button>
+                </el-tooltip>
+              </template>
               <el-icon><ArrowRight /></el-icon>
             </span>
           </article>
@@ -3464,6 +3577,12 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
     color: #f59e0b;
   }
 
+  &.is-managing {
+    border-color: rgb(23, 93, 251);
+    background: rgba(23, 93, 251, 0.08);
+    color: rgb(23, 93, 251);
+  }
+
   &--primary {
     border-color: rgb(23, 93, 251);
     background: rgb(23, 93, 251);
@@ -4085,7 +4204,8 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
     }
   }
 
-  &__edit {
+  &__edit,
+  &__delete {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -4099,9 +4219,29 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
     cursor: pointer;
     transition: background 0.15s ease;
 
-    &:hover,
-    &:focus-visible {
+    &:disabled {
+      cursor: not-allowed;
+      opacity: 0.4;
+    }
+  }
+
+  &__edit {
+    color: #176dfb;
+
+    &:hover:not(:disabled),
+    &:focus-visible:not(:disabled) {
       background: rgba(23, 109, 251, 0.08);
+      outline: none;
+    }
+  }
+
+  &__delete {
+    color: var(--v-color-danger);
+
+    &:hover:not(:disabled),
+    &:focus-visible:not(:disabled) {
+      background: rgba(220, 38, 38, 0.08);
+      color: var(--v-color-danger);
       outline: none;
     }
   }
@@ -4830,7 +4970,8 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
     color: var(--v-text-tertiary);
   }
 
-  &__edit {
+  &__edit,
+  &__delete {
     width: 26px;
     height: 26px;
     padding: 0;
@@ -4840,12 +4981,31 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
     border: 0;
     border-radius: 50%;
     background: transparent;
-    color: #176dfb;
     cursor: pointer;
 
-    &:hover,
-    &:focus-visible {
+    &:disabled {
+      cursor: not-allowed;
+      opacity: 0.4;
+    }
+  }
+
+  &__edit {
+    color: #176dfb;
+
+    &:hover:not(:disabled),
+    &:focus-visible:not(:disabled) {
       background: rgba(23, 109, 251, 0.08);
+      outline: none;
+    }
+  }
+
+  &__delete {
+    color: var(--v-color-danger);
+
+    &:hover:not(:disabled),
+    &:focus-visible:not(:disabled) {
+      background: rgba(220, 38, 38, 0.08);
+      color: var(--v-color-danger);
       outline: none;
     }
   }

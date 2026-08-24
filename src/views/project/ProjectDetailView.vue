@@ -440,8 +440,12 @@ async function onDeleteFolder(folder: FolderNode): Promise<void> {
   } catch {
     return // 取消
   }
+  if (!folder.folderGroupId) {
+    ElMessage.error('当前目录缺少 groupId，无法删除')
+    return
+  }
   try {
-    await deleteFolder({ id: folder.id })
+    await deleteFolder({ groupId: folder.folderGroupId })
     ElMessage.success('删除成功')
     // 选中被删 → 清空
     if (selectedFolderNode.value?.id === folder.id) {
