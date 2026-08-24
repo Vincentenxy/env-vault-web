@@ -26,10 +26,12 @@ const options = computed<UserOption[]>(() => {
   const users = new Map(userStore.items.map((user) => [user.id, user]))
   const current = auth.currentUser
   if (current?.userId) {
+    const listedUser = users.get(current.userId)
     users.set(current.userId, {
       id: current.userId,
-      name: current.name || current.userId,
-      email: current.email,
+      name:
+        listedUser?.name || current.nickname || current.nickName || current.name || current.userId,
+      email: listedUser?.email || current.email,
     })
   }
   return [...users.values()]

@@ -65,7 +65,7 @@ watch(
   ([visible]) => {
     if (visible) resetDialog()
   },
-  { flush: 'post' },
+  { flush: 'post', immediate: true },
 )
 </script>
 
@@ -110,7 +110,8 @@ watch(
         ref="formRef"
         :model="form"
         :rules="rules"
-        label-position="top"
+        label-position="left"
+        label-width="96px"
         require-asterisk-position="right"
         class="tenant-edit-dialog__form"
       >

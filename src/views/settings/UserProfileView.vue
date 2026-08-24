@@ -12,7 +12,9 @@ const avatarLoadFailed = ref(false)
 const user = computed(() => auth.currentUser)
 const userRecord = computed<Record<string, unknown>>(() => asRecord(user.value))
 
-const displayName = computed(() => firstString(['name', 'userName', 'displayName']) || '未命名用户')
+const displayName = computed(
+  () => firstString(['nickname', 'nickName', 'name', 'userName', 'displayName']) || '未命名用户',
+)
 const userId = computed(() => firstString(['userId', 'id', 'staffUserId']) || '—')
 const email = computed(() => firstString(['email', 'mail']) || '—')
 const departmentName = computed(

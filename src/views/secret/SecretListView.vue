@@ -1429,16 +1429,18 @@ async function createKeys(): Promise<void> {
       ElMessage.error(`第 ${index + 1} 行说明不能超过 256 个字符`)
       return
     }
+    let hasEnvironmentValue = false
     for (const environment of environments.value) {
       const value = row.values[environment.code] ?? ''
-      if (!value.trim()) {
-        ElMessage.error(`第 ${index + 1} 行${environment.name}值不能为空`)
-        return
-      }
+      if (value.trim()) hasEnvironmentValue = true
       if (value.length > 8192) {
         ElMessage.error(`${environment.code.toUpperCase()} 环境值不能超过 8192 个字符`)
         return
       }
+    }
+    if (!hasEnvironmentValue) {
+      ElMessage.error(`第 ${index + 1} 行至少填写一个环境值`)
+      return
     }
   }
 
@@ -2095,7 +2097,23 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
           <span v-if="activeFolder.type === 'groups' && !activeGroupId">
             {{ serviceGroups.length }} 个配置集
           </span>
-          <span v-else>{{ activeRows.length }} 个密钥</span>
+          <template v-else>
+            <span v-if="activeGroupId" class="vault-page__folder-code">
+              <span>folder-code：</span>
+              <el-tooltip content="点击复制 folder code" placement="top">
+                <button
+                  type="button"
+                  :aria-label="`复制 folder code ${activeServiceGroup?.code || ''}`"
+                  :disabled="!activeServiceGroup?.code"
+                  @click="copyValue(activeServiceGroup?.code || '')"
+                >
+                  <code>{{ activeServiceGroup?.code || '--' }}</code>
+                  <el-icon><CopyDocument /></el-icon>
+                </button>
+              </el-tooltip>
+            </span>
+            <span>{{ activeRows.length }} 个密钥</span>
+          </template>
         </div>
         <div
           v-if="activeFolder.type === 'groups' && !activeGroupId"
@@ -3366,6 +3384,54 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
     gap: 10px;
     color: var(--v-text-secondary);
     font-size: 13px;
+  }
+
+  &__folder-code {
+    display: inline-flex;
+    min-width: 0;
+    align-items: center;
+
+    > span {
+      flex: 0 0 auto;
+    }
+
+    button {
+      display: inline-flex;
+      min-width: 0;
+      align-items: center;
+      gap: 5px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--v-text-primary);
+      cursor: pointer;
+      font: inherit;
+
+      &:hover,
+      &:focus-visible {
+        color: rgb(23, 93, 251);
+        outline: none;
+      }
+
+      &:disabled {
+        color: var(--v-text-tertiary);
+        cursor: default;
+      }
+
+      .el-icon {
+        flex: 0 0 auto;
+        font-size: 13px;
+      }
+    }
+
+    code {
+      overflow: hidden;
+      color: inherit;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-weight: 600;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
   }
 }
 
@@ -5837,13 +5903,17 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
   }
 
   .vault-secret-edit-dialog__commit {
-    min-width: 260px;
-    max-width: 520px;
-    flex: 1 1 520px;
+    display: grid;
+    min-width: 0;
+    flex: 1 1 auto;
+    grid-template-columns: 170px minmax(0, 1fr);
+    align-items: center;
+    gap: 18px;
+    text-align: left;
 
     label {
       display: block;
-      margin-bottom: 6px;
+      margin-bottom: 0;
       color: var(--v-text-primary);
       font-size: 12px;
       font-weight: 600;
@@ -5913,9 +5983,10 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
 
     .vault-secret-edit-dialog__commit {
       width: 100%;
-      max-width: none;
       min-width: 0;
       flex-basis: auto;
+      grid-template-columns: 1fr;
+      gap: 6px;
     }
 
     .vault-secret-edit-dialog__actions {

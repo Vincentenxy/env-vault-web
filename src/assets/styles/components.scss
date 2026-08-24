@@ -216,6 +216,24 @@
   overflow-y: auto;
 }
 
+.vault-card-edit-dialog__form,
+.tenant-edit-dialog__form {
+  .el-form-item {
+    align-items: flex-start;
+  }
+
+  .el-form-item__label {
+    min-height: 36px;
+    align-items: center;
+    justify-content: flex-start;
+    padding-right: 18px;
+    color: var(--v-text-primary);
+    font-size: var(--v-font-sm);
+    font-weight: 600;
+    line-height: 20px;
+  }
+}
+
 /* ---------- Tenant edit dialog: 大尺寸 + 顶部菜单 ---------- */
 .vault-card-edit-dialog.tenant-edit-dialog.el-dialog {
   width: 860px;
@@ -311,6 +329,24 @@
   .tenant-edit-dialog__content {
     min-height: 320px;
     padding: 18px 16px 20px;
+  }
+
+  .vault-card-edit-dialog__form,
+  .tenant-edit-dialog__form {
+    .el-form-item {
+      display: block;
+    }
+
+    .el-form-item__label {
+      width: 100% !important;
+      min-height: 0;
+      margin-bottom: 7px;
+      padding-right: 0;
+    }
+
+    .el-form-item__content {
+      margin-left: 0 !important;
+    }
   }
 }
 

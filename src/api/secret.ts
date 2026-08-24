@@ -27,6 +27,7 @@ export interface FolderGroupSecretValue {
   value: string
   version: number
   valueType: string
+  updateAt: string
 }
 
 export interface FolderGroupSecret {

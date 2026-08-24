@@ -461,9 +461,16 @@ watch([activeType, form], persistDraft, { deep: true })
         <section v-if="activeType === 'project'" class="environment-editor">
           <header class="environment-editor__heading">
             <strong>环境配置</strong>
-            <el-button text type="primary" :icon="Plus" @click="addEnvironment">
-              新建环境
-            </el-button>
+            <el-tooltip content="新建环境" placement="top">
+              <button
+                type="button"
+                class="environment-editor__add"
+                aria-label="新建环境"
+                @click="addEnvironment"
+              >
+                <el-icon><Plus /></el-icon>
+              </button>
+            </el-tooltip>
           </header>
 
           <div v-if="form.environments.length" class="environment-editor__table">
@@ -704,6 +711,35 @@ watch([activeType, form], persistDraft, { deep: true })
 
   &__table {
     overflow-x: auto;
+  }
+
+  &__add {
+    display: inline-flex;
+    width: 26px;
+    height: 26px;
+    flex: 0 0 26px;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid rgb(23, 93, 251);
+    border-radius: 50%;
+    background: rgb(23, 93, 251);
+    color: #fff;
+    cursor: pointer;
+    transition:
+      border-color 0.18s ease,
+      background 0.18s ease;
+
+    &:hover,
+    &:focus-visible {
+      border-color: rgb(18, 76, 214);
+      background: rgb(18, 76, 214);
+      outline: none;
+    }
+
+    .el-icon {
+      font-size: 14px;
+    }
   }
 
   &__row {

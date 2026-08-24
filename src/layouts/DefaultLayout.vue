@@ -22,10 +22,21 @@ const navItems: NavItem[] = [
   { path: '/app/organizations', label: '组织管理', icon: OfficeBuilding },
   { path: '/app/secrets', label: '秘钥管理', icon: KeyRound },
 ]
-const userName = computed(() => auth.currentUser?.name ?? auth.currentUser?.userId ?? '管理员')
-const userEmail = computed(
-  () => auth.currentUser?.email ?? auth.currentUser?.userId ?? '暂无账号信息',
-)
+const userName = computed(() => {
+  const user = auth.currentUser
+  return (
+    user?.nickname?.trim() ||
+    user?.nickName?.trim() ||
+    user?.name?.trim() ||
+    user?.userId?.trim() ||
+    user?.id?.trim() ||
+    '管理员'
+  )
+})
+const userEmail = computed(() => {
+  const user = auth.currentUser
+  return user?.email?.trim() || user?.userId?.trim() || user?.id?.trim() || '暂无账号信息'
+})
 const userInitial = computed(() =>
   auth.currentUser ? userName.value.slice(0, 1).toUpperCase() : 'AD',
 )

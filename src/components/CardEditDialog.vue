@@ -53,10 +53,11 @@ async function submit(): Promise<void> {
 }
 
 watch(
-  () => props.modelValue,
-  (visible) => {
+  () => [props.modelValue, props.name, props.remark] as const,
+  ([visible]) => {
     if (visible) resetForm()
   },
+  { flush: 'post', immediate: true },
 )
 </script>
 
@@ -81,8 +82,10 @@ watch(
         ref="formRef"
         :model="form"
         :rules="rules"
-        label-position="top"
+        label-position="left"
+        label-width="96px"
         require-asterisk-position="right"
+        class="vault-card-edit-dialog__form"
       >
         <el-form-item label="名称" prop="name">
           <el-input

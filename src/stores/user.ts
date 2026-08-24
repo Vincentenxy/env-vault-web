@@ -20,7 +20,7 @@ function normalizeUser(user: UserListItem): UserOption | null {
   if (!id) return null
   return {
     id,
-    name: firstString(user.name, user.userName, id),
+    name: firstString(user.nickname, user.nickName, user.name, user.userName, id),
     email: firstString(user.email) || undefined,
   }
 }

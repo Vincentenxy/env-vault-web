@@ -9,9 +9,16 @@ export interface Actor {
 }
 
 export interface User {
+  id: Uuid
   userId: string
-  name: string
+  nickname: string
+  nickName?: string
+  name?: string
+  username?: string
   email?: string
+  phone?: string
+  tenantId?: Uuid
+  orgId?: Uuid
   avatarUrl?: string
   departmentName?: string
   organizationName?: string

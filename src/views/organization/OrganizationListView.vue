@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowDown,
   ArrowRight,
   Check,
   CollectionTag,
+  Delete,
   Edit,
   Folder,
   OfficeBuilding,
   Plus,
   Search,
+  Setting,
   Star,
   StarFilled,
   User,
@@ -40,6 +42,7 @@ type ResourceLevel = 'tenant' | 'organization' | 'project'
 type CascadeItem = TenantHierarchyOption | TenantOrganizationOption | TenantProjectOption
 type ResourceItem = Tenant | Organization | Project
 type CardTone = 'blue' | 'violet' | 'teal' | 'rose'
+type DeleteResourceHandler = (id: string) => Promise<unknown>
 
 const tenantHierarchy = ref<TenantHierarchyOption[]>([])
 const tenants = ref<Tenant[]>([])
@@ -56,7 +59,11 @@ const pageSize = ref(10)
 const total = ref(0)
 const searchKeyword = ref('')
 const favoriteOnly = ref(false)
+const managementMode = ref(false)
 const favoriteIds = reactive(new Set<string>())
+
+// 后端删除接口开放后，按资源层级在此接入对应请求方法。
+const deleteResourceHandlers: Partial<Record<ResourceLevel, DeleteResourceHandler>> = {}
 
 const cascadeOpen = ref(false)
 const cascadeLevel = ref<CascadeLevel>('tenant')
@@ -499,6 +506,40 @@ function toggleFavorite(item: ResourceItem): void {
   else favoriteIds.add(item.id)
 }
 
+function toggleManagementMode(): void {
+  managementMode.value = !managementMode.value
+}
+
+async function confirmResourceDelete(item: ResourceItem): Promise<void> {
+  const level = resourceLevel.value
+  try {
+    await ElMessageBox.confirm(`确认删除${item.name}么？`, `删除${resourceLabel(level)}`, {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      customClass: 'vault-confirm-message-box',
+      confirmButtonClass: 'vault-delete-confirm-button',
+    })
+  } catch {
+    return
+  }
+
+  const deleteResource = deleteResourceHandlers[level]
+  if (!deleteResource) {
+    ElMessage.info('删除接口暂未开放')
+    return
+  }
+
+  try {
+    await deleteResource(item.id)
+    favoriteIds.delete(item.id)
+    ElMessage.success(`${resourceLabel(level)}删除成功`)
+    await Promise.all([loadHierarchy(), loadCurrentLevel()])
+  } catch (error) {
+    if (!(error instanceof ApiError)) ElMessage.error(`${resourceLabel(level)}删除失败`)
+  }
+}
+
 const createDialogVisible = ref(false)
 const editDialogVisible = ref(false)
 const editSubmitting = ref(false)
@@ -776,6 +817,18 @@ onBeforeUnmount(() => {
             <el-icon><StarFilled v-if="favoriteOnly" /><Star v-else /></el-icon>
           </button>
         </el-tooltip>
+        <el-tooltip :content="managementMode ? '退出管理' : '管理卡片'" placement="bottom">
+          <button
+            type="button"
+            class="round-action"
+            :class="{ 'is-managing': managementMode }"
+            :aria-pressed="managementMode"
+            :aria-label="managementMode ? '退出管理' : '管理卡片'"
+            @click="toggleManagementMode"
+          >
+            <el-icon><Setting /></el-icon>
+          </button>
+        </el-tooltip>
       </div>
     </header>
 
@@ -794,30 +847,45 @@ onBeforeUnmount(() => {
               <el-icon><Folder v-if="isProject(item)" /><OfficeBuilding v-else /></el-icon>
             </span>
             <span class="resource-card__actions">
-              <el-tooltip :content="`编辑${resourceLabel(resourceLevel)}`" placement="top">
+              <el-tooltip :content="favoriteIds.has(item.id) ? '取消收藏' : '收藏'" placement="top">
                 <button
                   type="button"
-                  class="resource-card__edit vault-edit-action"
-                  :aria-label="`编辑${item.name}`"
-                  @click.stop="openResourceEdit(item)"
+                  class="resource-card__favorite"
+                  :class="{ 'is-active': favoriteIds.has(item.id) }"
+                  :aria-label="favoriteIds.has(item.id) ? '取消收藏' : '收藏'"
+                  @click.stop="toggleFavorite(item)"
                   @keydown.enter.stop
                 >
-                  <el-icon><Edit /></el-icon>
+                  <el-icon>
+                    <StarFilled v-if="favoriteIds.has(item.id)" />
+                    <Star v-else />
+                  </el-icon>
                 </button>
               </el-tooltip>
-              <button
-                type="button"
-                class="resource-card__favorite"
-                :class="{ 'is-active': favoriteIds.has(item.id) }"
-                :aria-label="favoriteIds.has(item.id) ? '取消收藏' : '收藏'"
-                @click.stop="toggleFavorite(item)"
-                @keydown.enter.stop
-              >
-                <el-icon>
-                  <StarFilled v-if="favoriteIds.has(item.id)" />
-                  <Star v-else />
-                </el-icon>
-              </button>
+              <template v-if="managementMode">
+                <el-tooltip :content="`编辑${resourceLabel(resourceLevel)}`" placement="top">
+                  <button
+                    type="button"
+                    class="resource-card__edit vault-edit-action"
+                    :aria-label="`编辑${item.name}`"
+                    @click.stop="openResourceEdit(item)"
+                    @keydown.enter.stop
+                  >
+                    <el-icon><Edit /></el-icon>
+                  </button>
+                </el-tooltip>
+                <el-tooltip :content="`删除${resourceLabel(resourceLevel)}`" placement="top">
+                  <button
+                    type="button"
+                    class="resource-card__delete vault-delete-action"
+                    :aria-label="`删除${item.name}`"
+                    @click.stop="confirmResourceDelete(item)"
+                    @keydown.enter.stop
+                  >
+                    <el-icon><Delete /></el-icon>
+                  </button>
+                </el-tooltip>
+              </template>
             </span>
           </div>
 
@@ -1028,6 +1096,12 @@ onBeforeUnmount(() => {
     color: #f4b400;
   }
 
+  &.is-managing {
+    border-color: rgb(23, 93, 251);
+    background: rgba(23, 93, 251, 0.08);
+    color: rgb(23, 93, 251);
+  }
+
   &--primary {
     border-color: rgb(23, 93, 251);
     background: rgb(23, 93, 251);
@@ -1127,6 +1201,7 @@ onBeforeUnmount(() => {
   }
 
   &__edit,
+  &__delete,
   &__favorite {
     width: 26px;
     height: 26px;
@@ -1147,6 +1222,17 @@ onBeforeUnmount(() => {
     &:hover,
     &:focus-visible {
       background: rgba(23, 109, 251, 0.08);
+      outline: none;
+    }
+  }
+
+  &__delete {
+    color: var(--v-color-danger);
+
+    &:hover,
+    &:focus-visible {
+      background: rgba(220, 38, 38, 0.08);
+      color: var(--v-color-danger);
       outline: none;
     }
   }

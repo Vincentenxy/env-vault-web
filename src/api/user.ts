@@ -11,6 +11,8 @@ export interface UserListItem {
   userId?: string
   staffUserId?: string
   staffuserid?: string
+  nickname?: string
+  nickName?: string
   name?: string
   userName?: string
   email?: string
