@@ -22,6 +22,7 @@ export interface UpdateProjectRequest {
   id: Uuid
   name: string
   remark: string
+  manager?: string
 }
 
 /** POST /api/v1/project/list */

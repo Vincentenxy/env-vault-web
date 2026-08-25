@@ -1,11 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { listUsers, type UserListItem } from '@/api/user'
+import { listUsers, type ListUsersRequest, type UserListItem } from '@/api/user'
 
 export interface UserOption {
   id: string
   name: string
   email?: string
+  disabled?: boolean
 }
 
 function firstString(...values: unknown[]): string {
@@ -22,6 +23,7 @@ function normalizeUser(user: UserListItem): UserOption | null {
     id,
     name: firstString(user.nickname, user.nickName, user.name, user.userName, id),
     email: firstString(user.email) || undefined,
+    disabled: user.isBlocked,
   }
 }
 
@@ -65,6 +67,18 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
+  async function fetchByScope(scope: ListUsersRequest): Promise<UserOption[]> {
+    const response = await listUsers(scope)
+    return response.list.flatMap((item) => {
+      const option = normalizeUser(item)
+      return option ? [option] : []
+    })
+  }
+
+  function fetchByProject(projectId: string): Promise<UserOption[]> {
+    return fetchByScope({ projectId })
+  }
+
   function ensureLoaded(): Promise<void> {
     if (loaded.value) return Promise.resolve()
     if (pending) return pending
@@ -80,5 +94,15 @@ export const useUserStore = defineStore('user', () => {
     loadFailed.value = false
   }
 
-  return { items, loading, loaded, loadFailed, fetchAll, ensureLoaded, clear }
+  return {
+    items,
+    loading,
+    loaded,
+    loadFailed,
+    fetchAll,
+    fetchByScope,
+    fetchByProject,
+    ensureLoaded,
+    clear,
+  }
 })

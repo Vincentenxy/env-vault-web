@@ -28,6 +28,7 @@ export interface Tenant {
   code: string
   name: string
   remark?: string
+  manager?: string
   managerId?: string
   orgCount?: number
   memberCount?: number
@@ -52,6 +53,7 @@ export interface UpdateTenantRequest {
   id: string
   name: string
   remark: string
+  manager?: string
 }
 
 /** GET /api/v1/tenant/withOrgProject */

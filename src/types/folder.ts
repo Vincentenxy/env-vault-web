@@ -6,13 +6,22 @@ export type FolderLevel = 1 | 2
 
 export interface Folder extends Actor {
   id: Uuid
+  groupId?: Uuid
   environmentId: Uuid
+  envId?: Uuid
   parentId: Uuid | null
+  parentFolderId?: Uuid | null
   level: FolderLevel
   code: string
   name: string
   comment: string
+  remark?: string
+  type?: string
+  manager?: string
   managerId?: Uuid
+  managerName?: string
+  secretCount?: number
+  folderCount?: number | null
   createdAt: string
   updatedAt: string
   /**

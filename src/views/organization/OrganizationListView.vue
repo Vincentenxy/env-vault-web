@@ -28,8 +28,7 @@ import {
   type TenantOrganizationOption,
   type TenantProjectOption,
 } from '@/api/tenant'
-import CardEditDialog, { type CardEditPayload } from '@/components/CardEditDialog.vue'
-import TenantEditDialog from '@/components/TenantEditDialog.vue'
+import ResourceEditDialog, { type ResourceEditPayload } from '@/components/ResourceEditDialog.vue'
 import ResourceCreateDialog, {
   type ResourceCreatedPayload,
 } from './components/ResourceCreateDialog.vue'
@@ -215,6 +214,22 @@ function resourceAdmin(item: ResourceItem): string {
     ]) ??
     '暂无负责人'
   )
+}
+
+function resourceManagerId(item: ResourceItem): string {
+  return firstString(item, ['manager', 'managerId']) ?? ''
+}
+
+function resourceManagerName(item: ResourceItem): string {
+  return firstString(item, ['managerName']) ?? ''
+}
+
+function resourceTenantId(item: ResourceItem): string {
+  return firstString(item, ['tenantId']) ?? selectedTenantId.value
+}
+
+function resourceOrgId(item: ResourceItem): string {
+  return firstString(item, ['orgId']) ?? selectedOrganizationId.value
 }
 
 function tenantOrganizationCount(item: Tenant): number | undefined {
@@ -545,7 +560,6 @@ const editDialogVisible = ref(false)
 const editSubmitting = ref(false)
 const editingResource = ref<ResourceItem | null>(null)
 const editingResourceLevel = ref<ResourceLevel>('tenant')
-const editDialogTitle = computed(() => `编辑${resourceLabel(editingResourceLevel.value)}`)
 
 function openCreate(): void {
   createDialogVisible.value = true
@@ -557,13 +571,18 @@ function openResourceEdit(item: ResourceItem): void {
   editDialogVisible.value = true
 }
 
-async function submitResourceEdit(payload: CardEditPayload): Promise<void> {
+async function submitResourceEdit(payload: ResourceEditPayload): Promise<void> {
   const resource = editingResource.value
   if (!resource || editSubmitting.value) return
 
   editSubmitting.value = true
   try {
-    const request = { id: resource.id, name: payload.name, remark: payload.remark }
+    const request = {
+      id: resource.id,
+      name: payload.name,
+      remark: payload.remark,
+      manager: payload.managerId,
+    }
     if (editingResourceLevel.value === 'tenant') await updateTenant(request)
     else if (editingResourceLevel.value === 'organization') await updateOrganization(request)
     else await updateProject(request)
@@ -959,23 +978,20 @@ onBeforeUnmount(() => {
       :tenants="tenantHierarchy"
       @created="onResourceCreated"
     />
-    <TenantEditDialog
-      v-if="editingResourceLevel === 'tenant'"
-      :key="editingResource?.id ?? 'tenant-edit'"
+    <ResourceEditDialog
+      :key="editingResource?.id ?? 'resource-edit'"
       v-model="editDialogVisible"
+      :resource-type="editingResourceLevel"
+      :resource-id="editingResource?.id ?? ''"
       :name="editingResource?.name ?? ''"
       :remark="editingResource ? resourceRemark(editingResource) : ''"
+      :manager-id="editingResource ? resourceManagerId(editingResource) : ''"
+      :manager-name="editingResource ? resourceManagerName(editingResource) : ''"
+      :tenant-id="editingResource ? resourceTenantId(editingResource) : ''"
+      :org-id="editingResource ? resourceOrgId(editingResource) : ''"
       :submitting="editSubmitting"
       @submit="submitResourceEdit"
-    />
-    <CardEditDialog
-      v-else
-      v-model="editDialogVisible"
-      :title="editDialogTitle"
-      :name="editingResource?.name ?? ''"
-      :remark="editingResource ? resourceRemark(editingResource) : ''"
-      :submitting="editSubmitting"
-      @submit="submitResourceEdit"
+      @members-changed="loadCurrentLevel"
     />
   </section>
 </template>

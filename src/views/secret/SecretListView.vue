@@ -68,6 +68,7 @@ interface VaultFolder {
   id: string
   projectId: string
   folderGroupId: string
+  managerId: string
   code: string
   name: string
   type: FolderType
@@ -490,15 +491,22 @@ function mapFolder(folder: Folder, projectId: string, index: number): VaultFolde
     id,
     projectId,
     folderGroupId: firstString(raw.groupId, raw.group_id, raw.folderGroupId, raw.folder_group_id),
+    managerId: firstString(raw.manager, raw.managerId, raw.manager_id),
     code: firstString(raw.code, raw.name) || id,
     name: firstString(raw.name, raw.code) || '未命名配置目录',
     type: inferFolderType(folder),
     remark,
     description: remark || '暂无目录说明',
     owner:
-      firstString(raw.updatedByLabel, raw.createdByLabel, raw.ownerName, raw.owner) || '待补充',
+      firstString(
+        raw.managerName,
+        raw.updatedByLabel,
+        raw.createdByLabel,
+        raw.ownerName,
+        raw.owner,
+      ) || '待补充',
     count: firstNumber(raw.secretCount, raw.secretsCount, raw.keyCount, raw.count),
-    groups: firstNumber(raw.groupCount, raw.groupsCount),
+    groups: firstNumber(raw.folderCount, raw.groupCount, raw.groupsCount),
     favorite: favoriteFolderIds.has(id),
   }
 }
@@ -519,6 +527,10 @@ function mergeMappedFolders(items: Folder[], projectId: string): VaultFolder[] {
     if (!previous) {
       merged.set(logicalKey, mapped)
       return
+    }
+    if (!previous.managerId && mapped.managerId) previous.managerId = mapped.managerId
+    if (previous.owner === '待补充' && mapped.owner !== '待补充') {
+      previous.owner = mapped.owner
     }
     previous.count = previous.count ?? mapped.count
     previous.groups = previous.groups ?? mapped.groups
@@ -830,6 +842,7 @@ async function submitFolderEdit(payload: CardEditPayload): Promise<void> {
       groupId: folder.folderGroupId,
       name: payload.name,
       remark: payload.remark,
+      ...(payload.managerId ? { manager: payload.managerId } : {}),
     })
     folder.name = payload.name
     folder.remark = payload.remark
@@ -864,7 +877,7 @@ async function createFolder(): Promise<void> {
       projectId,
       code: createFolderForm.code.trim(),
       name: createFolderForm.name.trim(),
-      managerId,
+      manager: managerId,
       remark: createFolderForm.remark.trim() || undefined,
       type: createFolderForm.type,
       parentFolderId: parentFolder?.id,
@@ -2690,6 +2703,8 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
       title="编辑配置目录"
       :name="editingFolder?.name ?? ''"
       :remark="editingFolder?.remark ?? ''"
+      :manager-id="editingFolder?.managerId ?? ''"
+      :manager-project-id="editingFolder?.projectId ?? ''"
       :submitting="folderEditSubmitting"
       @submit="submitFolderEdit"
     />
@@ -3244,6 +3259,7 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
           <el-form-item label="管理员" prop="managerId">
             <ManagerSelect
               v-model="createFolderForm.managerId"
+              :project-id="createFolderForm.projectId"
               :disabled="createFolderSubmitting"
             />
           </el-form-item>

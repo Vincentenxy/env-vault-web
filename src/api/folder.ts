@@ -118,7 +118,7 @@ export interface CreateSecretFolderRequest {
   projectId: Uuid
   code: string
   name: string
-  managerId: Uuid
+  manager: string
   remark?: string
   type: 'common' | 'customer'
   parentFolderId?: Uuid
@@ -136,6 +136,8 @@ export interface UpdateFolderRequest {
   groupId: Uuid
   name: string
   remark: string
+  /** 后端 UpdateFolderRequest 增加该字段后即可持久化管理员修改。 */
+  manager?: string
 }
 export function updateFolder(
   req: UpdateFolderRequest,

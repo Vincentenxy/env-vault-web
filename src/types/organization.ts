@@ -8,7 +8,9 @@ export interface Organization extends Actor {
   name: string
   comment: string
   remark?: string
+  manager?: string
   managerId?: Uuid
+  managerName?: string
   projectCount?: number
   memberCount?: number
   admin?: string

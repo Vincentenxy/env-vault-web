@@ -13,6 +13,7 @@ export interface UpdateOrganizationRequest {
   id: string
   name: string
   remark: string
+  manager?: string
 }
 
 export interface OrganizationProjectOption {
