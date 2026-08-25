@@ -144,19 +144,10 @@ export function updateFolder(
   return http.post('/folder/update', req, config)
 }
 
-/**
- * POST /api/v1/folder/delete
- * 软删 folder **及其下所有 secret**,单事务。
- *  - id/code 二选一;按 code 删除时必须同时传 parentId(env id)
- */
+/** POST /api/v1/folder/delete，按逻辑分组软删各环境下的配置目录。 */
 export interface DeleteFolderRequest {
-  id?: Uuid
-  code?: string
-  parentId?: Uuid
+  groupId: Uuid
 }
-export function deleteFolder(
-  req: DeleteFolderRequest,
-  config?: AxiosRequestConfig,
-): Promise<{ deleted: boolean }> {
+export function deleteFolder(req: DeleteFolderRequest, config?: AxiosRequestConfig): Promise<null> {
   return http.post('/folder/delete', req, config)
 }
