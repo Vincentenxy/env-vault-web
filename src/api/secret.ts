@@ -112,13 +112,14 @@ export type SecretHistoryResponse = Record<Uuid, SecretEnvironmentHistory>
 
 export interface GetSecretHistoryRequest extends PageRequest {
   groupId: Uuid
+  envList?: string[]
 }
 
 export function getSecretHistory(req: GetSecretHistoryRequest): Promise<SecretHistoryResponse> {
   return http.post('/secret/history', req)
 }
 
-/** POST /api/v1/secret/history，通过 batchId 查询提交批次内的全部修改。 */
+/** POST /api/v1/secret/history/batch，通过 batchId 查询提交批次内的全部修改。 */
 export interface SecretBatchDetailItem {
   groupId: Uuid
   key: string
@@ -128,6 +129,7 @@ export interface SecretBatchDetailItem {
 
 export interface GetSecretBatchDetailRequest {
   batchId: Uuid
+  envList?: string[]
 }
 
 export type SecretBatchDetailResponse = SecretBatchDetailItem[]
@@ -135,7 +137,7 @@ export type SecretBatchDetailResponse = SecretBatchDetailItem[]
 export function getSecretBatchDetail(
   req: GetSecretBatchDetailRequest,
 ): Promise<SecretBatchDetailResponse> {
-  return http.post('/secret/history', req)
+  return http.post('/secret/history/batch', req)
 }
 
 /**

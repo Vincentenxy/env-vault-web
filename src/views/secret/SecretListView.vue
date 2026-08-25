@@ -1604,6 +1604,7 @@ async function loadKeyHistory(row: SecretRow): Promise<void> {
   try {
     const response = await getSecretHistory({
       groupId: metadata.groupId,
+      envList: environments.value.map((environment) => environment.code),
       pageNum: 1,
       pageSize: historyPageSize,
     })
@@ -1638,6 +1639,7 @@ async function loadMoreKeyHistory(row: SecretRow): Promise<void> {
   try {
     const response = await getSecretHistory({
       groupId: metadata.groupId,
+      envList: environments.value.map((environment) => environment.code),
       pageNum: nextPage,
       pageSize: historyPageSize,
     })
@@ -1698,7 +1700,10 @@ async function loadHistoryBatchDetails(): Promise<void> {
   historyBatchLoadFailed.value = false
 
   try {
-    const response = await getSecretBatchDetail({ batchId })
+    const response = await getSecretBatchDetail({
+      batchId,
+      envList: environments.value.map((environment) => environment.code),
+    })
     if (
       requestSequence !== historyBatchRequestSequence ||
       historyVersionSelection.value?.item.batchId !== batchId
