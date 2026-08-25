@@ -136,7 +136,7 @@ export interface UpdateFolderRequest {
   groupId: Uuid
   name: string
   remark: string
-  /** 后端 UpdateFolderRequest 增加该字段后即可持久化管理员修改。 */
+  /** 管理员用户 ID；未传或为空时保留原管理员。 */
   manager?: string
 }
 export function updateFolder(

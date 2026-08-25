@@ -362,7 +362,10 @@
 }
 
 .resource-members__table-wrap {
+  height: 318px;
   min-height: 318px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .resource-members__table {
@@ -381,6 +384,10 @@
 
   th {
     height: 42px;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--v-surface-bg);
     color: var(--v-text-tertiary);
     font-size: var(--v-font-xs);
     font-weight: 600;
