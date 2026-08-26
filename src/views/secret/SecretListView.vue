@@ -590,7 +590,7 @@ async function loadProjectEnvironments(projectId: string): Promise<void> {
 
   environmentLoading.value = true
   try {
-    const response = await listEnvironments({ projectId, pageNum: 1, pageSize: 200 })
+    const response = await listEnvironments({ projectId })
     if (requestSequence !== environmentRequestSequence) return
     environments.value = normalizeProjectEnvironments(response)
     environmentProjectId.value = projectId

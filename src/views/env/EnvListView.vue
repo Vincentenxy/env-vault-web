@@ -22,7 +22,6 @@ import { Permission } from '@/constants/permission'
 import type { Organization } from '@/types/organization'
 import type { Project } from '@/types/project'
 import type { Environment } from '@/types/env'
-import type { CreateEnvironmentRequest } from '@/api/env'
 
 const route = useRoute()
 const router = useRouter()
@@ -39,6 +38,13 @@ const orgOptions = computed<Organization[]>(() => orgStore.items)
 const projectOptions = computed<Project[]>(() =>
   projectStore.items.filter((p) => getProjectOrgId(p) === selectedOrgId.value),
 )
+const filteredEnvironments = computed(() => {
+  const keyword = searchKeyword.value.trim().toLowerCase()
+  if (!keyword) return envStore.items
+  return envStore.items.filter((environment) =>
+    `${environment.code} ${environment.name} ${environment.remark}`.toLowerCase().includes(keyword),
+  )
+})
 
 // ==================== 列表 ====================
 async function onRefresh(): Promise<void> {
@@ -46,8 +52,6 @@ async function onRefresh(): Promise<void> {
   try {
     await envStore.fetchList({
       projectId: selectedProjectId.value,
-      pageNum: envStore.lastQuery.pageNum ?? 1,
-      pageSize: envStore.lastQuery.pageSize ?? 20,
     })
   } catch (e) {
     const msg = e instanceof ApiError ? e.message : '加载失败'
@@ -70,20 +74,10 @@ function onProjectChange(projectId: string): void {
     envStore.clear()
     return
   }
-  envStore.fetchList({ projectId, pageNum: 1, pageSize: 20 }).catch((e: unknown) => {
+  envStore.fetchList({ projectId }).catch((e: unknown) => {
     const msg = e instanceof ApiError ? e.message : '加载失败'
     ElMessage.error(msg)
   })
-}
-
-function onPageChange(pageNum: number, pageSize: number): void {
-  if (!selectedProjectId.value) return
-  envStore
-    .fetchList({ projectId: selectedProjectId.value, pageNum, pageSize })
-    .catch((e: unknown) => {
-      const msg = e instanceof ApiError ? e.message : '加载失败'
-      ElMessage.error(msg)
-    })
 }
 
 // ==================== 创建 ====================
@@ -91,15 +85,21 @@ const createDialogVisible = ref(false)
 const createSubmitting = ref(false)
 const createFormRef = ref<FormInstance>()
 
-const createForm = reactive<CreateEnvironmentRequest>({
-  parentId: '',
+interface CreateEnvironmentForm {
+  code: string
+  name: string
+  remark: string
+  isCheckPerm: boolean
+}
+
+const createForm = reactive<CreateEnvironmentForm>({
   code: '',
   name: '',
-  comment: '',
+  remark: '',
+  isCheckPerm: false,
 })
 
-const createRules: FormRules<CreateEnvironmentRequest> = {
-  parentId: [{ required: true, message: '请选择所属项目', trigger: 'change' }],
+const createRules: FormRules<CreateEnvironmentForm> = {
   code: [
     { required: true, message: '请输入 code', trigger: 'blur' },
     {
@@ -113,10 +113,10 @@ const createRules: FormRules<CreateEnvironmentRequest> = {
     { required: true, message: '请输入名称', trigger: 'blur' },
     { max: 64, message: '长度不能超过 64', trigger: 'blur' },
   ],
-  comment: [{ max: 256, message: '长度不能超过 256', trigger: 'blur' }],
+  remark: [{ max: 256, message: '长度不能超过 256', trigger: 'blur' }],
 }
 
-const DEFAULT_ENVS: Array<Pick<CreateEnvironmentRequest, 'code' | 'name'>> = [
+const DEFAULT_ENVS: Array<Pick<CreateEnvironmentForm, 'code' | 'name'>> = [
   { code: 'dev', name: 'Development' },
   { code: 'test', name: 'Testing' },
   { code: 'staging', name: 'Staging' },
@@ -124,10 +124,10 @@ const DEFAULT_ENVS: Array<Pick<CreateEnvironmentRequest, 'code' | 'name'>> = [
 ]
 
 function resetCreateForm(): void {
-  createForm.parentId = selectedProjectId.value
   createForm.code = ''
   createForm.name = ''
-  createForm.comment = ''
+  createForm.remark = ''
+  createForm.isCheckPerm = false
   createFormRef.value?.clearValidate()
 }
 
@@ -147,7 +147,17 @@ async function onCreateSubmit(): Promise<void> {
   if (!valid) return
   createSubmitting.value = true
   try {
-    await envStore.create({ ...createForm })
+    await envStore.create({
+      projectId: selectedProjectId.value,
+      environments: [
+        {
+          code: createForm.code.trim(),
+          name: createForm.name.trim(),
+          remark: createForm.remark.trim(),
+          isCheckPerm: createForm.isCheckPerm,
+        },
+      ],
+    })
     ElMessage.success('创建成功')
     createDialogVisible.value = false
   } catch (e) {
@@ -247,8 +257,7 @@ watch(
       <div>
         <h1 class="page-header__title">环境管理</h1>
         <p class="page-header__desc">
-          环境从属于项目,如 dev / test / prod。环境创建后不会自动建任何 folder,需要在 folder
-          页补建。
+          环境从属于项目,如 dev / test / prod。新增环境会同步项目现有目录和密钥结构。
         </p>
       </div>
       <div class="page-header__actions">
@@ -313,7 +322,7 @@ watch(
     <div class="env-page__surface">
       <el-table
         v-loading="envStore.loading"
-        :data="envStore.items"
+        :data="filteredEnvironments"
         class="env-page__table"
         :empty-text="selectedProjectId ? '该项目下暂无环境' : '请先选择项目'"
       >
@@ -323,21 +332,19 @@ watch(
           </template>
         </el-table-column>
         <el-table-column prop="name" label="名称" min-width="160" />
-        <el-table-column prop="comment" label="说明" min-width="200" show-overflow-tooltip>
+        <el-table-column prop="remark" label="说明" min-width="200" show-overflow-tooltip>
           <template #default="{ row }">
-            <span class="env-page__comment">{{ row.comment || '—' }}</span>
+            <span class="env-page__comment">{{ row.remark || '—' }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="createdByLabel" label="创建人" min-width="120">
+        <el-table-column prop="createBy" label="创建人" min-width="120">
           <template #default="{ row }">
-            <span class="env-page__muted">
-              {{ row.createdByLabel || row.createdBy }}
-            </span>
+            <span class="env-page__muted">{{ row.createBy }}</span>
           </template>
         </el-table-column>
         <el-table-column label="创建时间" min-width="160">
           <template #default="{ row }">
-            <span class="env-page__muted">{{ formatDateTime(row.createdAt) }}</span>
+            <span class="env-page__muted">{{ formatDateTime(row.createAt) }}</span>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="320" fixed="right">
@@ -362,19 +369,6 @@ watch(
           </template>
         </el-table-column>
       </el-table>
-
-      <div class="env-page__pager">
-        <el-pagination
-          background
-          layout="total, prev, pager, next, sizes"
-          :total="envStore.total"
-          :current-page="envStore.lastQuery.pageNum ?? 1"
-          :page-size="envStore.lastQuery.pageSize ?? 20"
-          :page-sizes="[10, 20, 50, 100]"
-          @current-change="(p: number) => onPageChange(p, envStore.lastQuery.pageSize ?? 20)"
-          @size-change="(s: number) => onPageChange(1, s)"
-        />
-      </div>
     </div>
 
     <div v-if="!selectedProjectId" class="env-page__hint-bar">
@@ -398,7 +392,7 @@ watch(
         </div>
       </template>
       <el-form ref="createFormRef" :model="createForm" :rules="createRules" label-position="top">
-        <el-form-item label="所属项目" prop="parentId">
+        <el-form-item label="所属项目">
           <el-input
             :model-value="
               projectOptions.find((p) => p.id === selectedProjectId)?.name ?? selectedProjectId
@@ -425,8 +419,16 @@ watch(
             </el-button>
           </div>
         </el-form-item>
-        <el-form-item label="说明" prop="comment">
-          <el-input v-model="createForm.comment" type="textarea" :rows="3" />
+        <el-form-item label="说明" prop="remark">
+          <el-input v-model="createForm.remark" type="textarea" :rows="3" />
+        </el-form-item>
+        <el-form-item label="权限校验">
+          <el-switch
+            v-model="createForm.isCheckPerm"
+            inline-prompt
+            active-text="开"
+            inactive-text="关"
+          />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -454,19 +456,19 @@ watch(
         </el-descriptions-item>
         <el-descriptions-item label="名称">{{ viewTarget.name }}</el-descriptions-item>
         <el-descriptions-item label="说明">
-          {{ viewTarget.comment || '—' }}
+          {{ viewTarget.remark || '—' }}
         </el-descriptions-item>
         <el-descriptions-item label="创建人">
-          {{ viewTarget.createdByLabel || viewTarget.createdBy }}
+          {{ viewTarget.createBy }}
         </el-descriptions-item>
         <el-descriptions-item label="创建时间">
-          {{ formatDateTime(viewTarget.createdAt) }}
+          {{ formatDateTime(viewTarget.createAt) }}
         </el-descriptions-item>
         <el-descriptions-item label="更新人">
-          {{ viewTarget.updatedByLabel || viewTarget.updatedBy }}
+          {{ viewTarget.updateBy }}
         </el-descriptions-item>
         <el-descriptions-item label="更新时间">
-          {{ formatDateTime(viewTarget.updatedAt) }}
+          {{ formatDateTime(viewTarget.updateAt) }}
         </el-descriptions-item>
         <el-descriptions-item label="ID">
           <span class="env-page__id">{{ viewTarget.id }}</span>

@@ -2,6 +2,7 @@ import type { RouteRecordRaw } from 'vue-router'
 
 /**
  * 路由表。本期实际接入的页面:
+ *  - /masterKey(系统启动阶段的公开分片输入页)
  *  - /login(开发自测登录)
  *  - /app/organizations(组织管理)
  *  - /app/projects(项目列表 - 卡片网格)
@@ -14,6 +15,12 @@ import type { RouteRecordRaw } from 'vue-router'
  * 创建、删除都在项目详情页内完成。
  */
 export const routes: RouteRecordRaw[] = [
+  {
+    path: '/masterKey',
+    name: 'MasterKeySetup',
+    component: () => import('@/views/auth/MasterKeyView.vue'),
+    meta: { title: '系统主密钥', requiresAuth: false },
+  },
   {
     path: '/login',
     name: 'Login',

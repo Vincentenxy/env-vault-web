@@ -8,6 +8,7 @@ import { ErrorCode } from '@/constants/error-code'
 import { AUTH_TOKEN_STORAGE_KEY, tokenStore } from '@/utils/token'
 import { notify } from '@/utils/notify'
 import { storage } from '@/utils/storage'
+import { buildMasterKeyLocation, isMasterKeyRoute } from '@/utils/master-key-route'
 
 /**
  * 全局唯一的 Axios 实例。
@@ -19,6 +20,7 @@ import { storage } from '@/utils/storage'
  * 响应拦截:
  *  - 应用内所有 HTTP 响应体都是 `{code, msg, data}` envelope,与 HTTP 状态码无关
  *  - `code: 0` → 业务成功,剥到 `data.data` 后返回
+ *  - `code: -2` → 系统主密钥未就绪,保留当前地址并跳转主密钥页面
  *  - `code: 其他` → 业务失败,抛 `ApiError`(code/msg/httpStatus/requestId)
  *  - 非 envelope(网络 / nginx 5xx / 网关错误等中间件层错误)→ 统一兜底为 `ApiError`(code: GenericError)
  *  - 成功响应的非数组型 `data.list = null` 会被归一为 `[]`,store / view 不必再 `?? []`
@@ -85,8 +87,8 @@ function normalizePageList(data: any): any {
 /**
  * 把后端 `msg` 转成对用户友好的文案。
  *
- * 当前策略:后端 `msg` 已经可读,直接透传;只有 `msg` 为空时给个兜底。
- * 之前按错误码做的差异化映射已移除(前端不再基于具体码做 UI 分流)。
+ * 当前策略:后端 `msg` 已经可读,直接透传;只有 `msg` 为空时给个兜底
+ * 系统启动和认证跳转在提示函数外集中处理,普通业务页面不按错误码分流
  */
 function friendlyMessage(err: ApiError): string {
   if (err.message) return err.message
@@ -98,9 +100,29 @@ function notifyApiError(err: ApiError): void {
 }
 
 let redirectingToLogin = false
+let redirectingToMasterKey = false
 
 function isUnauthorized(err: ApiError): boolean {
   return err.httpStatus === 401 || err.code === 401 || err.code === ErrorCode.Unauthorized
+}
+
+function isSystemStarting(err: ApiError): boolean {
+  return err.code === ErrorCode.SystemStarting
+}
+
+/** 系统未就绪时保留当前地址并进入公开的主密钥页面 */
+function redirectToMasterKey(): void {
+  if (
+    typeof window === 'undefined' ||
+    redirectingToMasterKey ||
+    isMasterKeyRoute(window.location.pathname)
+  ) {
+    return
+  }
+
+  redirectingToMasterKey = true
+  const currentLocation = `${window.location.pathname}${window.location.search}${window.location.hash}`
+  window.location.replace(buildMasterKeyLocation(currentLocation))
 }
 
 function redirectToLogin(): void {
@@ -119,7 +141,13 @@ function redirectToLogin(): void {
 }
 
 function handleApiError(err: ApiError, silent = false): void {
-  // silent 只控制提示,认证失效仍必须清理 token 并返回登录页。
+  // 启动状态由独立页面处理，不展示会在跳转后立即消失的错误提示
+  if (isSystemStarting(err)) {
+    redirectToMasterKey()
+    return
+  }
+
+  // silent 只控制提示,认证失效仍必须清理 token 并返回登录页
   if (!silent) notifyApiError(err)
   if (isUnauthorized(err)) redirectToLogin()
 }
@@ -145,7 +173,7 @@ http.interceptors.response.use(
       return normalizePageList(data.data)
     }
 
-    // 业务失败:code !== 0 统一抛 ApiError,展示后端 msg
+    // 非零业务码统一包装为 ApiError,特殊跳转由 handleApiError 集中处理
     const err = new ApiError({
       code: data.code,
       httpStatus: response.status,

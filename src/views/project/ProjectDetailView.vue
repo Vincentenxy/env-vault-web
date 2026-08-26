@@ -860,7 +860,7 @@ onMounted(async () => {
 
   // 拉项目下所有 env
   try {
-    await envStore.fetchList({ projectId: projectId.value, pageNum: 1, pageSize: 100 })
+    await envStore.fetchList({ projectId: projectId.value })
   } catch (e) {
     const msg = e instanceof ApiError ? e.message : '加载环境失败'
     ElMessage.error(msg)

@@ -7,7 +7,7 @@ import {
   type FormInstance,
   type FormRules,
 } from 'element-plus'
-import { Delete, Plus, Search, UserFilled } from '@element-plus/icons-vue'
+import { Check, Close, Delete, Plus, Rank, Search, UserFilled } from '@element-plus/icons-vue'
 import {
   allocateUsers,
   listUsers,
@@ -15,8 +15,12 @@ import {
   type UserListItem,
   type UserResourceType,
 } from '@/api/user'
+import { createEnvironment, listEnvironments, updateEnvironment } from '@/api/env'
 import ManagerSelect from '@/components/ManagerSelect.vue'
 import { ApiError } from '@/types/api'
+import type { Environment } from '@/types/env'
+import { calculateEnvironmentOrderNo } from '@/utils/environment-order'
+import { formatDateTime } from '@/utils/format'
 
 export type EditableResourceType = 'tenant' | 'organization' | 'project'
 
@@ -26,7 +30,18 @@ export interface ResourceEditPayload {
   managerId: string
 }
 
-type ResourceEditTab = 'basic' | 'users'
+type ResourceEditTab = 'basic' | 'environments' | 'users'
+
+interface EnvironmentCreateForm {
+  code: string
+  name: string
+  remark: string
+  isCheckPerm: boolean
+}
+
+type EnvironmentTableRow =
+  | { kind: 'environment'; environment: Environment; existingIndex: number }
+  | { kind: 'draft' }
 
 const props = withDefaults(
   defineProps<{
@@ -87,6 +102,62 @@ const allocating = ref(false)
 const removingUserId = ref('')
 let memberRequestSequence = 0
 let candidateRequestSequence = 0
+
+const environments = ref<Environment[]>([])
+const environmentLoading = ref(false)
+const environmentLoadFailed = ref(false)
+const environmentDraftVisible = ref(false)
+const environmentDraftIndex = ref(0)
+const environmentDraftDragging = ref(false)
+const environmentCreateSubmitting = ref(false)
+const environmentPermissionUpdatingId = ref('')
+const environmentFormRef = ref<FormInstance>()
+const environmentForm = reactive<EnvironmentCreateForm>({
+  code: '',
+  name: '',
+  remark: '',
+  isCheckPerm: false,
+})
+const environmentRules: FormRules<EnvironmentCreateForm> = {
+  code: [
+    { required: true, message: '请输入环境 Code', trigger: 'blur' },
+    {
+      pattern: /^[a-z0-9]+(?:-[a-z0-9]+)*$/,
+      message: '仅支持小写字母、数字和中横线',
+      trigger: 'blur',
+    },
+    { max: 32, message: '长度不能超过 32 个字符', trigger: 'blur' },
+  ],
+  name: [
+    { required: true, message: '请输入环境名称', trigger: 'blur' },
+    { max: 64, message: '长度不能超过 64 个字符', trigger: 'blur' },
+  ],
+  remark: [{ max: 256, message: '长度不能超过 256 个字符', trigger: 'blur' }],
+}
+let environmentRequestSequence = 0
+
+const orderedEnvironments = computed(() =>
+  [...environments.value].sort(
+    (left, right) => left.orderNo - right.orderNo || right.createAt.localeCompare(left.createAt),
+  ),
+)
+
+const environmentDraftOrderNo = computed(() => {
+  const list = orderedEnvironments.value
+  const index = Math.min(Math.max(environmentDraftIndex.value, 0), list.length)
+  return calculateEnvironmentOrderNo(list, index)
+})
+
+const environmentRows = computed<EnvironmentTableRow[]>(() => {
+  const rows: EnvironmentTableRow[] = orderedEnvironments.value.map(
+    (environment, existingIndex) => ({ kind: 'environment', environment, existingIndex }),
+  )
+  if (environmentDraftVisible.value) {
+    const index = Math.min(Math.max(environmentDraftIndex.value, 0), rows.length)
+    rows.splice(index, 0, { kind: 'draft' })
+  }
+  return rows
+})
 
 const hasChanges = computed(
   () =>
@@ -182,6 +253,24 @@ async function loadCandidates(): Promise<void> {
   }
 }
 
+async function loadEnvironments(): Promise<void> {
+  if (props.resourceType !== 'project' || !props.resourceId) return
+  const requestSequence = ++environmentRequestSequence
+  environmentLoading.value = true
+  environmentLoadFailed.value = false
+  try {
+    const response = await listEnvironments({ projectId: props.resourceId })
+    if (requestSequence !== environmentRequestSequence) return
+    environments.value = response
+  } catch {
+    if (requestSequence !== environmentRequestSequence) return
+    environments.value = []
+    environmentLoadFailed.value = true
+  } finally {
+    if (requestSequence === environmentRequestSequence) environmentLoading.value = false
+  }
+}
+
 function resetDialog(): void {
   activeTab.value = 'basic'
   form.name = props.name
@@ -191,12 +280,123 @@ function resetDialog(): void {
   candidateSearch.value = ''
   selectedCandidateIds.value = []
   addDialogVisible.value = false
+
+  environments.value = []
+  environmentLoadFailed.value = false
+  closeEnvironmentDraft()
   nextTick(() => formRef.value?.clearValidate())
 }
 
 function switchTab(tab: ResourceEditTab): void {
   activeTab.value = tab
   if (tab === 'users') void loadMembers()
+  if (tab === 'environments') void loadEnvironments()
+}
+
+function resetEnvironmentForm(): void {
+  environmentForm.code = ''
+  environmentForm.name = ''
+  environmentForm.remark = ''
+  environmentForm.isCheckPerm = false
+  nextTick(() => environmentFormRef.value?.clearValidate())
+}
+
+function openEnvironmentDraft(): void {
+  if (environmentDraftVisible.value) return
+  resetEnvironmentForm()
+  environmentDraftIndex.value = orderedEnvironments.value.length
+  environmentDraftVisible.value = true
+}
+
+function closeEnvironmentDraft(): void {
+  environmentDraftVisible.value = false
+  environmentDraftDragging.value = false
+  environmentDraftIndex.value = orderedEnvironments.value.length
+  resetEnvironmentForm()
+}
+
+function startEnvironmentDraftDrag(event: DragEvent): void {
+  if (!environmentDraftVisible.value || environmentCreateSubmitting.value) {
+    event.preventDefault()
+    return
+  }
+  environmentDraftDragging.value = true
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', 'environment-draft')
+  }
+}
+
+function moveEnvironmentDraft(event: DragEvent, existingIndex: number): void {
+  if (!environmentDraftDragging.value) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+
+  const row = event.currentTarget as HTMLElement | null
+  if (!row) return
+  const bounds = row.getBoundingClientRect()
+  environmentDraftIndex.value =
+    existingIndex + (event.clientY >= bounds.top + bounds.height / 2 ? 1 : 0)
+}
+
+function finishEnvironmentDraftDrag(): void {
+  environmentDraftDragging.value = false
+}
+
+async function createProjectEnvironment(): Promise<void> {
+  if (!environmentDraftVisible.value || environmentCreateSubmitting.value) return
+  const valid = await environmentFormRef.value?.validate().catch(() => false)
+  if (!valid) return
+
+  environmentCreateSubmitting.value = true
+  try {
+    await createEnvironment({
+      projectId: props.resourceId,
+      environments: [
+        {
+          code: environmentForm.code.trim(),
+          name: environmentForm.name.trim(),
+          remark: environmentForm.remark.trim(),
+          orderNo: environmentDraftOrderNo.value,
+          isCheckPerm: environmentForm.isCheckPerm,
+        },
+      ],
+    })
+    ElMessage.success('环境创建成功')
+    closeEnvironmentDraft()
+    await loadEnvironments()
+  } catch (error) {
+    if (!(error instanceof ApiError)) ElMessage.error('环境创建失败')
+  } finally {
+    environmentCreateSubmitting.value = false
+  }
+}
+
+async function updateEnvironmentPermission(
+  environment: Environment,
+  isCheckPerm: boolean,
+): Promise<void> {
+  if (environmentPermissionUpdatingId.value || environment.isCheckPerm === isCheckPerm) {
+    return
+  }
+
+  environmentPermissionUpdatingId.value = environment.id
+  try {
+    const updated = await updateEnvironment({
+      id: environment.id,
+      name: environment.name,
+      remark: environment.remark,
+      orderNo: environment.orderNo,
+      isCheckPerm,
+    })
+    const target = environments.value.find((item) => item.id === environment.id)
+    if (target) Object.assign(target, updated)
+    ElMessage.success('权限校验设置已更新')
+  } catch (error) {
+    if (!(error instanceof ApiError)) ElMessage.error('权限校验设置更新失败')
+  } finally {
+    environmentPermissionUpdatingId.value = ''
+  }
 }
 
 async function submit(): Promise<void> {
@@ -305,6 +505,7 @@ watch(
   () => [props.modelValue, props.resourceId, props.name, props.remark, props.managerId] as const,
   ([visible]) => {
     memberRequestSequence += 1
+    environmentRequestSequence += 1
     members.value = []
     if (visible) resetDialog()
   },
@@ -334,6 +535,16 @@ watch(
           @click="switchTab('basic')"
         >
           基础信息
+        </button>
+        <button
+          v-if="resourceType === 'project'"
+          type="button"
+          class="tenant-edit-tabs__item"
+          :class="{ 'is-active': activeTab === 'environments' }"
+          :aria-current="activeTab === 'environments' ? 'page' : undefined"
+          @click="switchTab('environments')"
+        >
+          环境管理
         </button>
         <button
           type="button"
@@ -389,6 +600,199 @@ watch(
           />
         </el-form-item>
       </el-form>
+
+      <section v-show="activeTab === 'environments'" class="resource-environments">
+        <header class="resource-members__toolbar">
+          <div class="resource-members__heading">
+            <strong>环境列表</strong>
+            <span>{{ environments.length }} 个</span>
+          </div>
+          <el-tooltip content="新建环境" placement="top">
+            <button
+              type="button"
+              class="resource-members__add"
+              aria-label="新建环境"
+              :disabled="environmentLoading || environmentDraftVisible"
+              @click="openEnvironmentDraft"
+            >
+              <el-icon><Plus /></el-icon>
+            </button>
+          </el-tooltip>
+        </header>
+
+        <div v-loading="environmentLoading" class="resource-members__table-wrap">
+          <el-form
+            v-if="environmentRows.length"
+            ref="environmentFormRef"
+            :model="environmentForm"
+            :rules="environmentRules"
+            class="resource-environments__form"
+          >
+            <table class="resource-members__table resource-environments__table">
+              <thead>
+                <tr>
+                  <th aria-label="拖动排序"></th>
+                  <th>环境</th>
+                  <th>备注</th>
+                  <th>权限校验</th>
+                  <th>排序</th>
+                  <th>创建时间</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="row in environmentRows"
+                  :key="row.kind === 'draft' ? 'environment-draft' : row.environment.id"
+                  :class="{
+                    'resource-environments__draft': row.kind === 'draft',
+                    'is-dragging': row.kind === 'draft' && environmentDraftDragging,
+                  }"
+                  @dragover="
+                    row.kind === 'environment'
+                      ? moveEnvironmentDraft($event, row.existingIndex)
+                      : undefined
+                  "
+                  @drop.prevent="finishEnvironmentDraftDrag"
+                >
+                  <template v-if="row.kind === 'environment'">
+                    <td></td>
+                    <td>
+                      <span class="resource-environment-identity">
+                        <strong>{{ row.environment.name }}</strong>
+                        <code>{{ row.environment.code }}</code>
+                      </span>
+                    </td>
+                    <td class="resource-members__muted resource-environments__remark">
+                      {{ row.environment.remark || '—' }}
+                    </td>
+                    <td>
+                      <el-switch
+                        :model-value="row.environment.isCheckPerm"
+                        inline-prompt
+                        active-text="开"
+                        inactive-text="关"
+                        :loading="environmentPermissionUpdatingId === row.environment.id"
+                        :disabled="Boolean(environmentPermissionUpdatingId)"
+                        @change="updateEnvironmentPermission(row.environment, Boolean($event))"
+                      />
+                    </td>
+                    <td class="resource-members__muted">{{ row.environment.orderNo }}</td>
+                    <td class="resource-members__muted">
+                      {{ formatDateTime(row.environment.createAt) }}
+                    </td>
+                  </template>
+
+                  <template v-else>
+                    <td>
+                      <el-tooltip content="拖动调整新环境位置" placement="top">
+                        <button
+                          type="button"
+                          class="resource-environments__drag-handle"
+                          draggable="true"
+                          aria-label="拖动调整新环境位置"
+                          :disabled="environmentCreateSubmitting"
+                          @dragstart="startEnvironmentDraftDrag"
+                          @dragend="finishEnvironmentDraftDrag"
+                        >
+                          <el-icon><Rank /></el-icon>
+                        </button>
+                      </el-tooltip>
+                    </td>
+                    <td>
+                      <div class="resource-environments__draft-identity">
+                        <el-form-item prop="name">
+                          <el-input
+                            v-model="environmentForm.name"
+                            maxlength="64"
+                            placeholder="环境名称"
+                            :disabled="environmentCreateSubmitting"
+                          />
+                        </el-form-item>
+                        <el-form-item prop="code">
+                          <el-input
+                            v-model="environmentForm.code"
+                            maxlength="32"
+                            placeholder="环境 Code"
+                            :disabled="environmentCreateSubmitting"
+                          />
+                        </el-form-item>
+                      </div>
+                    </td>
+                    <td>
+                      <el-form-item prop="remark">
+                        <el-input
+                          v-model="environmentForm.remark"
+                          maxlength="256"
+                          placeholder="备注"
+                          :disabled="environmentCreateSubmitting"
+                        />
+                      </el-form-item>
+                    </td>
+                    <td>
+                      <el-switch
+                        v-model="environmentForm.isCheckPerm"
+                        inline-prompt
+                        active-text="开"
+                        inactive-text="关"
+                        :disabled="environmentCreateSubmitting"
+                      />
+                    </td>
+                    <td>
+                      <span class="resource-environments__draft-order">
+                        {{ environmentDraftOrderNo }}
+                      </span>
+                    </td>
+                    <td>
+                      <span class="resource-environments__draft-actions">
+                        <el-tooltip content="创建环境" placement="top">
+                          <button
+                            type="button"
+                            class="resource-environments__draft-action is-submit"
+                            aria-label="创建环境"
+                            :disabled="environmentCreateSubmitting"
+                            @click="createProjectEnvironment"
+                          >
+                            <span
+                              v-if="environmentCreateSubmitting"
+                              class="resource-members__spinner"
+                            ></span>
+                            <el-icon v-else><Check /></el-icon>
+                          </button>
+                        </el-tooltip>
+                        <el-tooltip content="取消新增" placement="top">
+                          <button
+                            type="button"
+                            class="resource-environments__draft-action"
+                            aria-label="取消新增"
+                            :disabled="environmentCreateSubmitting"
+                            @click="closeEnvironmentDraft"
+                          >
+                            <el-icon><Close /></el-icon>
+                          </button>
+                        </el-tooltip>
+                      </span>
+                    </td>
+                  </template>
+                </tr>
+              </tbody>
+            </table>
+          </el-form>
+          <div v-else-if="!environmentLoading" class="resource-members__empty">
+            <strong>{{ environmentLoadFailed ? '环境加载失败' : '暂无环境' }}</strong>
+            <el-button
+              v-if="!environmentLoadFailed"
+              type="primary"
+              link
+              @click="openEnvironmentDraft"
+            >
+              新建环境
+            </el-button>
+            <el-button v-if="environmentLoadFailed" type="primary" link @click="loadEnvironments">
+              重新加载
+            </el-button>
+          </div>
+        </div>
+      </section>
 
       <section v-show="activeTab === 'users'" class="resource-members">
         <header class="resource-members__toolbar">

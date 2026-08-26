@@ -188,6 +188,7 @@ env-vault-web/
 ```text
 /                            重定向到 /app/dashboard
 /login                       登录(开发态: dev token 签发;生产: 外部 IdP 跳转)
+/masterKey                   系统启动阶段的公开主密钥分片输入页
 /app
   /dashboard                 首页(欢迎 + 快捷入口)
   /orgs                      组织列表
@@ -213,7 +214,7 @@ env-vault-web/
 
 - 路由 name 使用 kebab-case 字符串,首字母大写,例如 `OrgProjectList`。
 - 路由 path 中路径参数使用 `:orgId` / `:projectId` / `:envId` / `:folderId` / `:encodedPath`,与后端响应字段一致(camelCase)。
-- 所有非 `login` / `forbidden` / `notFound` 路由都通过 `meta.requiresAuth = true` 标记,鉴权守卫统一拦截。
+- 所有非 `login` / `masterKey` / `forbidden` / `notFound` 路由都通过 `meta.requiresAuth = true` 标记,鉴权守卫统一拦截。
 - 需要特定权限的路由通过 `meta.permissions: ['secret:reveal']` 标记,权限守卫校验。
 - 路由懒加载使用动态 import。
 - 详情页默认重定向到第一个 tab,例如 `OrgDetail` 重定向到 `orgs/:orgId/projects`。
@@ -263,10 +264,11 @@ env-vault-web/
   2. **响应拦截**(统一 envelope 流程,详见 §7.4):
      - 应用内所有 HTTP 响应体都是 `{code, msg, data}` envelope,与 HTTP 状态码无关。
      - `code: 0` → 业务成功,剥到 `data.data` 后返回;`list: null` 会被归一为 `[]`。
+     - `code: -2` → 系统主密钥未就绪,保留当前地址并跳转到 `/masterKey`。
      - `code: 其他` → 业务失败,统一抛 `ApiError`,文案取 `data.msg`(已对用户可读)。
      - 非 envelope 响应(网络断开 / nginx 5xx / 网关错误)→ 统一兜底为 `ApiError`,`code: -1`。
-- 业务错误**不再按具体码做差异化 UI 跳转**(`1401` 跳登录 / `1403` 跳 forbidden / `1409` 提示级联等)——
-  后续如果需要,在 `composables/use-api-call.ts`(`withApiCall`)内集中扩展,**不要散落到 view**。
+- 系统启动码 `-2` 和认证失败码在 `api/http.ts` 集中处理,其他业务错误不按具体码做差异化 UI 跳转。
+- 后续增加特殊错误码处理时继续集中放在请求基础设施层,**不要散落到 view**。
 
 ### 7.2 API 函数风格
 
@@ -303,11 +305,12 @@ export class ApiError extends Error {
 
 ### 7.4 响应协议(简化的"code 二元化"模型)
 
-**所有 `/api/v1/*` 接口的 HTTP 响应体都是 `{code, msg, data}` envelope,与 HTTP 状态码无关**。前端只识别两种情况:
+**所有 `/api/v1/*` 接口的 HTTP 响应体都是 `{code, msg, data}` envelope,与 HTTP 状态码无关**。前端识别以下情况:
 
 | body.code | 含义 | 拦截器处理 | 调用方见到 |
 | --- | --- | --- | --- |
 | `0` | 业务成功 | 返回 `data.data`;`list: null` 归一为 `list: []` | 直接拿到的就是 `data` |
+| `-2` | 系统主密钥未就绪 | 保留当前地址并跳转 `/masterKey` | 抛出 `ApiError`,页面通常已开始跳转 |
 | 其他 | 业务失败 | 抛 `ApiError`,`message` 取 `data.msg` | catch 后展示 `e.message` |
 
 错误码的完整常量表见 `constants/error-code.ts`,但**前端当前不基于具体码做差异化 UI**,所有非 0 都走同一路径("展示 msg")。后续如果某个码需要特殊处理(例如 `1401` 自动跳登录),在 `withApiCall` 内集中扩展。
@@ -557,7 +560,7 @@ VITE_APP_TITLE=EnvVault
 | 列表分页 | `{ pageNum, pageSize, total, list }`,空页 `list` 可能为 `null` | `PageResp<T>` 一一对应,store / view 按 `(total > 0 ? list : null) ?? []` 取值 |
 | 统一响应 | `{ code, msg, data }`(所有 HTTP 响应都是 envelope) | 拦截器剥到 `data.data`,业务只见到 `data` |
 | 错误模型 | 简化的"code 二元化" | `code: 0` 成功;其他都失败,统一抛 `ApiError`,展示 `msg` |
-| 业务 code | `0` 成功,`-1` 业务通用失败;`1002/1401/1403/1404/1409/1500/1503` 已知码 | `constants/error-code.ts` 内集中常量;**当前不基于具体码做差异化 UI** |
+| 业务 code | `0` 成功,`-1` 业务通用失败,`-2` 系统启动中;`1002/1401/1403/1404/1409/1500/1503` 已知码 | `constants/error-code.ts` 内集中常量;`-2` 统一跳转主密钥页面 |
 | 鉴权失败 | `code: 1401` 或 HTTP 401 | 路由守卫统一处理(token 不存在 / 过期 → 跳 `/login`) |
 | 非 envelope 错误 | 网络断开 / nginx 5xx / 网关 | 拦截器兜底为 `ApiError`,`code: -1`,`msg` 取 axios error |
 | Secret 列表 | 不返回明文 | `SecretMeta` 不含 `value` 字段 |

@@ -16,6 +16,8 @@ export const ErrorCode = {
   Success: 0,
   /** 业务通用失败(未明确分类的所有失败都先用这个码) */
   GenericError: -1,
+  /** 系统主密钥尚未加载完成 */
+  SystemStarting: -2,
   /** 请求参数错误(后端用于字段级校验) */
   BadRequest: 1002,
   /** 鉴权失效(token 过期 / 未登录) */
