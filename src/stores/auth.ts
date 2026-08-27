@@ -6,6 +6,7 @@ import { storage } from '@/utils/storage'
 import { getMe } from '@/api/me'
 import { useRbacStore } from '@/stores/rbac'
 import { useUserStore } from '@/stores/user'
+import { localLogin, type LocalLoginRequest } from '@/api/auth'
 
 const STORAGE_KEY = AUTH_TOKEN_STORAGE_KEY
 
@@ -14,8 +15,8 @@ const STORAGE_KEY = AUTH_TOKEN_STORAGE_KEY
  *
  * 流程:
  *  - 应用启动时 useAuthStore() 读 localStorage 拿回 token,塞到 tokenStore,提供 isAuthenticated
- *  - login(token) 只把 token 写持久化 + tokenStore,不在前端预校验 JWT claims
- *  - 启动时如果有 token,后台静默 /user/me 拉用户信息;失败不清除用户提供的 token
+ *  - login(credentials) 调用本地认证接口并保存后端签发的短期 JWT
+ *  - 启动时如果有 token,后台静默 /auth/me 拉用户信息
  *  - logout 清空 token + tokenStore + currentUser
  */
 export const useAuthStore = defineStore('auth', () => {
@@ -45,19 +46,16 @@ export const useAuthStore = defineStore('auth', () => {
     currentUser.value = user
   }
 
-  /** 保存 Bearer token。实际鉴权结果由后续业务请求的后端响应决定。 */
-  async function login(rawToken: string): Promise<void> {
-    setToken(rawToken)
+  /** 使用本地用户名密码登录；用户资料在系统 Ready 后读取 */
+  async function login(credentials: LocalLoginRequest): Promise<void> {
+    const result = await localLogin(credentials)
+    setToken(result.accessToken)
     setCurrentUser(null)
     useRbacStore().clear()
     useUserStore().clear()
   }
 
-  /** 静默刷新当前用户。失败不抛且不清空 token:
-   *  - token 由用户显式提供,前端不判断 claims 或签名是否有效。
-   *  - `/user/me` 失败只表示拿不到用户资料,后续请求仍照常携带 Authorization。
-   *  启动期刷新不希望弹错误 toast,通过 `silent: true` 抑制。
-   */
+  /** 静默刷新当前用户；启动期通过 silent 抑制重复错误提示 */
   async function refreshMe(): Promise<void> {
     if (!token.value) return
     try {

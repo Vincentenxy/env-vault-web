@@ -7,9 +7,11 @@ export interface MasterKeyStatus {
   source: MasterKeySource
   totalShares: number
   requiredShares: number
+  submittedShares: number
+  canSubmit: boolean
 }
 
-/** 管理员一次提交的主密钥分片 */
-export interface SubmitMasterKeySharesRequest {
-  shares: string[]
+/** 管理员单次提交的一份主密钥分片 */
+export interface SubmitMasterKeyShareRequest {
+  share: string
 }

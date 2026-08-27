@@ -1,16 +1,16 @@
 import type { AxiosRequestConfig } from 'axios'
-import type { MasterKeyStatus, SubmitMasterKeySharesRequest } from '@/types/master-key'
+import type { MasterKeyStatus, SubmitMasterKeyShareRequest } from '@/types/master-key'
 import { http } from './http'
 
-/** GET /api/v1/pub/masterKey/status */
+/** GET /api/v1/masterKey/status */
 export function getMasterKeyStatus(config?: AxiosRequestConfig): Promise<MasterKeyStatus> {
-  return http.get('/pub/masterKey/status', config)
+  return http.get('/masterKey/status', config)
 }
 
-/** POST /api/v1/pub/masterKey/shares */
-export function submitMasterKeyShares(
-  req: SubmitMasterKeySharesRequest,
+/** POST /api/v1/masterKey/share */
+export function submitMasterKeyShare(
+  req: SubmitMasterKeyShareRequest,
   config?: AxiosRequestConfig,
 ): Promise<MasterKeyStatus> {
-  return http.post('/pub/masterKey/shares', req, config)
+  return http.post('/masterKey/share', req, config)
 }

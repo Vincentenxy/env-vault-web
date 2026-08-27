@@ -1,44 +1,77 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Key, ArrowRight } from '@element-plus/icons-vue'
+import { ArrowRight, Building2, LockKeyhole, UserRound } from '@lucide/vue'
 import { useAuthStore } from '@/stores/auth'
+import { useMasterKeyStore } from '@/stores/master-key'
+import { ApiError } from '@/types/api'
+import { resolveMasterKeyRedirect } from '@/utils/master-key-route'
 
 const auth = useAuthStore()
+const masterKey = useMasterKeyStore()
 const router = useRouter()
 const route = useRoute()
 
-const tokenInput = ref('')
+const form = reactive({ username: '', password: '' })
 const submitting = ref(false)
 const errorMessage = ref('')
 
-/** 自动剥 "Bearer " 前缀并 trim;空串返回 undefined。 */
-const normalizedToken = computed<string | undefined>(() => {
-  const t = tokenInput.value.trim()
-  if (!t) return undefined
-  return t.replace(/^Bearer\s+/i, '').trim() || undefined
-})
+const canSubmit = computed(() => form.username.trim().length > 0 && form.password.length > 0)
+
+function loginRedirect(): string {
+  const value = route.query.redirect
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) {
+    return '/app/secrets'
+  }
+  try {
+    const target = new URL(value, 'http://env-vault.local')
+    if (target.origin !== 'http://env-vault.local' || target.pathname === '/login') {
+      return '/app/secrets'
+    }
+    if (target.pathname === '/masterKey') {
+      return resolveMasterKeyRedirect(target.searchParams.get('redirect'))
+    }
+    return `${target.pathname}${target.search}${target.hash}`
+  } catch {
+    return '/app/secrets'
+  }
+}
 
 async function onSubmit(): Promise<void> {
   errorMessage.value = ''
-  const t = normalizedToken.value
-  if (!t) {
-    errorMessage.value = '请输入 Bearer token'
+  if (!canSubmit.value) {
+    errorMessage.value = '请输入用户名和密码'
     return
   }
   submitting.value = true
   try {
-    await auth.login(t)
-    ElMessage.success('Token 已保存')
-    const redirect = (route.query.redirect as string | undefined) ?? '/app/organizations'
-    await router.replace(redirect)
-  } catch {
-    errorMessage.value = '保存 token 失败,请重试'
+    await auth.login({ username: form.username.trim(), password: form.password })
+    form.password = ''
+    const redirect = loginRedirect()
+    const status = await masterKey.fetchStatus()
+    ElMessage.success('登录成功')
+    if (status.ready) {
+      await auth.refreshMe()
+      await router.replace(redirect)
+    } else {
+      await router.replace({ path: '/masterKey', query: { redirect } })
+    }
+  } catch (error) {
+    if (error instanceof ApiError && error.httpStatus === 401) auth.logout()
+    errorMessage.value = error instanceof ApiError ? error.message : '登录失败，请重试'
   } finally {
     submitting.value = false
   }
 }
+
+function onOidcLogin(): void {
+  ElMessage.info('OIDC 登录暂未配置')
+}
+
+onBeforeUnmount(() => {
+  form.password = ''
+})
 </script>
 
 <template>
@@ -64,15 +97,8 @@ async function onSubmit(): Promise<void> {
       </div>
 
       <div class="login-page__brand-content">
-        <h1 class="login-page__brand-title">统一的密钥管理平台</h1>
-        <p class="login-page__brand-desc">
-          集中化存储、分发、审计你的项目密钥与环境变量。
-        </p>
-        <ul class="login-page__brand-features">
-          <li>组织 · 项目 · 环境 三级隔离</li>
-          <li>RBAC + 审计日志 + 强制删除</li>
-          <li>支持密钥引用与目录分组</li>
-        </ul>
+        <h1 class="login-page__brand-title">EnvVault</h1>
+        <p class="login-page__brand-desc">企业密钥管理平台</p>
       </div>
 
       <p class="login-page__brand-foot">© EnvVault {{ new Date().getFullYear() }}</p>
@@ -82,24 +108,35 @@ async function onSubmit(): Promise<void> {
     <main class="login-page__form-wrap">
       <div class="login-page__form-inner">
         <h2 class="login-page__form-title">登录</h2>
-        <p class="login-page__form-sub">
-          粘贴 Bearer token，后续请求会自动写入 Authorization 请求头。
-        </p>
+        <p class="login-page__form-sub">使用 EnvVault 本地账号进入系统</p>
 
         <form class="login-page__form" @submit.prevent="onSubmit">
-          <label class="login-page__field-label" for="token">
-            <el-icon><Key /></el-icon>
-            Bearer token
+          <label class="login-page__field-label" for="username">
+            <UserRound :size="15" :stroke-width="1.8" />
+            用户名
           </label>
           <el-input
-            id="token"
-            v-model="tokenInput"
-            type="textarea"
-            :rows="5"
-            :autosize="{ minRows: 5, maxRows: 10 }"
-            placeholder="粘贴 token，带不带 Bearer 前缀都可以"
+            id="username"
+            v-model="form.username"
+            placeholder="请输入用户名"
             spellcheck="false"
-            autocomplete="off"
+            autocomplete="username"
+            :disabled="submitting"
+            class="login-page__input"
+          />
+
+          <label class="login-page__field-label" for="password">
+            <LockKeyhole :size="15" :stroke-width="1.8" />
+            密码
+          </label>
+          <el-input
+            id="password"
+            v-model="form.password"
+            type="password"
+            show-password
+            placeholder="请输入密码"
+            autocomplete="current-password"
+            :disabled="submitting"
             class="login-page__input"
           />
 
@@ -115,18 +152,28 @@ async function onSubmit(): Promise<void> {
           <el-button
             type="primary"
             size="large"
+            native-type="submit"
             :loading="submitting"
+            :disabled="!canSubmit"
             class="login-page__submit"
-            @click="onSubmit"
           >
             登录
-            <el-icon class="login-page__submit-icon"><ArrowRight /></el-icon>
+            <ArrowRight :size="16" :stroke-width="2" class="login-page__submit-icon" />
           </el-button>
-
-          <p class="login-page__hint">
-            本入口仅供本地 / 联调使用,生产环境请接入外部 IdP。
-          </p>
         </form>
+
+        <div class="login-page__alternative">
+          <span class="login-page__alternative-label">其他登录方式</span>
+          <button
+            type="button"
+            class="login-page__oidc"
+            aria-label="使用 OIDC 登录"
+            @click="onOidcLogin"
+          >
+            <Building2 :size="18" :stroke-width="1.8" />
+            <span>OIDC 登录</span>
+          </button>
+        </div>
       </div>
     </main>
   </div>
@@ -139,10 +186,7 @@ async function onSubmit(): Promise<void> {
   grid-template-columns: minmax(360px, 1fr) minmax(480px, 1.1fr);
 
   &__brand {
-    background:
-      radial-gradient(circle at 20% 0%, rgba(124, 58, 237, 0.4) 0%, transparent 50%),
-      radial-gradient(circle at 80% 100%, rgba(79, 70, 229, 0.3) 0%, transparent 50%),
-      #0b0c0e;
+    background: #171717;
     color: #fff;
     padding: 40px 48px;
     display: flex;
@@ -165,7 +209,7 @@ async function onSubmit(): Promise<void> {
       height: 28px;
       padding: 4px;
       border-radius: 6px;
-      background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%);
+      background: #176dfb;
     }
   }
 
@@ -184,7 +228,7 @@ async function onSubmit(): Promise<void> {
     font-size: 32px;
     font-weight: 700;
     line-height: 1.25;
-    letter-spacing: -0.5px;
+    letter-spacing: 0;
   }
 
   &__brand-desc {
@@ -192,34 +236,6 @@ async function onSubmit(): Promise<void> {
     font-size: 15px;
     line-height: 1.6;
     color: rgba(255, 255, 255, 0.7);
-  }
-
-  &__brand-features {
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-
-    li {
-      position: relative;
-      padding-left: 22px;
-      font-size: 14px;
-      color: rgba(255, 255, 255, 0.85);
-
-      &::before {
-        content: '';
-        position: absolute;
-        left: 0;
-        top: 7px;
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        background: rgba(124, 58, 237, 0.3);
-        border: 1px solid rgba(167, 139, 250, 0.6);
-      }
-    }
   }
 
   &__brand-foot {
@@ -289,6 +305,53 @@ async function onSubmit(): Promise<void> {
 
   &__submit-icon {
     margin-left: 6px;
+  }
+
+  &__alternative {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px solid var(--v-divider);
+  }
+
+  &__alternative-label {
+    color: var(--v-text-tertiary);
+    font-size: 12px;
+  }
+
+  &__oidc {
+    min-width: 92px;
+    min-height: 52px;
+    padding: 6px 12px;
+    border: 0;
+    border-radius: var(--v-radius-md);
+    background: transparent;
+    color: var(--v-text-secondary);
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition:
+      color 0.18s ease,
+      background-color 0.18s ease;
+
+    &:hover,
+    &:focus-visible {
+      color: var(--el-color-primary);
+      background: var(--el-color-primary-light-9);
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--el-color-primary-light-5);
+      outline-offset: 2px;
+    }
   }
 
   &__hint {

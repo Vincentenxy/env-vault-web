@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ArrowRight, KeyRound, RefreshCw, ShieldCheck } from '@lucide/vue'
+import { ArrowLeft, ArrowRight, KeyRound, LogOut, RefreshCw, ShieldCheck } from '@lucide/vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 import { useMasterKeyStore } from '@/stores/master-key'
 import { ApiError } from '@/types/api'
 import { notify } from '@/utils/notify'
@@ -11,72 +12,110 @@ defineOptions({ name: 'MasterKeyView' })
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 const masterKey = useMasterKeyStore()
 
 // 分片属于敏感信息，只在当前页面组件内短暂持有
-const shares = ref<[string, string, string]>(['', '', ''])
+const share = ref('')
+const mode = ref<'waiting' | 'submit'>('waiting')
 const errorMessage = ref('')
+let refreshInProgress = false
+let pollingTimer: ReturnType<typeof setInterval> | undefined
 
 const requiredShares = computed(() => masterKey.status?.requiredShares ?? 3)
 const totalShares = computed(() => masterKey.status?.totalShares ?? 5)
+const submittedShares = computed(() => masterKey.status?.submittedShares ?? 0)
+const progressPercentage = computed(() =>
+  Math.min(100, Math.round((submittedShares.value / requiredShares.value) * 100)),
+)
 const canSubmit = computed(
-  () => masterKey.status?.ready === false && shares.value.every((share) => share.trim().length > 0),
+  () =>
+    masterKey.status?.ready === false &&
+    masterKey.status?.canSubmit === true &&
+    share.value.trim().length > 0,
 )
 
 /** 主密钥就绪后返回触发启动拦截前的站内页面 */
 async function leaveSetupPage(): Promise<void> {
   const target = resolveMasterKeyRedirect(route.query.redirect)
+  await auth.refreshMe()
   await router.replace(target)
 }
 
 /** 查询系统状态，已经就绪时不再展示分片表单 */
-async function loadStatus(): Promise<void> {
-  if (masterKey.checking) return
+async function loadStatus(background = false): Promise<void> {
+  if (refreshInProgress || masterKey.submitting) return
 
-  errorMessage.value = ''
+  refreshInProgress = true
+  if (!background) errorMessage.value = ''
   try {
-    const current = await masterKey.fetchStatus()
+    const current = await masterKey.fetchStatus(background)
     if (current.ready) await leaveSetupPage()
   } catch (error) {
-    errorMessage.value = error instanceof ApiError ? error.message : '系统状态查询失败，请重试'
+    if (!background) {
+      errorMessage.value = error instanceof ApiError ? error.message : '系统状态查询失败，请重试'
+    }
+  } finally {
+    refreshInProgress = false
   }
 }
 
-/** 整批提交三个分片，成功后清理输入并进入业务页面 */
-async function submitShares(): Promise<void> {
+/** 提交一份分片，未达到阈值时返回等待视图 */
+async function submitShare(): Promise<void> {
   if (!canSubmit.value || masterKey.submitting) {
-    errorMessage.value = '请填写三份密钥分片'
+    errorMessage.value = '请输入密钥分片'
     return
   }
 
   errorMessage.value = ''
-  const normalizedShares = shares.value.map((share) => share.trim())
+  const normalizedShare = share.value.trim()
   try {
-    const current = await masterKey.submitShares(normalizedShares)
-    if (!current.ready) {
-      errorMessage.value = '主密钥尚未就绪，请重新检查分片'
-      return
+    const current = await masterKey.submitShare(normalizedShare)
+    clearShare()
+    if (current.ready) {
+      notify.success('系统主密钥已加载')
+      await leaveSetupPage()
+    } else {
+      mode.value = 'waiting'
+      notify.success('密钥分片已提交')
     }
-
-    clearShares()
-    notify.success('系统主密钥已加载')
-    await leaveSetupPage()
   } catch (error) {
     errorMessage.value = error instanceof ApiError ? error.message : '密钥分片提交失败，请重试'
   }
 }
 
 /** 解除页面对分片字符串的引用 */
-function clearShares(): void {
-  shares.value = ['', '', '']
+function clearShare(): void {
+  share.value = ''
+}
+
+function openSubmit(): void {
+  errorMessage.value = ''
+  mode.value = 'submit'
+}
+
+function closeSubmit(): void {
+  clearShare()
+  errorMessage.value = ''
+  mode.value = 'waiting'
+}
+
+async function logout(): Promise<void> {
+  clearShare()
+  auth.logout()
+  await router.replace({ path: '/login', query: { redirect: route.fullPath } })
 }
 
 onMounted(() => {
   void loadStatus()
+  pollingTimer = setInterval(() => {
+    if (mode.value === 'waiting') void loadStatus(true)
+  }, 3000)
 })
 
 onBeforeUnmount(() => {
-  clearShares()
+  if (pollingTimer) clearInterval(pollingTimer)
+  clearShare()
 })
 </script>
 
@@ -90,9 +129,21 @@ onBeforeUnmount(() => {
         <strong>EnvVault</strong>
       </span>
 
-      <span class="master-key-page__state">
-        <span class="master-key-page__state-dot" />
-        {{ masterKey.checking ? '正在检查系统状态' : '等待主密钥' }}
+      <span class="master-key-page__header-actions">
+        <span class="master-key-page__state">
+          <span class="master-key-page__state-dot" />
+          {{ masterKey.checking ? '正在检查系统状态' : '等待主密钥' }}
+        </span>
+        <el-tooltip content="退出登录" placement="bottom">
+          <button
+            type="button"
+            class="master-key-page__logout"
+            aria-label="退出登录"
+            @click="logout"
+          >
+            <LogOut :size="17" :stroke-width="1.8" />
+          </button>
+        </el-tooltip>
       </span>
     </header>
 
@@ -106,37 +157,71 @@ onBeforeUnmount(() => {
           <p>需要 {{ requiredShares }} / {{ totalShares }} 份同批次分片</p>
         </span>
 
-        <el-tooltip content="重新检查系统状态" placement="bottom">
-          <button
-            type="button"
-            class="master-key-panel__refresh"
-            :disabled="masterKey.checking || masterKey.submitting"
-            aria-label="重新检查系统状态"
-            @click="loadStatus"
+        <span class="master-key-panel__actions">
+          <el-tooltip
+            :content="mode === 'waiting' ? '输入密钥分片' : '返回等待页面'"
+            placement="bottom"
           >
-            <RefreshCw :size="17" :stroke-width="1.8" />
-          </button>
-        </el-tooltip>
+            <button
+              type="button"
+              class="master-key-panel__action"
+              :disabled="masterKey.checking || masterKey.submitting || masterKey.status?.ready"
+              :aria-label="mode === 'waiting' ? '输入密钥分片' : '返回等待页面'"
+              @click="mode === 'waiting' ? openSubmit() : closeSubmit()"
+            >
+              <KeyRound v-if="mode === 'waiting'" :size="17" :stroke-width="1.8" />
+              <ArrowLeft v-else :size="17" :stroke-width="1.8" />
+            </button>
+          </el-tooltip>
+          <el-tooltip content="重新检查系统状态" placement="bottom">
+            <button
+              type="button"
+              class="master-key-panel__action"
+              :disabled="masterKey.checking || masterKey.submitting"
+              aria-label="重新检查系统状态"
+              @click="loadStatus()"
+            >
+              <RefreshCw :size="17" :stroke-width="1.8" />
+            </button>
+          </el-tooltip>
+        </span>
       </header>
 
-      <form
-        v-if="masterKey.status?.ready === false"
-        class="master-key-form"
-        @submit.prevent="submitShares"
+      <section
+        v-if="masterKey.status?.ready === false && mode === 'waiting'"
+        class="master-key-waiting"
       >
-        <label v-for="(_, index) in shares" :key="index" class="master-key-form__field">
+        <span class="master-key-waiting__icon" aria-hidden="true">
+          <ShieldCheck :size="28" :stroke-width="1.7" />
+        </span>
+        <h2>系统准备中，请等待</h2>
+        <p>已提交 {{ submittedShares }} / {{ requiredShares }} 份密钥分片</p>
+        <el-progress
+          :percentage="progressPercentage"
+          :stroke-width="8"
+          :show-text="false"
+          class="master-key-waiting__progress"
+        />
+      </section>
+
+      <form
+        v-else-if="masterKey.status?.ready === false && mode === 'submit'"
+        class="master-key-form"
+        @submit.prevent="submitShare"
+      >
+        <label class="master-key-form__field">
           <span>
-            <strong>密钥分片 {{ index + 1 }}</strong>
+            <strong>密钥分片</strong>
             <small>EVS1</small>
           </span>
           <el-input
-            v-model="shares[index]"
+            v-model="share"
             type="password"
             show-password
             clearable
             spellcheck="false"
             autocomplete="off"
-            :placeholder="`输入第 ${index + 1} 份密钥分片`"
+            placeholder="请输入一份密钥分片"
             :disabled="masterKey.submitting"
           />
         </label>
@@ -151,14 +236,14 @@ onBeforeUnmount(() => {
         />
 
         <footer class="master-key-form__footer">
-          <span>分片仅用于本次内存恢复</span>
+          <span>当前进度 {{ submittedShares }} / {{ requiredShares }}</span>
           <el-button
             native-type="submit"
             type="primary"
             :loading="masterKey.submitting"
             :disabled="!canSubmit || masterKey.checking"
           >
-            加载主密钥
+            提交分片
             <ArrowRight :size="15" :stroke-width="2" />
           </el-button>
         </footer>
@@ -171,7 +256,7 @@ onBeforeUnmount(() => {
           show-icon
           :closable="false"
         />
-        <el-button type="primary" plain :loading="masterKey.checking" @click="loadStatus">
+        <el-button type="primary" plain :loading="masterKey.checking" @click="loadStatus()">
           <RefreshCw :size="15" :stroke-width="1.8" />
           重新检查
         </el-button>
@@ -200,7 +285,8 @@ onBeforeUnmount(() => {
   }
 
   &__brand,
-  &__state {
+  &__state,
+  &__header-actions {
     display: inline-flex;
     align-items: center;
   }
@@ -234,6 +320,29 @@ onBeforeUnmount(() => {
     background: var(--v-color-warning);
     box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.14);
   }
+
+  &__header-actions {
+    gap: 14px;
+  }
+
+  &__logout {
+    width: 34px;
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid transparent;
+    border-radius: var(--v-radius-sm);
+    background: transparent;
+    color: var(--v-text-secondary);
+    cursor: pointer;
+
+    &:hover {
+      border-color: var(--v-surface-border);
+      background: var(--v-surface-bg-subtle);
+      color: var(--v-text-primary);
+    }
+  }
 }
 
 .master-key-panel {
@@ -248,7 +357,7 @@ onBeforeUnmount(() => {
   &__header {
     min-height: 82px;
     display: grid;
-    grid-template-columns: 42px minmax(0, 1fr) 34px;
+    grid-template-columns: 42px minmax(0, 1fr) auto;
     align-items: center;
     gap: 14px;
     padding: 18px 22px;
@@ -283,7 +392,13 @@ onBeforeUnmount(() => {
     }
   }
 
-  &__refresh {
+  &__actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  &__action {
     width: 34px;
     height: 34px;
     display: inline-flex;
@@ -305,6 +420,45 @@ onBeforeUnmount(() => {
       opacity: 0.45;
       cursor: not-allowed;
     }
+  }
+}
+
+.master-key-waiting {
+  min-height: 238px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 24px 34px;
+  text-align: center;
+
+  &__icon {
+    width: 54px;
+    height: 54px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 16px;
+    border-radius: 50%;
+    background: rgba(245, 158, 11, 0.12);
+    color: var(--v-color-warning);
+  }
+
+  h2 {
+    margin: 0;
+    font-size: 18px;
+    line-height: 1.4;
+    letter-spacing: 0;
+  }
+
+  p {
+    margin: 8px 0 18px;
+    color: var(--v-text-secondary);
+    font-size: var(--v-font-sm);
+  }
+
+  &__progress {
+    width: min(360px, 100%);
   }
 }
 
@@ -403,6 +557,10 @@ onBeforeUnmount(() => {
 
     &__state {
       font-size: var(--v-font-xs);
+    }
+
+    &__header-actions {
+      gap: 8px;
     }
   }
 

@@ -110,7 +110,7 @@ function isSystemStarting(err: ApiError): boolean {
   return err.code === ErrorCode.SystemStarting
 }
 
-/** 系统未就绪时保留当前地址并进入公开的主密钥页面 */
+/** 系统未就绪时保留当前地址并进入受认证的主密钥页面 */
 function redirectToMasterKey(): void {
   if (
     typeof window === 'undefined' ||
