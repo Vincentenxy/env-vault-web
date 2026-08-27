@@ -39,6 +39,13 @@ import type {
 } from '@/api/secret'
 import ManagerSelect from '@/components/ManagerSelect.vue'
 import { useManagerSelection } from '@/composables/use-manager-selection'
+import {
+  isValidKeyPattern,
+  matchesKeyPattern,
+  resolveCreateKeyPattern,
+  type CreateKeyPatternMode,
+  type EditKeyPatternMode,
+} from '@/utils/secret-key-pattern'
 
 const route = useRoute()
 const router = useRouter()
@@ -277,6 +284,8 @@ const createFolderForm = reactive<{
   name: string
   managerId: string
   comment: string
+  keyPatternMode: CreateKeyPatternMode
+  customKeyPattern: string
 }>({
   level: 1,
   envList: [],
@@ -285,6 +294,8 @@ const createFolderForm = reactive<{
   name: '',
   managerId: '',
   comment: '',
+  keyPatternMode: 'none',
+  customKeyPattern: '',
 })
 
 const createFolderRules: FormRules<typeof createFolderForm> = {
@@ -330,6 +341,22 @@ const createFolderRules: FormRules<typeof createFolderForm> = {
     { max: 64, message: '长度不能超过 64', trigger: 'blur' },
   ],
   comment: [{ max: 256, message: '长度不能超过 256', trigger: 'blur' }],
+  customKeyPattern: [
+    {
+      validator: (_rule, value: string, callback) => {
+        if (createFolderForm.keyPatternMode !== 'custom') {
+          callback()
+        } else if (!value) {
+          callback(new Error('请输入自定义表达式'))
+        } else if (!isValidKeyPattern(value)) {
+          callback(new Error('表达式格式不正确'))
+        } else {
+          callback()
+        }
+      },
+      trigger: 'blur',
+    },
+  ],
 }
 
 const PRESET_FOLDERS: Array<{ code: string; name: string }> = [
@@ -346,6 +373,8 @@ function resetCreateFolderForm(): void {
   createFolderForm.name = ''
   createFolderForm.managerId = ''
   createFolderForm.comment = ''
+  createFolderForm.keyPatternMode = 'none'
+  createFolderForm.customKeyPattern = ''
   createFolderFormRef.value?.clearValidate()
 }
 
@@ -405,6 +434,10 @@ async function onCreateFolderSubmit(): Promise<void> {
       envList: [...createFolderForm.envList],
       parentCode: createFolderForm.level === 2 ? createFolderForm.parentCode.trim() : undefined,
       comment: createFolderForm.comment || undefined,
+      keyPattern: resolveCreateKeyPattern(
+        createFolderForm.keyPatternMode,
+        createFolderForm.customKeyPattern,
+      ),
     })
     ElMessage.success('创建成功')
     createFolderDialogVisible.value = false
@@ -473,11 +506,15 @@ const editFolderForm = reactive<{
   code: string
   name: string
   comment: string
+  keyPatternMode: EditKeyPatternMode
+  keyPattern: string
 }>({
   groupId: '',
   code: '',
   name: '',
   comment: '',
+  keyPatternMode: 'none',
+  keyPattern: '',
 })
 
 const editFolderRules: FormRules<typeof editFolderForm> = {
@@ -494,6 +531,22 @@ const editFolderRules: FormRules<typeof editFolderForm> = {
     { max: 64, message: '长度不能超过 64', trigger: 'blur' },
   ],
   comment: [{ max: 256, message: '长度不能超过 256', trigger: 'blur' }],
+  keyPattern: [
+    {
+      validator: (_rule, value: string, callback) => {
+        if (editFolderForm.keyPatternMode === 'none') {
+          callback()
+        } else if (!value) {
+          callback(new Error('请输入自定义表达式'))
+        } else if (!isValidKeyPattern(value)) {
+          callback(new Error('表达式格式不正确'))
+        } else {
+          callback()
+        }
+      },
+      trigger: 'blur',
+    },
+  ],
 }
 
 function resetEditFolderForm(): void {
@@ -501,6 +554,8 @@ function resetEditFolderForm(): void {
   editFolderForm.code = ''
   editFolderForm.name = ''
   editFolderForm.comment = ''
+  editFolderForm.keyPatternMode = 'none'
+  editFolderForm.keyPattern = ''
   editFolderFormRef.value?.clearValidate()
 }
 
@@ -509,6 +564,8 @@ function openEditFolder(folder: FolderNode): void {
   editFolderForm.code = folder.code
   editFolderForm.name = folder.name
   editFolderForm.comment = folder.comment ?? ''
+  editFolderForm.keyPatternMode = folder.keyPattern ? 'custom' : 'none'
+  editFolderForm.keyPattern = folder.keyPattern
   editFolderFormRef.value?.clearValidate()
   editFolderDialogVisible.value = true
 }
@@ -532,6 +589,7 @@ async function onEditFolderSubmit(): Promise<void> {
       groupId: editFolderForm.groupId,
       name: editFolderForm.name.trim(),
       remark: editFolderForm.comment.trim(),
+      keyPattern: editFolderForm.keyPatternMode === 'none' ? '' : editFolderForm.keyPattern,
     })
     ElMessage.success('更新成功')
     editFolderDialogVisible.value = false
@@ -643,8 +701,8 @@ async function submitNewSecret(): Promise<void> {
     ElMessage.error('key 不能为空')
     return
   }
-  if (!/^[A-Z][A-Z0-9_]*$/.test(k)) {
-    ElMessage.error(`key "${k}" 格式不正确(大写字母/数字/下划线,以字母开头)`)
+  if (!matchesKeyPattern(k, selectedFolderNode.value?.keyPattern ?? '')) {
+    ElMessage.error(`key "${k}" 不符合当前配置目录的校验表达式`)
     return
   }
   if ((newSecretForm.comment ?? '').length > 256) {
@@ -1575,6 +1633,24 @@ watch(
         <el-form-item label="说明" prop="comment">
           <el-input v-model="createFolderForm.comment" type="textarea" :rows="2" />
         </el-form-item>
+        <el-form-item label="Secret Key 校验">
+          <el-radio-group
+            v-model="createFolderForm.keyPatternMode"
+            @change="createFolderFormRef?.clearValidate('customKeyPattern')"
+          >
+            <el-radio-button value="none">不校验</el-radio-button>
+            <el-radio-button value="uppercase">大写/数字/下划线</el-radio-button>
+            <el-radio-button value="lowercase">小写/数字/中横线</el-radio-button>
+            <el-radio-button value="custom">自定义</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item
+          v-if="createFolderForm.keyPatternMode === 'custom'"
+          label="自定义表达式"
+          prop="customKeyPattern"
+        >
+          <el-input v-model="createFolderForm.customKeyPattern" placeholder="^[A-Z][A-Z0-9_]*$" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="createFolderDialogVisible = false">取消</el-button>
@@ -1623,6 +1699,27 @@ watch(
             :rows="2"
             :disabled="!has(Permission.FolderUpdate)"
             placeholder="可清空"
+          />
+        </el-form-item>
+        <el-form-item label="Key 校验">
+          <el-radio-group
+            v-model="editFolderForm.keyPatternMode"
+            :disabled="!has(Permission.FolderUpdate)"
+            @change="editFolderFormRef?.clearValidate('keyPattern')"
+          >
+            <el-radio-button value="none">关闭校验</el-radio-button>
+            <el-radio-button value="custom">自定义表达式</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item
+          v-if="editFolderForm.keyPatternMode === 'custom'"
+          label="表达式"
+          prop="keyPattern"
+        >
+          <el-input
+            v-model="editFolderForm.keyPattern"
+            :disabled="!has(Permission.FolderUpdate)"
+            placeholder="^[A-Z][A-Z0-9_]*$"
           />
         </el-form-item>
         <p v-if="!has(Permission.FolderUpdate)" class="form-hint">

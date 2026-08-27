@@ -20,6 +20,7 @@ export interface Folder extends Actor {
   manager?: string
   managerId?: Uuid
   managerName?: string
+  keyPattern?: string
   secretCount?: number
   folderCount?: number | null
   createdAt: string
@@ -51,6 +52,7 @@ export interface FolderNode {
   code: string
   name: string
   comment: string
+  keyPattern: string
   /** 所属项目的环境列表。 */
   envList: FolderEnvBinding[]
   /** L2 children;L2 节点本身不再有 subFolders */

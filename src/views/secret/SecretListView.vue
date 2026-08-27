@@ -48,6 +48,12 @@ import {
 import { ApiError } from '@/types/api'
 import type { Folder } from '@/types/folder'
 import { formatDateTime } from '@/utils/format'
+import {
+  isValidKeyPattern,
+  matchesKeyPattern,
+  resolveCreateKeyPattern,
+  type CreateKeyPatternMode,
+} from '@/utils/secret-key-pattern'
 
 type FolderType = 'customer' | 'global' | 'groups' | 'common' | 'unknown'
 type CreateFolderType = 'common' | 'customer'
@@ -69,6 +75,7 @@ interface VaultFolder {
   projectId: string
   folderGroupId: string
   managerId: string
+  keyPattern: string
   code: string
   name: string
   type: FolderType
@@ -210,6 +217,8 @@ const createFolderForm = reactive({
   name: '',
   managerId: '',
   remark: '',
+  keyPatternMode: 'none' as CreateKeyPatternMode,
+  customKeyPattern: '',
 })
 const folderEditDialogVisible = ref(false)
 const folderEditSubmitting = ref(false)
@@ -266,6 +275,22 @@ const createFolderRules: FormRules<typeof createFolderForm> = {
     { max: 64, message: '长度不能超过 64 个字符', trigger: 'blur' },
   ],
   remark: [{ max: 256, message: '长度不能超过 256 个字符', trigger: 'blur' }],
+  customKeyPattern: [
+    {
+      validator: (_rule, value: string, callback) => {
+        if (createFolderForm.keyPatternMode !== 'custom') {
+          callback()
+        } else if (!value) {
+          callback(new Error('请输入自定义表达式'))
+        } else if (!isValidKeyPattern(value)) {
+          callback(new Error('表达式格式不正确'))
+        } else {
+          callback()
+        }
+      },
+      trigger: 'blur',
+    },
+  ],
 }
 
 function createFolderDraftKey(): string {
@@ -282,6 +307,8 @@ function clearCreateFolderForm(): void {
   createFolderForm.name = ''
   createFolderForm.managerId = ''
   createFolderForm.remark = ''
+  createFolderForm.keyPatternMode = 'none'
+  createFolderForm.customKeyPattern = ''
 }
 
 function selectCreateFolderType(type: CreateFolderType): void {
@@ -332,6 +359,14 @@ function restoreCreateFolderDraft(): boolean {
     createFolderForm.name = typeof value.name === 'string' ? value.name : ''
     createFolderForm.managerId = typeof value.managerId === 'string' ? value.managerId : ''
     createFolderForm.remark = typeof value.remark === 'string' ? value.remark : ''
+    createFolderForm.keyPatternMode =
+      value.keyPatternMode === 'uppercase' ||
+      value.keyPatternMode === 'lowercase' ||
+      value.keyPatternMode === 'custom'
+        ? value.keyPatternMode
+        : 'none'
+    createFolderForm.customKeyPattern =
+      typeof value.customKeyPattern === 'string' ? value.customKeyPattern : ''
     createFolderForm.type =
       value.type === 'common' || value.type === 'customer' ? value.type : 'customer'
     return true
@@ -347,7 +382,9 @@ function persistCreateFolderDraft(): void {
     !createFolderForm.code &&
     !createFolderForm.name &&
     !createFolderForm.managerId &&
-    !createFolderForm.remark
+    !createFolderForm.remark &&
+    createFolderForm.keyPatternMode === 'none' &&
+    !createFolderForm.customKeyPattern
   if (isEmpty) {
     window.localStorage.removeItem(createFolderDraftKey())
     return
@@ -362,6 +399,8 @@ function persistCreateFolderDraft(): void {
       name: createFolderForm.name,
       managerId: createFolderForm.managerId,
       remark: createFolderForm.remark,
+      keyPatternMode: createFolderForm.keyPatternMode,
+      customKeyPattern: createFolderForm.customKeyPattern,
     }),
   )
 }
@@ -492,6 +531,7 @@ function mapFolder(folder: Folder, projectId: string, index: number): VaultFolde
     projectId,
     folderGroupId: firstString(raw.groupId, raw.group_id, raw.folderGroupId, raw.folder_group_id),
     managerId: firstString(raw.manager, raw.managerId, raw.manager_id),
+    keyPattern: typeof raw.keyPattern === 'string' ? raw.keyPattern : '',
     code: firstString(raw.code, raw.name) || id,
     name: firstString(raw.name, raw.code) || '未命名配置目录',
     type: inferFolderType(folder),
@@ -843,10 +883,12 @@ async function submitFolderEdit(payload: CardEditPayload): Promise<void> {
       name: payload.name,
       remark: payload.remark,
       ...(payload.managerId ? { manager: payload.managerId } : {}),
+      ...(typeof payload.keyPattern === 'string' ? { keyPattern: payload.keyPattern } : {}),
     })
     folder.name = payload.name
     folder.remark = payload.remark
     folder.description = payload.remark || '暂无目录说明'
+    if (typeof payload.keyPattern === 'string') folder.keyPattern = payload.keyPattern
     ElMessage.success('配置目录更新成功')
     folderEditDialogVisible.value = false
 
@@ -881,6 +923,10 @@ async function createFolder(): Promise<void> {
       remark: createFolderForm.remark.trim() || undefined,
       type: createFolderForm.type,
       parentFolderId: parentFolder?.id,
+      keyPattern: resolveCreateKeyPattern(
+        createFolderForm.keyPatternMode,
+        createFolderForm.customKeyPattern,
+      ),
     })
     ElMessage.success('Folder 创建成功')
     clearCreateFolderDraft()
@@ -1476,8 +1522,8 @@ async function createKeys(): Promise<void> {
       ElMessage.error(`第 ${index + 1} 行 key 不能为空`)
       return
     }
-    if (!/^[A-Z][A-Z0-9_]*$/.test(key)) {
-      ElMessage.error(`第 ${index + 1} 行 key 格式不正确,需使用大写字母、数字和下划线`)
+    if (!matchesKeyPattern(key, folder.keyPattern)) {
+      ElMessage.error(`第 ${index + 1} 行 key 不符合当前配置目录的校验表达式`)
       return
     }
     if (keys.has(key)) {
@@ -2705,6 +2751,8 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
       :remark="editingFolder?.remark ?? ''"
       :manager-id="editingFolder?.managerId ?? ''"
       :manager-project-id="editingFolder?.projectId ?? ''"
+      :key-pattern="editingFolder?.keyPattern ?? ''"
+      show-key-pattern
       :submitting="folderEditSubmitting"
       @submit="submitFolderEdit"
     />
@@ -3270,6 +3318,24 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
               :rows="3"
               placeholder="可选，描述该文件夹的用途"
             />
+          </el-form-item>
+          <el-form-item label="Secret Key 校验">
+            <el-radio-group
+              v-model="createFolderForm.keyPatternMode"
+              @change="createFolderFormRef?.clearValidate('customKeyPattern')"
+            >
+              <el-radio-button value="none">不校验</el-radio-button>
+              <el-radio-button value="uppercase">大写/数字/下划线</el-radio-button>
+              <el-radio-button value="lowercase">小写/数字/中横线</el-radio-button>
+              <el-radio-button value="custom">自定义</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item
+            v-if="createFolderForm.keyPatternMode === 'custom'"
+            label="自定义表达式"
+            prop="customKeyPattern"
+          >
+            <el-input v-model="createFolderForm.customKeyPattern" placeholder="^[A-Z][A-Z0-9_]*$" />
           </el-form-item>
           <el-form-item label="类型" prop="type">
             <div class="vault-folder-type-options" role="radiogroup" aria-label="文件夹类型">

@@ -48,6 +48,7 @@ function toFolderNode(folder: Folder, subFolders: FolderNode[] = []): FolderNode
     code: folder.code,
     name: folder.name,
     comment: folder.comment,
+    keyPattern: folder.keyPattern ?? '',
     envList: [],
     subFolders,
   }
@@ -101,6 +102,7 @@ export interface CreateFolderRequest {
   /** level=2 时必填:父 L1 folder 的 code */
   parentCode?: string
   comment?: string
+  keyPattern?: string
 }
 export function createFolder(
   req: CreateFolderRequest,
@@ -122,6 +124,7 @@ export interface CreateSecretFolderRequest {
   remark?: string
   type: 'common' | 'customer'
   parentFolderId?: Uuid
+  keyPattern?: string
 }
 
 export function createSecretFolder(
@@ -138,6 +141,8 @@ export interface UpdateFolderRequest {
   remark: string
   /** 管理员用户 ID；未传或为空时保留原管理员。 */
   manager?: string
+  /** 不传表示保持不变，空字符串表示关闭 Secret key 格式校验 */
+  keyPattern?: string
 }
 export function updateFolder(
   req: UpdateFolderRequest,
