@@ -4468,7 +4468,26 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
   }
 
   tbody tr.is-editing {
-    background: var(--el-color-primary-light-9);
+    background: #111214;
+    box-shadow: 3px 0 0 #3b82f6 inset;
+
+    &:hover {
+      background: #111214;
+    }
+
+    td {
+      border-bottom-color: #2d3036;
+    }
+
+    .vault-table__key {
+      .el-icon {
+        color: #9ca3af;
+      }
+
+      code {
+        color: #f8fafc;
+      }
+    }
   }
 
   tbody tr.is-history-expanded td {
@@ -4695,11 +4714,25 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
     :deep(.el-input__wrapper) {
       min-height: 34px;
       border-radius: 7px;
-      background: var(--v-surface-bg);
-      box-shadow: 0 0 0 1px var(--v-surface-border) inset;
+      background: #f8fafc;
+      box-shadow:
+        0 0 0 1px #d7dce3 inset,
+        0 1px 2px rgba(0, 0, 0, 0.12);
 
       &.is-focus {
-        box-shadow: 0 0 0 1px var(--el-color-primary) inset;
+        box-shadow:
+          0 0 0 2px #3b82f6 inset,
+          0 1px 2px rgba(0, 0, 0, 0.12);
+      }
+    }
+
+    :deep(.el-input__inner) {
+      color: #111827;
+      -webkit-text-fill-color: #111827;
+
+      &::placeholder {
+        color: #8b95a5;
+        -webkit-text-fill-color: #8b95a5;
       }
     }
   }
@@ -4829,16 +4862,32 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
       :deep(.el-input__wrapper) {
         min-height: 34px;
         border-radius: 7px;
-        background: var(--v-surface-bg);
-        box-shadow: 0 0 0 1px var(--v-surface-border) inset;
+        background: #f8fafc;
+        box-shadow:
+          0 0 0 1px #d7dce3 inset,
+          0 1px 2px rgba(0, 0, 0, 0.12);
 
         &.is-focus {
-          box-shadow: 0 0 0 1px var(--el-color-primary) inset;
+          box-shadow:
+            0 0 0 2px #3b82f6 inset,
+            0 1px 2px rgba(0, 0, 0, 0.12);
+        }
+      }
+
+      :deep(.el-input__inner) {
+        color: #111827;
+        -webkit-text-fill-color: #111827;
+
+        &::placeholder {
+          color: #8b95a5;
+          -webkit-text-fill-color: #8b95a5;
         }
       }
 
       &.is-error :deep(.el-input__wrapper) {
-        box-shadow: 0 0 0 1px var(--el-color-danger) inset;
+        box-shadow:
+          0 0 0 2px #ef4444 inset,
+          0 1px 2px rgba(0, 0, 0, 0.12);
       }
     }
 
@@ -4918,6 +4967,32 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
           border-color: var(--el-color-danger-light-7);
           background: var(--el-color-danger-light-9);
           color: #ef4444;
+        }
+      }
+    }
+  }
+
+  tbody tr.is-editing .vault-table__operations {
+    button {
+      border-color: rgba(248, 113, 113, 0.45);
+      background: rgba(248, 113, 113, 0.08);
+      color: #f87171;
+
+      &:hover:not(:disabled) {
+        border-color: #f87171;
+        background: rgba(248, 113, 113, 0.16);
+        color: #fca5a5;
+      }
+
+      &.is-success {
+        border-color: rgba(74, 222, 128, 0.45);
+        background: rgba(74, 222, 128, 0.08);
+        color: #4ade80;
+
+        &:hover:not(:disabled) {
+          border-color: #4ade80;
+          background: rgba(74, 222, 128, 0.16);
+          color: #86efac;
         }
       }
     }
