@@ -11,8 +11,16 @@ const props = withDefaults(
     orgId?: string
     projectId?: string
     selectedName?: string
+    excludeExternal?: boolean
   }>(),
-  { disabled: false, tenantId: '', orgId: '', projectId: '', selectedName: '' },
+  {
+    disabled: false,
+    tenantId: '',
+    orgId: '',
+    projectId: '',
+    selectedName: '',
+    excludeExternal: false,
+  },
 )
 
 const emit = defineEmits<{
@@ -130,10 +138,13 @@ watch(scopeKey, (key) => {
       :key="user.id"
       :label="user.name"
       :value="user.id"
-      :disabled="user.disabled"
+      :disabled="user.disabled || (excludeExternal && user.isExternal)"
     >
       <span class="manager-select__option-name">{{ user.name }}</span>
-      <span class="manager-select__option-meta">{{ user.email || user.id }}</span>
+      <span class="manager-select__option-meta">
+        <small v-if="user.isExternal">外部协作者</small>
+        <span>{{ user.email || user.id }}</span>
+      </span>
     </el-option>
   </el-select>
 </template>
@@ -149,11 +160,27 @@ watch(scopeKey, (key) => {
   &__option-meta {
     float: right;
     max-width: 55%;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     overflow: hidden;
     color: var(--v-text-tertiary);
     font-size: 11px;
-    text-overflow: ellipsis;
     white-space: nowrap;
+
+    small {
+      flex: 0 0 auto;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: rgba(217, 119, 6, 0.1);
+      color: #d97706;
+      font-size: 10px;
+    }
+
+    span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
   }
 }
 </style>

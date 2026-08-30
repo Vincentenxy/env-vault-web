@@ -8,6 +8,11 @@ export interface Actor {
   updatedByLabel: string
 }
 
+export interface UserProject {
+  id: Uuid
+  name: string
+}
+
 export interface User {
   id: Uuid
   userId: string
@@ -18,7 +23,10 @@ export interface User {
   email?: string
   phone?: string
   tenantId?: Uuid
+  tenantName?: string
   orgId?: Uuid
+  orgName?: string
+  projectList?: UserProject[]
   avatarUrl?: string
   departmentName?: string
   organizationName?: string

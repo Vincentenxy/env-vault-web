@@ -19,6 +19,7 @@ const masterKey = useMasterKeyStore()
 const share = ref('')
 const mode = ref<'waiting' | 'submit'>('waiting')
 const errorMessage = ref('')
+const enteringSystem = ref(false)
 let refreshInProgress = false
 let pollingTimer: ReturnType<typeof setInterval> | undefined
 
@@ -34,12 +35,24 @@ const canSubmit = computed(
     masterKey.status?.canSubmit === true &&
     share.value.trim().length > 0,
 )
+const statusText = computed(() => {
+  if (enteringSystem.value || masterKey.status?.ready) return '正在进入系统'
+  return masterKey.checking ? '正在检查系统状态' : '等待主密钥'
+})
 
 /** 主密钥就绪后返回触发启动拦截前的站内页面 */
 async function leaveSetupPage(): Promise<void> {
+  if (enteringSystem.value) return
+
+  enteringSystem.value = true
   const target = resolveMasterKeyRedirect(route.query.redirect)
-  await auth.refreshMe()
-  await router.replace(target)
+  try {
+    await auth.refreshMe()
+    await router.replace(target)
+  } catch (error) {
+    enteringSystem.value = false
+    throw error
+  }
 }
 
 /** 查询系统状态，已经就绪时不再展示分片表单 */
@@ -131,8 +144,11 @@ onBeforeUnmount(() => {
 
       <span class="master-key-page__header-actions">
         <span class="master-key-page__state">
-          <span class="master-key-page__state-dot" />
-          {{ masterKey.checking ? '正在检查系统状态' : '等待主密钥' }}
+          <span
+            class="master-key-page__state-dot"
+            :class="{ 'is-ready': enteringSystem || masterKey.status?.ready }"
+          />
+          {{ statusText }}
         </span>
         <el-tooltip content="退出登录" placement="bottom">
           <button
@@ -165,7 +181,12 @@ onBeforeUnmount(() => {
             <button
               type="button"
               class="master-key-panel__action"
-              :disabled="masterKey.checking || masterKey.submitting || masterKey.status?.ready"
+              :disabled="
+                masterKey.checking ||
+                masterKey.submitting ||
+                enteringSystem ||
+                masterKey.status?.ready
+              "
               :aria-label="mode === 'waiting' ? '输入密钥分片' : '返回等待页面'"
               @click="mode === 'waiting' ? openSubmit() : closeSubmit()"
             >
@@ -177,7 +198,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               class="master-key-panel__action"
-              :disabled="masterKey.checking || masterKey.submitting"
+              :disabled="masterKey.checking || masterKey.submitting || enteringSystem"
               aria-label="重新检查系统状态"
               @click="loadStatus()"
             >
@@ -188,7 +209,18 @@ onBeforeUnmount(() => {
       </header>
 
       <section
-        v-if="masterKey.status?.ready === false && mode === 'waiting'"
+        v-if="enteringSystem || masterKey.status?.ready === true"
+        class="master-key-entering"
+      >
+        <span class="master-key-entering__icon" aria-hidden="true">
+          <ShieldCheck :size="28" :stroke-width="1.7" />
+        </span>
+        <h2>系统正在启动</h2>
+        <p>主密钥已加载，正在准备用户信息和工作区</p>
+      </section>
+
+      <section
+        v-else-if="masterKey.status?.ready === false && mode === 'waiting'"
         class="master-key-waiting"
       >
         <span class="master-key-waiting__icon" aria-hidden="true">
@@ -238,6 +270,7 @@ onBeforeUnmount(() => {
         <footer class="master-key-form__footer">
           <span>当前进度 {{ submittedShares }} / {{ requiredShares }}</span>
           <el-button
+            class="master-key-form__submit"
             native-type="submit"
             type="primary"
             :loading="masterKey.submitting"
@@ -319,6 +352,11 @@ onBeforeUnmount(() => {
     border-radius: 50%;
     background: var(--v-color-warning);
     box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.14);
+
+    &.is-ready {
+      background: #176dfb;
+      box-shadow: 0 0 0 3px rgba(23, 109, 251, 0.14);
+    }
   }
 
   &__header-actions {
@@ -462,6 +500,41 @@ onBeforeUnmount(() => {
   }
 }
 
+.master-key-entering {
+  min-height: 238px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 24px 34px;
+  text-align: center;
+
+  &__icon {
+    width: 54px;
+    height: 54px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 16px;
+    border-radius: 50%;
+    background: rgba(23, 109, 251, 0.1);
+    color: #176dfb;
+  }
+
+  h2 {
+    margin: 0;
+    font-size: 18px;
+    line-height: 1.4;
+    letter-spacing: 0;
+  }
+
+  p {
+    margin: 8px 0 0;
+    color: var(--v-text-secondary);
+    font-size: var(--v-font-sm);
+  }
+}
+
 .master-key-form {
   padding: 22px;
 
@@ -518,13 +591,31 @@ onBeforeUnmount(() => {
       color: var(--v-text-tertiary);
     }
 
-    .el-button {
-      min-width: 132px;
-      height: 36px;
+    .master-key-form__submit.el-button {
+      min-width: 112px;
+      height: 32px;
       display: inline-flex;
       gap: 6px;
-      border-radius: var(--v-radius-md);
+      padding: 0 16px;
+      border-color: #176dfb;
+      border-radius: var(--v-radius-dialog-action);
+      background: #176dfb;
+      color: #fff;
+      box-shadow: 0 3px 8px rgba(23, 109, 251, 0.24);
+      font-size: var(--v-font-sm);
       font-weight: 600;
+
+      &:hover:not(.is-disabled),
+      &:focus-visible:not(.is-disabled) {
+        border-color: #125bd6;
+        background: #125bd6;
+      }
+
+      &.is-disabled {
+        border-color: var(--el-color-primary-light-5);
+        background: var(--el-color-primary-light-5);
+        box-shadow: none;
+      }
     }
   }
 }

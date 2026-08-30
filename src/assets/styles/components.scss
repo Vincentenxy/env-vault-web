@@ -94,6 +94,20 @@
   background: var(--v-surface-bg-subtle);
 }
 
+.el-button.vault-dialog-confirm-button.el-button--primary {
+  border-color: #176dfb;
+  background: #176dfb;
+  color: #fff;
+  box-shadow: 0 3px 8px rgba(23, 109, 251, 0.24);
+
+  &:hover,
+  &:focus-visible {
+    border-color: #125bd6;
+    background: #125bd6;
+    color: #fff;
+  }
+}
+
 /* ---------- Card edit dialog: 租户 / 组织 / 项目 / 配置目录共用 ---------- */
 .vault-card-edit-dialog.el-dialog {
   --el-dialog-border-radius: var(--v-radius-dialog);
@@ -216,6 +230,27 @@
   overflow-y: auto;
 }
 
+.vault-card-edit-dialog__audit {
+  margin: -18px -22px -20px;
+}
+
+/* ---------- Resource audit log dialog ---------- */
+.vault-card-edit-dialog.vault-audit-log-dialog.el-dialog {
+  width: 900px;
+
+  .el-dialog__body {
+    display: flex;
+    min-height: 0;
+    flex: 1 1 auto;
+  }
+
+  .el-dialog__footer .el-button--primary {
+    border-color: #176dfb;
+    background: #176dfb;
+    color: #fff;
+  }
+}
+
 .vault-card-edit-dialog__form,
 .tenant-edit-dialog__form {
   .el-form-item {
@@ -290,6 +325,10 @@
 
 .resource-edit-dialog__content {
   min-height: 430px;
+}
+
+.resource-edit-dialog__audit {
+  margin: -22px -24px -24px;
 }
 
 .resource-members {
@@ -627,6 +666,11 @@
   &.is-manager {
     background: rgba(23, 93, 251, 0.1);
     color: rgb(23, 93, 251);
+  }
+
+  &.is-external {
+    background: rgba(217, 119, 6, 0.1);
+    color: #d97706;
   }
 }
 

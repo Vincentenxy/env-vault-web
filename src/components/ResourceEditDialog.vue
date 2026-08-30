@@ -17,6 +17,7 @@ import {
 } from '@/api/user'
 import { createEnvironment, listEnvironments, updateEnvironment } from '@/api/env'
 import ManagerSelect from '@/components/ManagerSelect.vue'
+import ResourceAuditPanel from '@/components/ResourceAuditPanel.vue'
 import { ApiError } from '@/types/api'
 import type { Environment } from '@/types/env'
 import { calculateEnvironmentOrderNo } from '@/utils/environment-order'
@@ -30,7 +31,7 @@ export interface ResourceEditPayload {
   managerId: string
 }
 
-type ResourceEditTab = 'basic' | 'environments' | 'users'
+type ResourceEditTab = 'basic' | 'environments' | 'users' | 'audit'
 
 interface EnvironmentCreateForm {
   code: string
@@ -555,6 +556,15 @@ watch(
         >
           用户管理
         </button>
+        <button
+          type="button"
+          class="tenant-edit-tabs__item"
+          :class="{ 'is-active': activeTab === 'audit' }"
+          :aria-current="activeTab === 'audit' ? 'page' : undefined"
+          @click="switchTab('audit')"
+        >
+          操作记录
+        </button>
       </nav>
     </template>
 
@@ -585,6 +595,7 @@ watch(
             :org-id="resourceType === 'organization' ? resourceId : ''"
             :project-id="resourceType === 'project' ? resourceId : ''"
             :selected-name="managerName"
+            :exclude-external="resourceType === 'project'"
             :disabled="submitting"
           />
         </el-form-item>
@@ -849,9 +860,20 @@ watch(
                 <td>
                   <span
                     class="resource-member-role"
-                    :class="{ 'is-manager': userIdOf(user) === managerId }"
+                    :class="{
+                      'is-manager':
+                        userIdOf(user) === managerId &&
+                        user.projectRelation?.memberType !== 'external',
+                      'is-external': user.projectRelation?.memberType === 'external',
+                    }"
                   >
-                    {{ userIdOf(user) === managerId ? '负责人' : '成员' }}
+                    {{
+                      user.projectRelation?.memberType === 'external'
+                        ? '外部协作者'
+                        : userIdOf(user) === managerId
+                          ? '负责人'
+                          : '成员'
+                    }}
                   </span>
                 </td>
                 <td>
@@ -890,6 +912,15 @@ watch(
           </div>
         </div>
       </section>
+
+      <ResourceAuditPanel
+        v-show="activeTab === 'audit'"
+        class="resource-edit-dialog__audit"
+        :active="dialogVisible && activeTab === 'audit'"
+        :resource-type="resourceType"
+        :resource-id="resourceId"
+        :resource-name="name"
+      />
     </div>
 
     <template #footer>

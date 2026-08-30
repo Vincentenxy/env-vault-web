@@ -27,8 +27,15 @@ export interface OrganizationWithProjects {
   projectList: OrganizationProjectOption[]
 }
 
+export interface CollaborationProjectOption {
+  id: string
+  name: string
+  expireAt: string | null
+}
+
 export interface OrganizationsWithProjectsData {
   orgList: OrganizationWithProjects[]
+  collaborationProjectList: CollaborationProjectOption[]
 }
 
 /** GET /api/v1/org/withProject */

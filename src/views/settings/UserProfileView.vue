@@ -1,10 +1,27 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { AtSign, Building2, IdCard, RefreshCw, UserRound, UsersRound } from '@lucide/vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import {
+  ArrowRight,
+  AtSign,
+  Building2,
+  FolderKanban,
+  IdCard,
+  KeyRound,
+  RefreshCw,
+  UserRound,
+  UsersRound,
+} from '@lucide/vue'
+import { useRouter } from 'vue-router'
 import { getMe } from '@/api/me'
 import { useAuthStore } from '@/stores/auth'
+import type { UserProject } from '@/types/user'
+import PersonalSecretPanel from './components/PersonalSecretPanel.vue'
+
+type ProfileTab = 'profile' | 'secrets'
 
 const auth = useAuthStore()
+const router = useRouter()
+const activeTab = ref<ProfileTab>('profile')
 const loading = ref(false)
 const loadFailed = ref(false)
 const avatarLoadFailed = ref(false)
@@ -18,10 +35,13 @@ const displayName = computed(
 const userId = computed(() => firstString(['userId', 'id', 'staffUserId']) || '—')
 const email = computed(() => firstString(['email', 'mail']) || '—')
 const departmentName = computed(
-  () => firstString(['departmentName', 'deptName', 'department', 'dept']) || '—',
+  () => user.value?.orgName?.trim() || firstString(['departmentName', 'deptName']) || '—',
 )
 const organizationName = computed(
-  () => firstString(['organizationName', 'orgName', 'organization', 'org', 'tenantName']) || '—',
+  () => user.value?.tenantName?.trim() || firstString(['organizationName']) || '—',
+)
+const projects = computed(() =>
+  Array.isArray(user.value?.projectList) ? user.value.projectList : [],
 )
 const avatarUrl = computed(() => firstString(['avatarUrl', 'avatar', 'picture', 'photoUrl']) || '')
 const userInitial = computed(() => displayName.value.slice(0, 1).toUpperCase())
@@ -45,6 +65,31 @@ function firstString(keys: string[]): string {
   return ''
 }
 
+function selectTab(tab: ProfileTab): void {
+  activeTab.value = tab
+}
+
+function openProject(project: UserProject): void {
+  void router.push({ name: 'SecretList', query: { projectId: project.id } })
+}
+
+async function selectAdjacentTab(event: KeyboardEvent, tab: ProfileTab): Promise<void> {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+
+  event.preventDefault()
+  const nextTab =
+    event.key === 'Home'
+      ? 'profile'
+      : event.key === 'End'
+        ? 'secrets'
+        : tab === 'profile'
+          ? 'secrets'
+          : 'profile'
+  selectTab(nextTab)
+  await nextTick()
+  document.getElementById(`${nextTab}-tab`)?.focus()
+}
+
 async function loadProfile(): Promise<void> {
   if (loading.value) return
 
@@ -60,90 +105,174 @@ async function loadProfile(): Promise<void> {
 }
 
 onMounted(() => {
-  if (!auth.currentUser) void loadProfile()
+  void loadProfile()
 })
 </script>
 
 <template>
-  <section v-loading="loading" class="profile-page">
+  <section class="profile-page">
     <header class="profile-page__toolbar">
-      <h1>个人信息</h1>
-      <el-tooltip content="刷新用户信息" placement="bottom">
-        <button
-          type="button"
-          class="profile-page__refresh"
-          :disabled="loading"
-          aria-label="刷新用户信息"
-          @click="loadProfile"
-        >
-          <RefreshCw :size="16" :stroke-width="1.8" />
-        </button>
-      </el-tooltip>
+      <div class="profile-page__toolbar-inner">
+        <nav class="profile-page__tabs" role="tablist" aria-label="个人中心">
+          <button
+            id="profile-tab"
+            type="button"
+            class="profile-page__tab"
+            :class="{ 'is-active': activeTab === 'profile' }"
+            role="tab"
+            :aria-selected="activeTab === 'profile'"
+            :tabindex="activeTab === 'profile' ? 0 : -1"
+            aria-controls="profile-panel"
+            @click="selectTab('profile')"
+            @keydown="selectAdjacentTab($event, 'profile')"
+          >
+            <UserRound :size="17" :stroke-width="1.8" />
+            <span>个人信息</span>
+          </button>
+          <button
+            id="secrets-tab"
+            type="button"
+            class="profile-page__tab"
+            :class="{ 'is-active': activeTab === 'secrets' }"
+            role="tab"
+            :aria-selected="activeTab === 'secrets'"
+            :tabindex="activeTab === 'secrets' ? 0 : -1"
+            aria-controls="secrets-panel"
+            @click="selectTab('secrets')"
+            @keydown="selectAdjacentTab($event, 'secrets')"
+          >
+            <KeyRound :size="17" :stroke-width="1.8" />
+            <span>我的密钥</span>
+          </button>
+        </nav>
+
+        <el-tooltip v-if="activeTab === 'profile'" content="刷新用户信息" placement="bottom">
+          <button
+            type="button"
+            class="profile-page__refresh"
+            :disabled="loading"
+            aria-label="刷新用户信息"
+            @click="loadProfile"
+          >
+            <RefreshCw :size="16" :stroke-width="1.8" />
+          </button>
+        </el-tooltip>
+      </div>
     </header>
 
-    <main class="profile-page__content">
-      <div v-if="user" class="profile-panel">
-        <section class="profile-summary">
-          <span class="profile-avatar" aria-hidden="true">
-            <img
-              v-if="avatarUrl && !avatarLoadFailed"
-              :src="avatarUrl"
-              alt=""
-              @error="avatarLoadFailed = true"
-            />
-            <span v-else>{{ userInitial }}</span>
-          </span>
-          <span class="profile-summary__copy">
-            <strong>{{ displayName }}</strong>
-            <small>{{ email === '—' ? userId : email }}</small>
-          </span>
-        </section>
-
-        <section class="profile-details" aria-label="账号基础信息">
-          <div class="profile-details__item">
-            <span class="profile-details__icon"><UserRound :size="17" :stroke-width="1.7" /></span>
-            <span class="profile-details__copy">
-              <small>姓名</small>
+    <main
+      class="profile-page__content"
+      :class="{ 'profile-page__content--secrets': activeTab === 'secrets' }"
+    >
+      <section
+        v-show="activeTab === 'profile'"
+        id="profile-panel"
+        v-loading="loading"
+        role="tabpanel"
+        aria-labelledby="profile-tab"
+        class="profile-page__tab-panel"
+      >
+        <div v-if="user" class="profile-panel">
+          <section class="profile-summary">
+            <span class="profile-avatar" aria-hidden="true">
+              <img
+                v-if="avatarUrl && !avatarLoadFailed"
+                :src="avatarUrl"
+                alt=""
+                @error="avatarLoadFailed = true"
+              />
+              <span v-else>{{ userInitial }}</span>
+            </span>
+            <span class="profile-summary__copy">
               <strong>{{ displayName }}</strong>
+              <small>{{ email === '—' ? userId : email }}</small>
             </span>
-          </div>
-          <div class="profile-details__item">
-            <span class="profile-details__icon"><IdCard :size="17" :stroke-width="1.7" /></span>
-            <span class="profile-details__copy">
-              <small>用户 ID</small>
-              <strong :title="userId">{{ userId }}</strong>
-            </span>
-          </div>
-          <div class="profile-details__item">
-            <span class="profile-details__icon"><AtSign :size="17" :stroke-width="1.7" /></span>
-            <span class="profile-details__copy">
-              <small>邮箱</small>
-              <strong :title="email">{{ email }}</strong>
-            </span>
-          </div>
-          <div class="profile-details__item">
-            <span class="profile-details__icon"><UsersRound :size="17" :stroke-width="1.7" /></span>
-            <span class="profile-details__copy">
-              <small>部门</small>
-              <strong :title="departmentName">{{ departmentName }}</strong>
-            </span>
-          </div>
-          <div class="profile-details__item profile-details__item--wide">
-            <span class="profile-details__icon"><Building2 :size="17" :stroke-width="1.7" /></span>
-            <span class="profile-details__copy">
-              <small>组织</small>
-              <strong :title="organizationName">{{ organizationName }}</strong>
-            </span>
-          </div>
-        </section>
-      </div>
+          </section>
 
-      <div v-else-if="!loading" class="profile-empty">
-        <span class="profile-empty__icon"><UserRound :size="25" :stroke-width="1.6" /></span>
-        <strong>{{ loadFailed ? '用户信息加载失败' : '暂无用户信息' }}</strong>
-        <span>请重新加载当前账号信息</span>
-        <el-button type="primary" plain @click="loadProfile">重新加载</el-button>
-      </div>
+          <section class="profile-details" aria-label="账号基础信息">
+            <div class="profile-details__item">
+              <span class="profile-details__icon"
+                ><UserRound :size="17" :stroke-width="1.7"
+              /></span>
+              <span class="profile-details__copy">
+                <small>姓名</small>
+                <strong>{{ displayName }}</strong>
+              </span>
+            </div>
+            <div class="profile-details__item">
+              <span class="profile-details__icon"><IdCard :size="17" :stroke-width="1.7" /></span>
+              <span class="profile-details__copy">
+                <small>用户 ID</small>
+                <strong :title="userId">{{ userId }}</strong>
+              </span>
+            </div>
+            <div class="profile-details__item">
+              <span class="profile-details__icon"><AtSign :size="17" :stroke-width="1.7" /></span>
+              <span class="profile-details__copy">
+                <small>邮箱</small>
+                <strong :title="email">{{ email }}</strong>
+              </span>
+            </div>
+            <div class="profile-details__item">
+              <span class="profile-details__icon"
+                ><UsersRound :size="17" :stroke-width="1.7"
+              /></span>
+              <span class="profile-details__copy">
+                <small>部门</small>
+                <strong :title="departmentName">{{ departmentName }}</strong>
+              </span>
+            </div>
+            <div class="profile-details__item profile-details__item--wide">
+              <span class="profile-details__icon"
+                ><Building2 :size="17" :stroke-width="1.7"
+              /></span>
+              <span class="profile-details__copy">
+                <small>组织</small>
+                <strong :title="organizationName">{{ organizationName }}</strong>
+              </span>
+            </div>
+            <div class="profile-details__item profile-details__item--wide">
+              <span class="profile-details__icon"
+                ><FolderKanban :size="17" :stroke-width="1.7"
+              /></span>
+              <span class="profile-details__copy">
+                <small>项目</small>
+                <span v-if="projects.length" class="profile-projects">
+                  <button
+                    v-for="project in projects"
+                    :key="project.id"
+                    type="button"
+                    class="profile-projects__item"
+                    :title="`进入 ${project.name} 的密钥管理`"
+                    @click="openProject(project)"
+                  >
+                    <span>{{ project.name || '未命名项目' }}</span>
+                    <ArrowRight :size="14" :stroke-width="1.8" />
+                  </button>
+                </span>
+                <strong v-else>未分配项目</strong>
+              </span>
+            </div>
+          </section>
+        </div>
+
+        <div v-else-if="!loading" class="profile-empty">
+          <span class="profile-empty__icon"><UserRound :size="25" :stroke-width="1.6" /></span>
+          <strong>{{ loadFailed ? '用户信息加载失败' : '暂无用户信息' }}</strong>
+          <span>请重新加载当前账号信息</span>
+          <el-button type="primary" plain @click="loadProfile">重新加载</el-button>
+        </div>
+      </section>
+
+      <section
+        v-show="activeTab === 'secrets'"
+        id="secrets-panel"
+        role="tabpanel"
+        aria-labelledby="secrets-tab"
+        class="profile-page__tab-panel"
+      >
+        <PersonalSecretPanel v-if="activeTab === 'secrets'" />
+      </section>
     </main>
   </section>
 </template>
@@ -154,23 +283,88 @@ onMounted(() => {
   height: 100%;
   min-height: 100%;
   overflow-y: auto;
-  background: var(--v-page-bg);
+  background: var(--v-app-bg);
   color: var(--v-text-primary);
 
   &__toolbar {
+    border-bottom: 1px solid var(--v-divider);
+    background: var(--v-surface-bg);
+  }
+
+  &__toolbar-inner {
+    width: min(920px, calc(100% - 48px));
     min-height: 60px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 24px;
-    border-bottom: 1px solid var(--v-divider);
-    background: var(--v-surface-bg);
+    gap: 20px;
+    margin: 0 auto;
+  }
 
-    h1 {
-      margin: 0;
-      font-size: 16px;
-      font-weight: 650;
-      letter-spacing: 0;
+  &__tabs {
+    min-width: 0;
+    align-self: stretch;
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  &__tab {
+    min-width: 112px;
+    min-height: 59px;
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 0 14px;
+    border: 0;
+    background: transparent;
+    color: var(--v-text-secondary);
+    font: inherit;
+    font-size: var(--v-font-md);
+    font-weight: 500;
+    cursor: pointer;
+    transition:
+      color 0.18s ease,
+      background-color 0.18s ease;
+
+    &::after {
+      content: '';
+      position: absolute;
+      right: 12px;
+      bottom: -1px;
+      left: 12px;
+      height: 2px;
+      border-radius: 2px 2px 0 0;
+      background: var(--el-color-primary);
+      opacity: 0;
+      transform: scaleX(0.55);
+      transition:
+        opacity 0.18s ease,
+        transform 0.18s ease;
+    }
+
+    &:hover {
+      background: var(--v-surface-bg-subtle);
+      color: var(--v-text-primary);
+    }
+
+    &:focus-visible {
+      border-radius: var(--v-radius-sm);
+      outline: 2px solid var(--el-color-primary-light-5);
+      outline-offset: -4px;
+    }
+
+    &.is-active {
+      background: var(--el-color-primary-light-9);
+      color: var(--el-color-primary);
+      font-weight: 600;
+
+      &::after {
+        opacity: 1;
+        transform: scaleX(1);
+      }
     }
   }
 
@@ -184,13 +378,14 @@ onMounted(() => {
     border: 1px solid var(--v-surface-border);
     border-radius: 50%;
     background: var(--v-surface-bg);
-    color: #176dfb;
+    color: var(--v-text-secondary);
     cursor: pointer;
 
     &:hover:not(:disabled),
     &:focus-visible {
-      border-color: #176dfb;
-      background: rgba(23, 109, 251, 0.07);
+      border-color: var(--el-color-primary);
+      background: var(--el-color-primary-light-9);
+      color: var(--el-color-primary);
       outline: none;
     }
 
@@ -203,13 +398,21 @@ onMounted(() => {
   &__content {
     width: min(920px, calc(100% - 48px));
     margin: 24px auto;
+
+    &--secrets {
+      width: min(1280px, calc(100% - 48px));
+    }
+  }
+
+  &__tab-panel {
+    min-height: 360px;
   }
 }
 
 .profile-panel {
   overflow: hidden;
   border: 1px solid var(--v-surface-border);
-  border-radius: 8px;
+  border-radius: var(--v-radius-md);
   background: var(--v-surface-bg);
   box-shadow: var(--v-shadow-sm);
 }
@@ -237,13 +440,13 @@ onMounted(() => {
 
     strong {
       color: var(--v-text-primary);
-      font-size: 20px;
+      font-size: var(--v-font-2xl);
       font-weight: 700;
     }
 
     small {
       color: var(--v-text-secondary);
-      font-size: 12px;
+      font-size: var(--v-font-xs);
     }
   }
 }
@@ -258,10 +461,10 @@ onMounted(() => {
   overflow: hidden;
   border: 3px solid var(--v-surface-bg);
   border-radius: 50%;
-  background: #2563eb;
+  background: var(--el-color-primary);
   box-shadow: 0 0 0 1px var(--v-surface-border);
-  color: #fff;
-  font-size: 28px;
+  color: var(--v-text-inverse);
+  font-size: var(--v-font-3xl);
   font-weight: 700;
 
   img {
@@ -292,6 +495,9 @@ onMounted(() => {
     &--wide {
       grid-column: 1 / -1;
       border-right: 0;
+    }
+
+    &:last-child {
       border-bottom: 0;
     }
   }
@@ -303,9 +509,9 @@ onMounted(() => {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border-radius: 7px;
-    background: rgba(23, 109, 251, 0.08);
-    color: #176dfb;
+    border-radius: var(--v-radius-sm);
+    background: var(--el-color-primary-light-9);
+    color: var(--el-color-primary);
   }
 
   &__copy {
@@ -316,16 +522,58 @@ onMounted(() => {
 
     small {
       color: var(--v-text-tertiary);
-      font-size: 11px;
+      font-size: var(--v-font-xs);
     }
 
     strong {
       overflow: hidden;
       color: var(--v-text-primary);
-      font-size: 13px;
+      font-size: var(--v-font-sm);
       font-weight: 600;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+  }
+}
+
+.profile-projects {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+
+  &__item {
+    max-width: 240px;
+    min-height: 30px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 9px;
+    border: 1px solid var(--v-surface-border);
+    border-radius: var(--v-radius-sm);
+    background: var(--v-surface-bg-subtle);
+    color: var(--v-text-secondary);
+    font: inherit;
+    font-size: var(--v-font-xs);
+    font-weight: 600;
+    cursor: pointer;
+
+    span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    svg {
+      flex: 0 0 auto;
+    }
+
+    &:hover,
+    &:focus-visible {
+      border-color: var(--el-color-primary-light-5);
+      background: var(--el-color-primary-light-9);
+      color: var(--el-color-primary);
+      outline: none;
     }
   }
 }
@@ -338,7 +586,7 @@ onMounted(() => {
   justify-content: center;
   gap: 9px;
   color: var(--v-text-secondary);
-  font-size: 13px;
+  font-size: var(--v-font-sm);
 
   &__icon {
     width: 48px;
@@ -353,19 +601,38 @@ onMounted(() => {
 
   strong {
     color: var(--v-text-primary);
-    font-size: 14px;
+    font-size: var(--v-font-md);
+  }
+
+  &--secrets {
+    border: 1px dashed var(--v-surface-border);
+    border-radius: var(--v-radius-md);
+    background: var(--v-surface-bg);
   }
 }
 
 @media (max-width: 700px) {
   .profile-page {
-    &__toolbar {
-      padding: 0 16px;
+    &__toolbar-inner {
+      width: calc(100% - 32px);
+    }
+
+    &__tabs {
+      gap: 0;
+    }
+
+    &__tab {
+      min-width: 104px;
+      padding: 0 10px;
     }
 
     &__content {
       width: calc(100% - 32px);
       margin: 16px auto;
+
+      &--secrets {
+        width: calc(100% - 32px);
+      }
     }
   }
 
@@ -378,7 +645,7 @@ onMounted(() => {
     width: 68px;
     height: 68px;
     flex-basis: 68px;
-    font-size: 24px;
+    font-size: var(--v-font-2xl);
   }
 
   .profile-details {

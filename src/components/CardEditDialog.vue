@@ -2,6 +2,7 @@
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import ManagerSelect from '@/components/ManagerSelect.vue'
+import ResourceAuditPanel from '@/components/ResourceAuditPanel.vue'
 import { isValidKeyPattern, type EditKeyPatternMode } from '@/utils/secret-key-pattern'
 
 export interface CardEditPayload {
@@ -22,8 +23,19 @@ const props = withDefaults(
     managerProjectId?: string
     showKeyPattern?: boolean
     keyPattern?: string
+    auditResourceType?: string
+    auditResourceId?: string
+    auditResourceName?: string
   }>(),
-  { managerId: '', managerProjectId: '', showKeyPattern: false, keyPattern: '' },
+  {
+    managerId: '',
+    managerProjectId: '',
+    showKeyPattern: false,
+    keyPattern: '',
+    auditResourceType: '',
+    auditResourceId: '',
+    auditResourceName: '',
+  },
 )
 
 const emit = defineEmits<{
@@ -37,6 +49,7 @@ const dialogVisible = computed({
 })
 
 const formRef = ref<FormInstance>()
+const activeTab = ref<'basic' | 'audit'>('basic')
 const form = reactive({
   name: '',
   remark: '',
@@ -77,8 +90,10 @@ const hasChanges = computed(
     (props.showKeyPattern &&
       (form.keyPatternMode === 'none' ? '' : form.keyPattern) !== props.keyPattern),
 )
+const hasAuditTab = computed(() => Boolean(props.auditResourceType && props.auditResourceId))
 
 function resetForm(): void {
+  activeTab.value = 'basic'
   form.name = props.name
   form.remark = props.remark
   form.managerId = props.managerId
@@ -88,7 +103,7 @@ function resetForm(): void {
 }
 
 async function submit(): Promise<void> {
-  if (props.submitting || !hasChanges.value) return
+  if (props.submitting || activeTab.value !== 'basic' || !hasChanges.value) return
   const valid = await formRef.value?.validate().catch(() => false)
   if (!valid) return
   emit('submit', {
@@ -113,7 +128,7 @@ watch(
 <template>
   <el-dialog
     v-model="dialogVisible"
-    width="620px"
+    :width="hasAuditTab ? '860px' : '620px'"
     class="vault-card-edit-dialog"
     :close-on-click-modal="false"
     :close-on-press-escape="!submitting"
@@ -123,11 +138,32 @@ watch(
     @closed="resetForm"
   >
     <template #header>
-      <strong class="vault-card-edit-dialog__title">{{ title }}</strong>
+      <nav v-if="hasAuditTab" class="tenant-edit-tabs" :aria-label="`${title}菜单`">
+        <button
+          type="button"
+          class="tenant-edit-tabs__item"
+          :class="{ 'is-active': activeTab === 'basic' }"
+          :aria-current="activeTab === 'basic' ? 'page' : undefined"
+          @click="activeTab = 'basic'"
+        >
+          基础信息
+        </button>
+        <button
+          type="button"
+          class="tenant-edit-tabs__item"
+          :class="{ 'is-active': activeTab === 'audit' }"
+          :aria-current="activeTab === 'audit' ? 'page' : undefined"
+          @click="activeTab = 'audit'"
+        >
+          操作记录
+        </button>
+      </nav>
+      <strong v-else class="vault-card-edit-dialog__title">{{ title }}</strong>
     </template>
 
     <div class="vault-card-edit-dialog__body">
       <el-form
+        v-show="activeTab === 'basic'"
         ref="formRef"
         :model="form"
         :rules="rules"
@@ -181,11 +217,29 @@ watch(
           />
         </el-form-item>
       </el-form>
+
+      <ResourceAuditPanel
+        v-if="hasAuditTab"
+        v-show="activeTab === 'audit'"
+        class="vault-card-edit-dialog__audit"
+        :active="dialogVisible && activeTab === 'audit'"
+        :resource-type="auditResourceType"
+        :resource-id="auditResourceId"
+        :resource-name="auditResourceName || name"
+      />
     </div>
 
     <template #footer>
-      <el-button :disabled="submitting" @click="dialogVisible = false">取消</el-button>
-      <el-button type="primary" :loading="submitting" :disabled="!hasChanges" @click="submit">
+      <el-button :disabled="submitting" @click="dialogVisible = false">
+        {{ activeTab === 'basic' ? '取消' : '关闭' }}
+      </el-button>
+      <el-button
+        v-if="activeTab === 'basic'"
+        type="primary"
+        :loading="submitting"
+        :disabled="!hasChanges"
+        @click="submit"
+      >
         保存
       </el-button>
     </template>

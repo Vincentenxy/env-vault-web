@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, type Component, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
-import { FolderOpen, Globe, History, KeyRound, Maximize2 } from '@lucide/vue'
+import { ClipboardList, FolderOpen, Globe, History, KeyRound, Maximize2 } from '@lucide/vue'
 import {
   ArrowDown,
   ArrowLeft,
@@ -28,6 +29,7 @@ import CardEditDialog, { type CardEditPayload } from '@/components/CardEditDialo
 import ManagerSelect from '@/components/ManagerSelect.vue'
 import { useManagerSelection } from '@/composables/use-manager-selection'
 import { listEnvironments } from '@/api/env'
+import { listAuditRecords } from '@/api/audit'
 import { getOrganizationsWithProjects } from '@/api/organization'
 import { createSecretFolder, deleteFolder, listFolders, updateFolder } from '@/api/folder'
 import {
@@ -46,6 +48,7 @@ import {
   type UpdateFolderGroupSecretItemRequest,
 } from '@/api/secret'
 import { ApiError } from '@/types/api'
+import type { AuditRecord } from '@/types/audit'
 import type { Folder } from '@/types/folder'
 import { formatDateTime } from '@/utils/format'
 import {
@@ -63,6 +66,8 @@ interface ProjectOption {
   id: string
   orgId: string
   name: string
+  isCollaboration?: boolean
+  expireAt?: string | null
 }
 
 interface OrganizationOption {
@@ -133,10 +138,20 @@ interface HistoryVersionSelection {
   item: SecretHistoryItem
 }
 
+interface SecretAuditSelection {
+  key: string
+  groupId: string
+}
+
 interface BatchVersionEntry {
   environment: VaultEnvironment
   item: SecretHistoryItem
 }
+
+const route = useRoute()
+const router = useRouter()
+
+const collaborationOrganizationId = '__collaboration__'
 
 const organizations = ref<OrganizationOption[]>([])
 const { resolveManagerId } = useManagerSelection()
@@ -195,6 +210,14 @@ const historyBatchLoadFailed = ref(false)
 const historyBatchLoadedId = ref('')
 const historyBatchDetails = ref<SecretBatchDetailItem[]>([])
 const historyBatchValueVisibility = reactive<Record<string, boolean>>({})
+const auditDialogVisible = ref(false)
+const auditSelection = ref<SecretAuditSelection | null>(null)
+const auditRecords = ref<AuditRecord[]>([])
+const auditTotal = ref(0)
+const auditPageNum = ref(1)
+const auditLoading = ref(false)
+const auditLoadingMore = ref(false)
+const auditLoadFailed = ref(false)
 const keyForm = reactive({
   key: '',
   remark: '',
@@ -235,14 +258,17 @@ const createFolderDraftStoragePrefix = 'env-vault:secret:create-folder-draft'
 let secretRequestSequence = 0
 let historyRequestSequence = 0
 let historyBatchRequestSequence = 0
+let auditRequestSequence = 0
 const historyWindowDuration = 5 * 60 * 1000
 const historyPageSize = 10
+const auditPageSize = 20
 
 const historyHasMore = computed(() =>
   Object.values(historyData.value).some(
     (history) => Number(history?.total) > (history?.list?.length ?? 0),
   ),
 )
+const auditHasMore = computed(() => auditRecords.value.length < auditTotal.value)
 
 const createFolderRules: FormRules<typeof createFolderForm> = {
   projectId: [
@@ -468,7 +494,7 @@ const activeRows = computed(() => {
   const keyword = folderSearch.value.trim().toLowerCase()
   return keyword ? rows.filter((row) => row.key.toLowerCase().includes(keyword)) : rows
 })
-const operationColumnWidth = computed(() => (editingKey.value ? 420 : 156))
+const operationColumnWidth = computed(() => (editingKey.value ? 420 : 190))
 const secretTableMinWidth = computed(
   () => 230 + environments.value.length * 220 + 220 + operationColumnWidth.value,
 )
@@ -777,20 +803,39 @@ async function loadScopeOptions(): Promise<void> {
   try {
     const response = await getOrganizationsWithProjects()
     const orgList = Array.isArray(response.orgList) ? response.orgList : []
+    const collaborationProjectList = Array.isArray(response.collaborationProjectList)
+      ? response.collaborationProjectList
+      : []
     organizations.value = orgList.map((organization) => ({
       id: organization.id,
       name: organization.name || '未命名组织',
     }))
-    projects.value = orgList.flatMap((organization) =>
+    if (collaborationProjectList.length > 0) {
+      organizations.value.push({ id: collaborationOrganizationId, name: '协作组织' })
+    }
+    const organizationProjects = orgList.flatMap((organization) =>
       (Array.isArray(organization.projectList) ? organization.projectList : []).map((project) => ({
         id: project.id,
         orgId: organization.id,
         name: project.name || '未命名项目',
       })),
     )
-    selectedOrgId.value = organizations.value[0]?.id ?? ''
+    const collaborationProjects = collaborationProjectList.map((project) => ({
+      id: project.id,
+      orgId: collaborationOrganizationId,
+      name: project.name || '未命名项目',
+      isCollaboration: true,
+      expireAt: project.expireAt || null,
+    }))
+    projects.value = [...organizationProjects, ...collaborationProjects]
+    const queryProjectId =
+      typeof route.query.projectId === 'string' ? route.query.projectId.trim() : ''
+    const queryProject = projects.value.find((project) => project.id === queryProjectId)
+    selectedOrgId.value = queryProject?.orgId ?? organizations.value[0]?.id ?? ''
     selectedProjectId.value =
-      projects.value.find((project) => project.orgId === selectedOrgId.value)?.id ?? ''
+      queryProject?.id ??
+      projects.value.find((project) => project.orgId === selectedOrgId.value)?.id ??
+      ''
     folderPage.value = 1
     await loadProjectEnvironments(selectedProjectId.value)
     await loadFolders()
@@ -804,6 +849,30 @@ async function loadScopeOptions(): Promise<void> {
   } finally {
     scopeLoading.value = false
   }
+}
+
+function collaborationProjectExpiry(projectId: string): string {
+  const project = projects.value.find((item) => item.id === projectId)
+  if (!project?.isCollaboration) return ''
+  return project.expireAt ? `到期 ${formatDateTime(project.expireAt)}` : '长期有效'
+}
+
+function isCollaborationProjectExpiring(projectId: string): boolean {
+  const project = projects.value.find((item) => item.id === projectId)
+  if (!project?.isCollaboration || !project.expireAt) return false
+  const remaining = new Date(project.expireAt).getTime() - Date.now()
+  return Number.isFinite(remaining) && remaining >= 0 && remaining <= 7 * 24 * 60 * 60 * 1000
+}
+
+function syncSelectedProjectToRoute(projectId: string): void {
+  const currentProjectId =
+    typeof route.query.projectId === 'string' ? route.query.projectId.trim() : ''
+  if (currentProjectId === projectId) return
+
+  const query = { ...route.query }
+  if (projectId) query.projectId = projectId
+  else delete query.projectId
+  void router.replace({ name: 'SecretList', query })
 }
 
 function ownerColor(owner: string): string {
@@ -829,14 +898,18 @@ function selectOrganization(id: string): void {
   folderPage.value = 1
   cascadeLevel.value = 'project'
   cascadeSearch.value = ''
+  syncSelectedProjectToRoute(selectedProjectId.value)
   void reloadProjectData()
 }
 
 function selectProject(id: string): void {
+  const project = projects.value.find((item) => item.id === id)
+  if (project) selectedOrgId.value = project.orgId
   selectedProjectId.value = id
   folderPage.value = 1
   cascadeOpen.value = false
   cascadeSearch.value = ''
+  syncSelectedProjectToRoute(id)
   void reloadProjectData()
 }
 
@@ -1875,6 +1948,132 @@ function resetHistoryVersionDetail(): void {
   clearHistoryBatchValueVisibility()
 }
 
+function auditActionLabel(actionCode: string): string {
+  const labels: Record<string, string> = {
+    'secret.create': '创建密钥',
+    'secret.update': '更新密钥',
+    'secret.delete': '删除密钥',
+    'secret.read': '查看密钥详情',
+    'secret.history.read': '查看历史版本',
+  }
+  return labels[actionCode] ?? actionCode
+}
+
+function auditFieldLabel(field: string): string {
+  if (field === 'key') return '密钥名称'
+  if (field === 'remark') return '说明'
+  if (field === 'isDeleted') return '删除状态'
+  if (field.startsWith('values.')) {
+    const environmentCode = field.slice('values.'.length)
+    const environment = environments.value.find((item) => item.code === environmentCode)
+    return `${environment?.name ?? environmentCode.toUpperCase()}环境值`
+  }
+  return field
+}
+
+function formatAuditValue(value: unknown): string {
+  if (value === undefined || value === null) return '未设置'
+  if (value === '') return '空值'
+  if (typeof value === 'boolean') return value ? '是' : '否'
+  if (typeof value === 'string' || typeof value === 'number') return String(value)
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return '—'
+  }
+}
+
+function auditActorName(record: AuditRecord): string {
+  return (
+    record.createByName || record.createBy || (record.actorType === 'system' ? '系统' : '未知用户')
+  )
+}
+
+function auditEntryLabel(record: AuditRecord): string {
+  if (record.callerType === 'sdk') {
+    const sdk = [record.callerName || 'SDK', record.callerVersion].filter(Boolean).join(' ')
+    return `${sdk} / ${record.entryType.toUpperCase()}`
+  }
+  const labels: Record<string, string> = {
+    http: 'Web / HTTP',
+    grpc: '服务 / gRPC',
+    sdk: '进程内 SDK',
+    internal: '内部调用',
+    job: '系统任务',
+  }
+  return labels[record.entryType] ?? record.entryType
+}
+
+function resetSecretAuditDialog(): void {
+  auditRequestSequence += 1
+  auditSelection.value = null
+  auditRecords.value = []
+  auditTotal.value = 0
+  auditPageNum.value = 1
+  auditLoading.value = false
+  auditLoadingMore.value = false
+  auditLoadFailed.value = false
+}
+
+async function loadSecretAudit(reset = true): Promise<void> {
+  const selection = auditSelection.value
+  if (!selection || auditLoading.value || auditLoadingMore.value) return
+
+  const pageNum = reset ? 1 : auditPageNum.value + 1
+  const requestSequence = ++auditRequestSequence
+  if (reset) {
+    auditLoading.value = true
+    auditLoadFailed.value = false
+  } else {
+    auditLoadingMore.value = true
+  }
+
+  try {
+    const response = await listAuditRecords({
+      resourceType: 'secret',
+      resourceId: selection.groupId,
+      pageNum,
+      pageSize: auditPageSize,
+    })
+    if (
+      requestSequence !== auditRequestSequence ||
+      auditSelection.value?.groupId !== selection.groupId
+    ) {
+      return
+    }
+    const records = reset ? response.list : [...auditRecords.value, ...response.list]
+    auditRecords.value = [...new Map(records.map((record) => [record.id, record])).values()]
+    auditTotal.value = Number(response.total) || 0
+    auditPageNum.value = pageNum
+  } catch (error) {
+    if (requestSequence !== auditRequestSequence) return
+    if (reset) auditLoadFailed.value = true
+    if (!(error instanceof ApiError)) ElMessage.error('操作日志加载失败')
+  } finally {
+    if (requestSequence === auditRequestSequence) {
+      auditLoading.value = false
+      auditLoadingMore.value = false
+    }
+  }
+}
+
+function openSecretAudit(row: SecretRow): void {
+  const folder = activeSecretFolder.value
+  const metadata = folder ? secretRowMeta[folder.id]?.[row.key] : undefined
+  if (!metadata?.groupId) {
+    ElMessage.warning('当前密钥缺少 groupId，无法查询操作日志')
+    return
+  }
+
+  auditSelection.value = { key: row.key, groupId: metadata.groupId }
+  auditRecords.value = []
+  auditTotal.value = 0
+  auditPageNum.value = 1
+  auditLoadFailed.value = false
+  auditDialogVisible.value = true
+  void loadSecretAudit(true)
+}
+
 async function deleteKey(row: SecretRow): Promise<void> {
   const folder = activeSecretFolder.value
   const metadata = folder ? secretRowMeta[folder.id]?.[row.key] : undefined
@@ -1966,6 +2165,21 @@ watch(folderListSearch, () => {
 
 watch(createFolderForm, persistCreateFolderDraft, { deep: true })
 watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
+watch(
+  () => route.query.projectId,
+  (value) => {
+    const projectId = typeof value === 'string' ? value.trim() : ''
+    if (!projectId || projectId === selectedProjectId.value) return
+    const project = projects.value.find((item) => item.id === projectId)
+    if (!project) return
+
+    selectedOrgId.value = project.orgId
+    selectedProjectId.value = project.id
+    folderPage.value = 1
+    cascadeOpen.value = false
+    void reloadProjectData()
+  },
+)
 </script>
 
 <template>
@@ -2029,7 +2243,17 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
                 }"
                 @click="selectCascadeItem(item.id)"
               >
-                <span>{{ item.name }}</span>
+                <span class="vault-cascade__item-copy">
+                  <span>{{ item.name }}</span>
+                  <small
+                    v-if="cascadeLevel === 'project' && collaborationProjectExpiry(item.id)"
+                    :class="{
+                      'is-expiring': isCollaborationProjectExpiring(item.id),
+                    }"
+                  >
+                    {{ collaborationProjectExpiry(item.id) }}
+                  </small>
+                </span>
                 <el-icon v-if="cascadeLevel === 'organization'"><ArrowRight /></el-icon>
                 <el-icon v-else-if="item.id === selectedProjectId" class="vault-cascade__check"
                   ><Check
@@ -2603,6 +2827,19 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
                         </el-icon>
                       </button>
                     </el-tooltip>
+                    <el-tooltip content="操作日志" placement="top">
+                      <button
+                        type="button"
+                        class="is-audit"
+                        :disabled="
+                          !!editingKey || keySubmitting || !!deletingKey || !!historyLoadingKey
+                        "
+                        aria-label="查看密钥操作日志"
+                        @click="openSecretAudit(row)"
+                      >
+                        <el-icon><ClipboardList :stroke-width="1.8" /></el-icon>
+                      </button>
+                    </el-tooltip>
                     <el-tooltip content="删除" placement="top">
                       <button
                         type="button"
@@ -2753,6 +2990,9 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
       :manager-project-id="editingFolder?.projectId ?? ''"
       :key-pattern="editingFolder?.keyPattern ?? ''"
       show-key-pattern
+      audit-resource-type="folder"
+      :audit-resource-id="editingFolder?.folderGroupId ?? ''"
+      :audit-resource-name="editingFolder?.name ?? ''"
       :submitting="folderEditSubmitting"
       @submit="submitFolderEdit"
     />
@@ -3020,6 +3260,127 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
 
       <template #footer>
         <el-button type="primary" @click="historyDetailVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="auditDialogVisible"
+      class="vault-card-edit-dialog vault-audit-log-dialog"
+      :close-on-click-modal="false"
+      destroy-on-close
+      align-center
+      @closed="resetSecretAuditDialog"
+    >
+      <template #header>
+        <div class="vault-audit-log-dialog__title">
+          <el-icon><ClipboardList :stroke-width="1.8" /></el-icon>
+          <span>操作日志</span>
+        </div>
+      </template>
+
+      <div class="vault-audit-log-dialog__body">
+        <header class="vault-audit-log-dialog__summary">
+          <span class="vault-audit-log-dialog__secret">
+            <el-icon><ElementKey /></el-icon>
+            <code>{{ auditSelection?.key }}</code>
+          </span>
+          <span>{{ auditTotal }} 条记录</span>
+        </header>
+
+        <div
+          v-loading="auditLoading"
+          element-loading-text="正在加载操作日志..."
+          class="vault-audit-log-dialog__content"
+        >
+          <div
+            v-if="auditLoadFailed && !auditLoading"
+            class="vault-audit-log-dialog__state is-error"
+          >
+            <strong>操作日志加载失败</strong>
+            <el-button type="primary" link @click="loadSecretAudit(true)">重新加载</el-button>
+          </div>
+          <div
+            v-else-if="!auditLoading && !auditRecords.length"
+            class="vault-audit-log-dialog__state"
+          >
+            暂无操作日志
+          </div>
+          <ol v-else class="vault-audit-log-list">
+            <li v-for="record in auditRecords" :key="record.id" class="vault-audit-log-item">
+              <span
+                class="vault-audit-log-item__marker"
+                :class="{ 'is-failure': record.resultCode === 'failure' }"
+                aria-hidden="true"
+              ></span>
+              <div class="vault-audit-log-item__main">
+                <header class="vault-audit-log-item__header">
+                  <span class="vault-audit-log-item__action">
+                    <strong>{{ auditActionLabel(record.actionCode) }}</strong>
+                    <span
+                      class="vault-audit-log-item__result"
+                      :class="{ 'is-failure': record.resultCode === 'failure' }"
+                    >
+                      {{ record.resultCode === 'success' ? '成功' : '失败' }}
+                    </span>
+                  </span>
+                  <time>{{ formatDateTime(record.createAt) || '—' }}</time>
+                </header>
+
+                <div class="vault-audit-log-item__meta">
+                  <span
+                    ><strong>{{ auditActorName(record) }}</strong> 执行</span
+                  >
+                  <span>{{ auditEntryLabel(record) }}</span>
+                </div>
+
+                <ul v-if="record.changeDetail.length" class="vault-audit-change-list">
+                  <li v-for="change in record.changeDetail" :key="change.field">
+                    <span class="vault-audit-change-list__field">{{
+                      auditFieldLabel(change.field)
+                    }}</span>
+                    <span v-if="change.redacted" class="vault-audit-change-list__redacted">
+                      已修改，内容已脱敏
+                    </span>
+                    <span v-else class="vault-audit-change-list__values">
+                      <code>{{ formatAuditValue(change.before) }}</code>
+                      <el-icon><ArrowRight /></el-icon>
+                      <code>{{ formatAuditValue(change.after) }}</code>
+                    </span>
+                  </li>
+                </ul>
+                <div
+                  v-else-if="record.resultCode === 'success'"
+                  class="vault-audit-log-item__no-change"
+                >
+                  本次操作未产生字段变化
+                </div>
+
+                <div v-if="record.resultCode === 'failure'" class="vault-audit-log-item__failure">
+                  {{ record.failureReason || '操作失败' }}
+                </div>
+
+                <footer v-if="record.batchId || record.correlationId">
+                  <span v-if="record.batchId">批次 {{ record.batchId }}</span>
+                  <span v-if="record.correlationId">请求 {{ record.correlationId }}</span>
+                </footer>
+              </div>
+            </li>
+          </ol>
+
+          <div v-if="auditHasMore && !auditLoadFailed" class="vault-audit-log-dialog__load-more">
+            <el-button
+              :loading="auditLoadingMore"
+              :disabled="auditLoading"
+              @click="loadSecretAudit(false)"
+            >
+              加载更多
+            </el-button>
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <el-button type="primary" @click="auditDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
 
@@ -4940,6 +5301,21 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
         }
       }
 
+      &.is-audit {
+        color: #176dfb;
+
+        .el-icon,
+        :deep(svg) {
+          color: #176dfb;
+        }
+
+        &:hover:not(:disabled) {
+          border-color: rgba(23, 109, 251, 0.24);
+          background: rgba(23, 109, 251, 0.08);
+          color: #176dfb;
+        }
+      }
+
       &.is-history {
         color: #d97706;
 
@@ -4995,6 +5371,274 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
           color: #86efac;
         }
       }
+    }
+  }
+}
+
+.vault-audit-log-dialog {
+  &__title,
+  &__summary,
+  &__secret,
+  &__load-more {
+    display: flex;
+    align-items: center;
+  }
+
+  &__title {
+    gap: 9px;
+    color: var(--v-text-primary);
+    font-size: var(--v-font-lg);
+    font-weight: 700;
+
+    .el-icon {
+      color: #176dfb;
+      font-size: 18px;
+    }
+  }
+
+  &__body {
+    width: 100%;
+    min-height: 500px;
+    min-width: 0;
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+  }
+
+  &__summary {
+    min-height: 58px;
+    flex: 0 0 auto;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 0 22px;
+    border-bottom: 1px solid var(--v-divider);
+
+    > span:last-child {
+      color: var(--v-text-tertiary);
+      font-size: var(--v-font-xs);
+    }
+  }
+
+  &__secret {
+    min-width: 0;
+    gap: 8px;
+
+    .el-icon {
+      flex: 0 0 auto;
+      color: #176dfb;
+    }
+
+    code {
+      overflow: hidden;
+      color: var(--v-text-primary);
+      font-size: var(--v-font-md);
+      font-weight: 700;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+
+  &__content {
+    min-height: 442px;
+    flex: 1 1 auto;
+    padding: 0 22px 18px;
+    overflow-y: auto;
+  }
+
+  &__state {
+    min-height: 380px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: var(--v-text-tertiary);
+    font-size: var(--v-font-sm);
+
+    &.is-error strong {
+      color: #ef4444;
+    }
+  }
+
+  &__load-more {
+    justify-content: center;
+    padding-top: 16px;
+
+    .el-button {
+      min-width: 96px;
+      border-radius: var(--v-radius-dialog-action);
+    }
+  }
+}
+
+.vault-audit-log-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vault-audit-log-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  column-gap: 12px;
+  padding: 20px 0;
+  border-bottom: 1px solid var(--v-divider);
+
+  &__marker {
+    width: 10px;
+    height: 10px;
+    position: relative;
+    margin-top: 5px;
+    border: 2px solid var(--v-surface-bg);
+    border-radius: 50%;
+    background: #059669;
+    box-shadow: 0 0 0 2px rgba(5, 150, 105, 0.2);
+
+    &.is-failure {
+      background: #ef4444;
+      box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.18);
+    }
+  }
+
+  &__main {
+    min-width: 0;
+  }
+
+  &__header,
+  &__action,
+  &__meta,
+  footer {
+    display: flex;
+    align-items: center;
+  }
+
+  &__header {
+    justify-content: space-between;
+    gap: 16px;
+
+    time {
+      flex: 0 0 auto;
+      color: var(--v-text-tertiary);
+      font-size: var(--v-font-xs);
+    }
+  }
+
+  &__action {
+    min-width: 0;
+    gap: 8px;
+
+    strong {
+      overflow: hidden;
+      color: var(--v-text-primary);
+      font-size: var(--v-font-md);
+      font-weight: 700;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+
+  &__result {
+    min-height: 21px;
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 7px;
+    border-radius: 4px;
+    background: rgba(5, 150, 105, 0.1);
+    color: #047857;
+    font-size: var(--v-font-xs);
+    font-weight: 600;
+
+    &.is-failure {
+      background: rgba(239, 68, 68, 0.09);
+      color: #dc2626;
+    }
+  }
+
+  &__meta {
+    flex-wrap: wrap;
+    gap: 8px 18px;
+    margin-top: 7px;
+    color: var(--v-text-secondary);
+    font-size: var(--v-font-xs);
+
+    strong {
+      color: var(--v-text-primary);
+      font-weight: 600;
+    }
+  }
+
+  &__no-change,
+  &__failure {
+    margin-top: 13px;
+    color: var(--v-text-tertiary);
+    font-size: var(--v-font-sm);
+  }
+
+  &__failure {
+    padding: 8px 10px;
+    border-left: 3px solid #ef4444;
+    background: rgba(239, 68, 68, 0.05);
+    color: #dc2626;
+  }
+
+  footer {
+    flex-wrap: wrap;
+    gap: 5px 16px;
+    margin-top: 12px;
+    color: var(--v-text-tertiary);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 10px;
+
+    span {
+      overflow-wrap: anywhere;
+    }
+  }
+}
+
+.vault-audit-change-list {
+  margin: 14px 0 0;
+  padding: 0;
+  border-top: 1px solid var(--v-divider);
+  list-style: none;
+
+  li {
+    min-height: 40px;
+    display: grid;
+    grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
+    align-items: center;
+    gap: 12px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--v-divider);
+    font-size: var(--v-font-xs);
+  }
+
+  &__field {
+    color: var(--v-text-secondary);
+    font-weight: 600;
+  }
+
+  &__redacted {
+    color: #d97706;
+  }
+
+  &__values {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 16px minmax(0, 1fr);
+    align-items: center;
+    gap: 7px;
+
+    code {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      color: var(--v-text-primary);
+      white-space: pre-wrap;
+    }
+
+    .el-icon {
+      color: var(--v-text-tertiary);
+      font-size: 12px;
     }
   }
 }
@@ -5277,6 +5921,31 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
     color: #16a34a;
   }
 
+  &__item-copy {
+    display: inline-flex;
+    min-width: 0;
+    align-items: center;
+    gap: 8px;
+
+    > span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    small {
+      flex: 0 0 auto;
+      color: var(--v-text-tertiary);
+      font-size: 11px;
+      font-weight: 400;
+
+      &.is-expiring {
+        color: #ef4444;
+        font-weight: 600;
+      }
+    }
+  }
+
   &__empty {
     padding: 24px 0;
     color: var(--v-text-tertiary);
@@ -5414,11 +6083,71 @@ watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
       display: none;
     }
   }
+
+  .vault-audit-log-dialog {
+    &__summary,
+    &__content {
+      padding-right: 14px;
+      padding-left: 14px;
+    }
+
+    &__summary {
+      align-items: flex-start;
+      flex-direction: column;
+      justify-content: center;
+      gap: 4px;
+    }
+  }
+
+  .vault-audit-log-item {
+    grid-template-columns: 14px minmax(0, 1fr);
+    column-gap: 8px;
+
+    &__header {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 6px;
+    }
+  }
+
+  .vault-audit-change-list {
+    li {
+      grid-template-columns: 1fr;
+      gap: 5px;
+    }
+
+    &__values {
+      grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr);
+    }
+  }
 }
 </style>
 
 <style lang="scss">
 /* Element Plus teleports dialogs to body, so the shell/footer overrides must be global. */
+/* 行内编辑原先按深色界面设计；白天模式单独恢复为浅色表格语义。 */
+html:not(.dark) .vault-table tbody tr.is-editing {
+  background: var(--v-surface-bg-subtle);
+
+  &:hover {
+    background: var(--v-surface-bg-subtle);
+  }
+
+  td {
+    border-bottom-color: var(--v-divider);
+  }
+
+  .vault-table__key {
+    .el-icon {
+      color: var(--v-text-secondary);
+    }
+
+    code {
+      color: var(--v-text-primary);
+    }
+  }
+}
+
 .vault-key-dialog.el-dialog {
   --el-dialog-border-radius: var(--v-radius-dialog);
   --el-dialog-padding-primary: 0;

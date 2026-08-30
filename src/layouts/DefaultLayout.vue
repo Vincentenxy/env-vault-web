@@ -2,7 +2,19 @@
 import { computed, ref, watch, type Component } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import { OfficeBuilding } from '@element-plus/icons-vue'
-import { Bell, ChevronDown, KeyRound, LogOut, Moon, Settings, Sun, UserRound } from '@lucide/vue'
+import {
+  Bell,
+  ChevronDown,
+  KeyRound,
+  LogOut,
+  Moon,
+  Settings,
+  Sun,
+  UserRound,
+  UsersRound,
+} from '@lucide/vue'
+import { Permission } from '@/constants/permission'
+import { usePermission } from '@/composables/use-permission'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 
@@ -16,7 +28,9 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const theme = useThemeStore()
+const { has } = usePermission()
 const settingsExpanded = ref(true)
+const canManageUsers = computed(() => has(Permission.UserManage))
 
 const navItems: NavItem[] = [
   { path: '/app/organizations', label: '组织管理', icon: OfficeBuilding },
@@ -215,6 +229,18 @@ async function onLogout(): Promise<void> {
           >
             <el-icon><UserRound :stroke-width="1.8" /></el-icon>
             <span>个人信息</span>
+          </button>
+          <button
+            v-if="canManageUsers"
+            type="button"
+            class="ops-layout__nav-item ops-layout__nav-item--child"
+            :class="{ 'is-active': isNavActive('/app/settings/users') }"
+            aria-label="用户管理"
+            title="用户管理"
+            @click="navigate('/app/settings/users')"
+          >
+            <el-icon><UsersRound :stroke-width="1.8" /></el-icon>
+            <span>用户管理</span>
           </button>
         </div>
       </nav>

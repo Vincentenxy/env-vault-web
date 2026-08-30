@@ -9,6 +9,7 @@ export const Permission = {
   FolderDelete: 'folder:delete',
   SecretCreate: 'secret:create',
   SecretUpdate: 'secret:update',
+  UserManage: 'user:manage',
 } as const
 
 export type PermissionCode = (typeof Permission)[keyof typeof Permission]

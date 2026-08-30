@@ -21,6 +21,31 @@ export interface UserListItem {
   userName?: string
   email?: string
   isBlocked?: boolean
+  projectRelation?: {
+    memberType: 'internal' | 'external'
+    expireAt: string | null
+  }
+}
+
+export interface UserManagementListRequest extends PageRequest {
+  tenantId?: string
+  keyword?: string
+}
+
+export interface UserManagementListItem {
+  id: string
+  userId: string
+  nickname: string
+  username: string
+  email: string
+  phone: string
+  tenantId: string
+  tenantName: string
+  orgId: string
+  orgName: string
+  isBlocked: boolean
+  createAt: string
+  updateAt: string
 }
 
 export type UserResourceType = 'tenant' | 'org' | 'project'
@@ -50,6 +75,13 @@ export async function listUsers(req: ListUsersRequest = {}): Promise<PageResp<Us
     total: response.length,
     list: response,
   }
+}
+
+/** POST /api/v1/user/manage/list */
+export function listManagedUsers(
+  req: UserManagementListRequest = {},
+): Promise<PageResp<UserManagementListItem>> {
+  return http.post('/user/manage/list', req)
 }
 
 /** POST /api/v1/user/allocate */

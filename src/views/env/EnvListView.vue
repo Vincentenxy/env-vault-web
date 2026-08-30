@@ -5,6 +5,7 @@ import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import {
   ArrowRight,
   CircleClose,
+  Clock,
   FolderOpened,
   Plus,
   Refresh,
@@ -22,6 +23,7 @@ import { Permission } from '@/constants/permission'
 import type { Organization } from '@/types/organization'
 import type { Project } from '@/types/project'
 import type { Environment } from '@/types/env'
+import ResourceAuditDialog from '@/components/ResourceAuditDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -171,10 +173,17 @@ async function onCreateSubmit(): Promise<void> {
 // ==================== 查看 ====================
 const viewDialogVisible = ref(false)
 const viewTarget = ref<Environment | null>(null)
+const auditDialogVisible = ref(false)
+const auditTarget = ref<Environment | null>(null)
 
 function openView(row: Environment): void {
   viewTarget.value = row
   viewDialogVisible.value = true
+}
+
+function openAudit(row: Environment): void {
+  auditTarget.value = row
+  auditDialogVisible.value = true
 }
 
 // ==================== 跳转到项目详情(目录与密钥在项目详情页内浏览) ====================
@@ -349,6 +358,15 @@ watch(
         </el-table-column>
         <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
+            <el-tooltip content="操作日志" placement="top">
+              <el-button
+                link
+                type="primary"
+                :icon="Clock"
+                aria-label="查看环境操作日志"
+                @click="openAudit(row as Environment)"
+              />
+            </el-tooltip>
             <el-button
               link
               type="primary"
@@ -478,6 +496,12 @@ watch(
         <el-button @click="viewDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
+    <ResourceAuditDialog
+      v-model="auditDialogVisible"
+      resource-type="environment"
+      :resource-id="auditTarget?.id ?? ''"
+      :resource-name="auditTarget?.name ?? ''"
+    />
   </div>
 </template>
 

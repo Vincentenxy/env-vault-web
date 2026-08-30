@@ -1,4 +1,5 @@
 import type { RouteRecordRaw } from 'vue-router'
+import { Permission } from '@/constants/permission'
 
 /**
  * 路由表。本期实际接入的页面:
@@ -10,6 +11,7 @@ import type { RouteRecordRaw } from 'vue-router'
  *  - /app/envs(环境管理)
  *  - /app/secrets(密钥管理)
  *  - /app/settings/profile(个人信息)
+ *  - /app/settings/users(用户管理)
  *
  * 注:原 /app/folders 已合并到 /app/projects/:projectId,目录管理与密钥的浏览、
  * 创建、删除都在项目详情页内完成。
@@ -68,6 +70,13 @@ export const routes: RouteRecordRaw[] = [
         name: 'UserProfile',
         component: () => import('@/views/settings/UserProfileView.vue'),
         meta: { title: '个人信息', requiresAuth: true },
+      },
+      {
+        path: 'settings/users',
+        name: 'UserManagement',
+        component: () => import('@/views/settings/UserManagementView.vue'),
+        // 权限查询接口接入后，路由守卫使用该权限跳转 /forbidden。
+        meta: { title: '用户管理', requiresAuth: true, permissions: [Permission.UserManage] },
       },
     ],
   },

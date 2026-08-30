@@ -216,7 +216,12 @@ function switchType(type: CreateResourceType): void {
 
 function onTenantChange(): void {
   form.organizationId = ''
+  if (activeType.value === 'project') form.managerId = ''
   formRef.value?.clearValidate('organizationId')
+}
+
+function onOrganizationChange(): void {
+  if (activeType.value === 'project') form.managerId = ''
 }
 
 function addEnvironment(): void {
@@ -413,6 +418,7 @@ watch([activeType, form], persistDraft, { deep: true })
               v-model="form.organizationId"
               :disabled="!form.tenantId"
               :placeholder="form.tenantId ? '请选择组织' : '请先选择租户'"
+              @change="onOrganizationChange"
             >
               <el-option
                 v-for="organization in organizationOptions"
@@ -451,7 +457,11 @@ watch([activeType, form], persistDraft, { deep: true })
         </el-form-item>
 
         <el-form-item label="管理员" prop="managerId">
-          <ManagerSelect v-model="form.managerId" :disabled="submitting" />
+          <ManagerSelect
+            v-model="form.managerId"
+            :org-id="activeType === 'project' ? form.organizationId : ''"
+            :disabled="submitting"
+          />
         </el-form-item>
 
         <el-form-item label="备注" prop="remark">

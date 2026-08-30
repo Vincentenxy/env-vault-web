@@ -5,6 +5,7 @@ import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'elem
 import {
   ArrowLeft,
   Check,
+  Clock,
   CircleClose,
   Delete,
   Document,
@@ -38,6 +39,7 @@ import type {
   BatchCreateSecretValue,
 } from '@/api/secret'
 import ManagerSelect from '@/components/ManagerSelect.vue'
+import ResourceAuditDialog from '@/components/ResourceAuditDialog.vue'
 import { useManagerSelection } from '@/composables/use-manager-selection'
 import {
   isValidKeyPattern,
@@ -92,6 +94,8 @@ const folderTreeLoading = ref(false)
 
 /** 当前选中的 folder 节点(扁平表行 / 详情都看它) */
 const selectedFolderNode = ref<FolderNode | null>(null)
+const folderAuditDialogVisible = ref(false)
+const folderAuditTarget = ref<FolderNode | null>(null)
 
 /** 视图模式:list = 列表 + 默认折叠 L2;detail = 全屏展示详情 */
 type ViewMode = 'list' | 'detail'
@@ -191,6 +195,15 @@ function onFlatRowClick(row: FlatFolderRow): void {
   activeTab.value = 'secrets'
   viewMode.value = 'detail'
   void loadSecretsOfCurrent()
+}
+
+function openFolderAudit(folder: FolderNode): void {
+  if (!folder.folderGroupId) {
+    ElMessage.warning('当前目录缺少 groupId，无法查询操作日志')
+    return
+  }
+  folderAuditTarget.value = folder
+  folderAuditDialogVisible.value = true
 }
 
 function onBackToList(): void {
@@ -1168,6 +1181,17 @@ watch(
                   </el-tag>
                 </div>
                 <div class="tab-pane__actions">
+                  <el-tooltip content="操作日志" placement="top">
+                    <el-button
+                      type="primary"
+                      plain
+                      size="small"
+                      :icon="Clock"
+                      @click="openFolderAudit(selectedFolderNode)"
+                    >
+                      操作日志
+                    </el-button>
+                  </el-tooltip>
                   <el-button
                     type="primary"
                     plain
@@ -1659,6 +1683,12 @@ watch(
         </el-button>
       </template>
     </el-dialog>
+    <ResourceAuditDialog
+      v-model="folderAuditDialogVisible"
+      resource-type="folder"
+      :resource-id="folderAuditTarget?.folderGroupId ?? ''"
+      :resource-name="folderAuditTarget?.name ?? ''"
+    />
 
     <!-- 编辑 folder Dialog -->
     <el-dialog

@@ -7,6 +7,7 @@ export interface UserOption {
   name: string
   email?: string
   disabled?: boolean
+  isExternal?: boolean
 }
 
 function firstString(...values: unknown[]): string {
@@ -24,6 +25,7 @@ function normalizeUser(user: UserListItem): UserOption | null {
     name: firstString(user.nickname, user.nickName, user.name, user.userName, id),
     email: firstString(user.email) || undefined,
     disabled: user.isBlocked,
+    isExternal: user.projectRelation?.memberType === 'external',
   }
 }
 

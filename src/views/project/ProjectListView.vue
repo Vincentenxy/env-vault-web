@@ -457,6 +457,7 @@ watch(
             placeholder="请选择"
             style="width: 100%"
             filterable
+            @change="createForm.managerId = ''"
           >
             <el-option
               v-for="o in orgOptions"
@@ -473,7 +474,11 @@ watch(
           <el-input v-model="createForm.name" placeholder="项目 A" />
         </el-form-item>
         <el-form-item label="管理员" prop="managerId">
-          <ManagerSelect v-model="createForm.managerId" :disabled="createSubmitting" />
+          <ManagerSelect
+            v-model="createForm.managerId"
+            :org-id="createForm.parentId"
+            :disabled="createSubmitting"
+          />
         </el-form-item>
         <el-form-item label="说明" prop="comment">
           <el-input v-model="createForm.comment" type="textarea" :rows="2" />
@@ -534,6 +539,9 @@ watch(
       title="编辑项目"
       :name="editTarget?.name ?? ''"
       :remark="editTarget?.remark ?? editTarget?.comment ?? ''"
+      audit-resource-type="project"
+      :audit-resource-id="editTarget?.id ?? ''"
+      :audit-resource-name="editTarget?.name ?? ''"
       :submitting="editSubmitting"
       @submit="submitProjectEdit"
     />
