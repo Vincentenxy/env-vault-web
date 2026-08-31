@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Building2, KeyRound, RefreshCw, Search, UsersRound } from '@lucide/vue'
+import { Building2, KeyRound, RefreshCw, Search, Settings, UsersRound } from '@lucide/vue'
 import { listTenants, type Tenant } from '@/api/tenant'
 import { listManagedUsers, type UserManagementListItem } from '@/api/user'
 import { formatDateTime } from '@/utils/format'
 import LockedUserSecretDialog from './components/LockedUserSecretDialog.vue'
+import UserEditDialog from './components/UserEditDialog.vue'
 
 defineOptions({ name: 'UserManagementView' })
 
@@ -24,6 +25,8 @@ const listFailed = ref(false)
 let listRequestID = 0
 const secretDialogVisible = ref(false)
 const secretTarget = ref<UserManagementListItem>()
+const editDialogVisible = ref(false)
+const editTarget = ref<UserManagementListItem>()
 
 const selectedTenantName = computed(() => {
   if (!selectedTenantID.value) return '全部租户'
@@ -133,6 +136,15 @@ function openSecretManagement(user: UserManagementListItem): void {
   if (!user.isBlocked) return
   secretTarget.value = user
   secretDialogVisible.value = true
+}
+
+function openUserEdit(user: UserManagementListItem): void {
+  editTarget.value = user
+  editDialogVisible.value = true
+}
+
+function handleUserSaved(): void {
+  void loadUsers()
 }
 
 onMounted(() => {
@@ -264,19 +276,28 @@ onMounted(() => {
             <el-table-column label="更新时间" width="168">
               <template #default="{ row }">{{ formatDateTime(row.updateAt) || '—' }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="112" fixed="right" align="center">
+            <el-table-column label="操作" width="148" fixed="right" align="center">
               <template #default="{ row }">
-                <el-button
-                  v-if="row.isBlocked"
-                  type="primary"
-                  link
-                  class="managed-user-secret-action"
-                  @click="openSecretManagement(asManagedUser(row))"
-                >
-                  <KeyRound :size="15" :stroke-width="1.8" />
-                  <span>密钥处理</span>
-                </el-button>
-                <span v-else class="managed-user-secret-action__empty">—</span>
+                <div class="managed-user-actions">
+                  <button
+                    type="button"
+                    class="managed-user-settings-action"
+                    :aria-label="`编辑${row.nickname || row.username || row.userId}的用户信息`"
+                    @click="openUserEdit(asManagedUser(row))"
+                  >
+                    <Settings :size="16" :stroke-width="1.8" />
+                  </button>
+                  <el-button
+                    v-if="row.isBlocked"
+                    type="primary"
+                    link
+                    class="managed-user-secret-action"
+                    @click="openSecretManagement(asManagedUser(row))"
+                  >
+                    <KeyRound :size="15" :stroke-width="1.8" />
+                    <span>密钥处理</span>
+                  </el-button>
+                </div>
               </template>
             </el-table-column>
           </el-table>
@@ -305,6 +326,12 @@ onMounted(() => {
     </main>
 
     <LockedUserSecretDialog v-model="secretDialogVisible" :user="secretTarget" />
+    <UserEditDialog
+      v-model="editDialogVisible"
+      :user="editTarget"
+      :tenants="tenantOptions"
+      @saved="handleUserSaved"
+    />
   </section>
 </template>
 
@@ -476,10 +503,10 @@ onMounted(() => {
 
   &__body {
     min-height: 350px;
-    overflow-x: auto;
+    overflow: hidden;
 
     :deep(.el-table) {
-      min-width: 1304px;
+      width: 100%;
     }
 
     :deep(.el-table__header th.el-table__cell) {
@@ -509,9 +536,39 @@ onMounted(() => {
   gap: 5px;
   font-size: var(--v-font-xs);
   font-weight: 600;
+}
 
-  &__empty {
-    color: var(--v-text-tertiary);
+.managed-user-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.managed-user-settings-action {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--v-surface-border);
+  border-radius: 50%;
+  background: var(--v-surface-bg);
+  color: var(--v-text-secondary);
+  cursor: pointer;
+  transition:
+    border-color 0.18s ease,
+    color 0.18s ease,
+    background-color 0.18s ease;
+
+  &:hover,
+  &:focus-visible {
+    border-color: rgb(23, 93, 251);
+    background: rgba(23, 93, 251, 0.07);
+    color: rgb(23, 93, 251);
+    outline: none;
   }
 }
 

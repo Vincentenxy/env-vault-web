@@ -590,6 +590,9 @@ onBeforeUnmount(() => {
         <div class="personal-secret-dialog__title">
           <KeyRound :size="18" :stroke-width="1.8" />
           <span>{{ formTitle }}</span>
+          <strong v-if="formMode === 'create'" class="personal-secret-dialog__warning">
+            请不要存入非工作的私人秘钥！！！
+          </strong>
         </div>
       </template>
       <el-form
@@ -1057,12 +1060,26 @@ onBeforeUnmount(() => {
 }
 
 .personal-secret-dialog__title {
+  min-width: 0;
   display: flex;
   align-items: center;
-  gap: 9px;
+  flex-wrap: wrap;
+  gap: 5px 9px;
   color: var(--v-text-primary);
   font-size: var(--v-font-lg);
   font-weight: 600;
+
+  > svg,
+  > span {
+    flex: 0 0 auto;
+  }
+}
+
+.personal-secret-dialog__warning {
+  color: var(--v-color-danger);
+  font-size: inherit;
+  font-weight: 700;
+  line-height: 1.4;
 }
 
 .personal-secret-form {

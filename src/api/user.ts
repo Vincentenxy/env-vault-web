@@ -48,6 +48,32 @@ export interface UserManagementListItem {
   updateAt: string
 }
 
+export interface UpdateManagedUserRequest {
+  userId: string
+  nickname: string
+  username: string
+  email: string
+  phone: string
+  tenantId: string | null
+  orgId: string | null
+}
+
+export interface UpdateManagedUserResult {
+  id: string
+  userId: string
+  nickname: string
+  username: string
+  email: string
+  phone: string
+  tenantId: string
+  orgId: string
+  isBlocked: boolean
+  createBy: string
+  updateBy: string
+  createAt: string
+  updateAt: string
+}
+
 export type UserResourceType = 'tenant' | 'org' | 'project'
 export type UserAllocationOperation = 'add' | 'remove'
 
@@ -82,6 +108,11 @@ export function listManagedUsers(
   req: UserManagementListRequest = {},
 ): Promise<PageResp<UserManagementListItem>> {
   return http.post('/user/manage/list', req)
+}
+
+/** POST /api/v1/user/manage/update */
+export function updateManagedUser(req: UpdateManagedUserRequest): Promise<UpdateManagedUserResult> {
+  return http.post('/user/manage/update', req)
 }
 
 /** POST /api/v1/user/allocate */

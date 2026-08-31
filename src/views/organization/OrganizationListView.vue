@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowDown,
@@ -43,6 +44,7 @@ type ResourceItem = Tenant | Organization | Project
 type CardTone = 'blue' | 'violet' | 'teal' | 'rose'
 type DeleteResourceHandler = (id: string) => Promise<unknown>
 
+const router = useRouter()
 const tenantHierarchy = ref<TenantHierarchyOption[]>([])
 const tenants = ref<Tenant[]>([])
 const organizations = ref<Organization[]>([])
@@ -511,6 +513,10 @@ function enterProject(item: Project): void {
   selectProject({ id: item.id, name: item.name })
 }
 
+function openProjectSecrets(item: Project): void {
+  void router.push({ name: 'SecretList', query: { projectId: item.id } })
+}
+
 function onPageChange(page: number): void {
   currentPage.value = page
   void loadCurrentLevel()
@@ -926,10 +932,16 @@ onBeforeUnmount(() => {
                 </span>
               </template>
               <template v-else-if="isProject(item)">
-                <span>
+                <button
+                  type="button"
+                  class="resource-card__secret-link"
+                  :aria-label="`查看${item.name}的密钥集`"
+                  @click.stop="openProjectSecrets(item)"
+                  @keydown.enter.stop
+                >
                   <el-icon><CollectionTag /></el-icon>
                   {{ projectFolderCount(item) ?? '--' }} 个密钥集
-                </span>
+                </button>
               </template>
               <template v-else>
                 <span>
@@ -1326,6 +1338,28 @@ onBeforeUnmount(() => {
 
     .el-icon {
       font-size: 12px;
+    }
+  }
+
+  &__secret-link {
+    min-width: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 3px 5px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--v-text-secondary);
+    font: inherit;
+    white-space: nowrap;
+    cursor: pointer;
+
+    &:hover,
+    &:focus-visible {
+      background: rgba(23, 93, 251, 0.08);
+      color: rgb(23, 93, 251);
+      outline: none;
     }
   }
 
