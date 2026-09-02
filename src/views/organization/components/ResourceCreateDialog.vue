@@ -36,10 +36,20 @@ interface CreateResourceForm {
 
 const createDraftStorageKey = 'env-vault:organization:create-resource-draft'
 
-const props = defineProps<{
-  modelValue: boolean
-  tenants: TenantHierarchyOption[]
-}>()
+const props = withDefaults(
+  defineProps<{
+    modelValue: boolean
+    tenants: TenantHierarchyOption[]
+    initialType?: CreateResourceType
+    initialTenantId?: string
+    initialOrganizationId?: string
+  }>(),
+  {
+    initialType: 'tenant',
+    initialTenantId: '',
+    initialOrganizationId: '',
+  },
+)
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
@@ -206,6 +216,13 @@ function clearDraft(): void {
 
 function resetForm(): void {
   restoreDraft()
+  activeType.value = props.initialType
+  if (props.initialType !== 'tenant' && props.initialTenantId) {
+    form.tenantId = props.initialTenantId
+  }
+  if (props.initialType === 'project' && props.initialOrganizationId) {
+    form.organizationId = props.initialOrganizationId
+  }
   nextTick(() => formRef.value?.clearValidate())
 }
 

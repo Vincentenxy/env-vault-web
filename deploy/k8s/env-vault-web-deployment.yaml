@@ -1,0 +1,91 @@
+# EnvVault Web deployment.
+# Build and push harbor.gtjaqh.net/lucy-dev/env-vault-web:0.1.0 before applying.
+# The env-vault namespace and backend Service are created by the backend manifest.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: env-vault-web
+  namespace: env-vault
+  labels:
+    app.kubernetes.io/name: env-vault-web
+    app.kubernetes.io/component: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: env-vault-web
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: env-vault-web
+        app.kubernetes.io/component: web
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: env-vault-web
+          image: harbor.gtjaqh.net/lucy-dev/env-vault-web:0.0.1-alpha.2
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            # Normal traffic uses the ready backend replicas; Nginx falls back to
+            # env-vault-bootstrap while the master key is still locked.
+            - name: API_UPSTREAM
+              value: http://env-vault
+            - name: API_BOOTSTRAP_UPSTREAM
+              value: http://env-vault-bootstrap:8090
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: env-vault-web
+  namespace: env-vault
+  labels:
+    app.kubernetes.io/name: env-vault-web
+    app.kubernetes.io/component: web
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: env-vault-web
+    app.kubernetes.io/component: web
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+# All /envvault requests enter the Web container. The prefix is removed before
+# forwarding; /api requests are then proxied by Web Nginx to the backend Service.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: env-vault-web
+  namespace: env-vault
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: 'true'
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/ssl-redirect: 'false'
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: efficient-poc.qiuer.net
+      http:
+        paths:
+          - path: /envvault(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: env-vault-web
+                port:
+                  number: 80

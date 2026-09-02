@@ -33,7 +33,7 @@ export const routes: RouteRecordRaw[] = [
     path: '/app',
     component: () => import('@/layouts/DefaultLayout.vue'),
     redirect: '/app/secrets',
-    meta: { requiresAuth: true },
+    meta: { requiresAuth: true, requiresMasterKey: true },
     children: [
       {
         path: 'organizations',

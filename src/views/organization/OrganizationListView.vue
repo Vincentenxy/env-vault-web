@@ -988,6 +988,9 @@ onBeforeUnmount(() => {
     <ResourceCreateDialog
       v-model="createDialogVisible"
       :tenants="tenantHierarchy"
+      :initial-type="resourceLevel"
+      :initial-tenant-id="selectedTenantId"
+      :initial-organization-id="selectedOrganizationId"
       @created="onResourceCreated"
     />
     <ResourceEditDialog

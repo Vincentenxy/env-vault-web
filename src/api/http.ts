@@ -9,6 +9,8 @@ import { AUTH_TOKEN_STORAGE_KEY, tokenStore } from '@/utils/token'
 import { notify } from '@/utils/notify'
 import { storage } from '@/utils/storage'
 import { buildMasterKeyLocation, isMasterKeyRoute } from '@/utils/master-key-route'
+import { stripAppBase, withAppBase } from '@/utils/app-base-path'
+import { createRequestId } from '@/utils/request-id'
 
 /**
  * 全局唯一的 Axios 实例。
@@ -50,7 +52,7 @@ http.interceptors.request.use((config: InternalAxiosRequestConfig) => {
     config.headers.set('Authorization', `Bearer ${t}`)
   }
   if (!config.headers.has('x-request-id')) {
-    config.headers.set('x-request-id', crypto.randomUUID())
+    config.headers.set('x-request-id', createRequestId())
   }
   return config
 })
@@ -112,32 +114,26 @@ function isSystemStarting(err: ApiError): boolean {
 
 /** 系统未就绪时保留当前地址并进入受认证的主密钥页面 */
 function redirectToMasterKey(): void {
-  if (
-    typeof window === 'undefined' ||
-    redirectingToMasterKey ||
-    isMasterKeyRoute(window.location.pathname)
-  ) {
+  const pathname = typeof window === 'undefined' ? '' : stripAppBase(window.location.pathname)
+  if (typeof window === 'undefined' || redirectingToMasterKey || isMasterKeyRoute(pathname)) {
     return
   }
 
   redirectingToMasterKey = true
-  const currentLocation = `${window.location.pathname}${window.location.search}${window.location.hash}`
-  window.location.replace(buildMasterKeyLocation(currentLocation))
+  const currentLocation = `${pathname}${window.location.search}${window.location.hash}`
+  window.location.replace(withAppBase(buildMasterKeyLocation(currentLocation)))
 }
 
 function redirectToLogin(): void {
-  if (
-    typeof window === 'undefined' ||
-    redirectingToLogin ||
-    window.location.pathname === '/login'
-  ) {
+  const pathname = typeof window === 'undefined' ? '' : stripAppBase(window.location.pathname)
+  if (typeof window === 'undefined' || redirectingToLogin || pathname === '/login') {
     return
   }
   redirectingToLogin = true
   tokenStore.clear()
   storage.remove(AUTH_TOKEN_STORAGE_KEY)
-  const redirect = `${window.location.pathname}${window.location.search}${window.location.hash}`
-  window.location.replace(`/login?redirect=${encodeURIComponent(redirect)}`)
+  const redirect = `${pathname}${window.location.search}${window.location.hash}`
+  window.location.replace(withAppBase(`/login?redirect=${encodeURIComponent(redirect)}`))
 }
 
 function handleApiError(err: ApiError, silent = false): void {

@@ -7,6 +7,7 @@ import {
   FolderKanban,
   IdCard,
   KeyRound,
+  KeySquare,
   RefreshCw,
   UserRound,
   UsersRound,
@@ -16,8 +17,11 @@ import { getMe } from '@/api/me'
 import { useAuthStore } from '@/stores/auth'
 import type { UserProject } from '@/types/user'
 import PersonalSecretPanel from './components/PersonalSecretPanel.vue'
+import PersonalTokenPanel from './components/PersonalTokenPanel.vue'
 
-type ProfileTab = 'profile' | 'secrets'
+type ProfileTab = 'profile' | 'secrets' | 'tokens'
+
+const profileTabs: ProfileTab[] = ['profile', 'secrets', 'tokens']
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -34,8 +38,11 @@ const displayName = computed(
 )
 const userId = computed(() => firstString(['userId', 'id', 'staffUserId']) || '—')
 const email = computed(() => firstString(['email', 'mail']) || '—')
-const departmentName = computed(
-  () => user.value?.orgName?.trim() || firstString(['departmentName', 'deptName']) || '—',
+const projectGroupName = computed(
+  () =>
+    user.value?.orgName?.trim() ||
+    firstString(['projectGroupName', 'projectTeamName', 'departmentName', 'deptName']) ||
+    '—',
 )
 const organizationName = computed(
   () => user.value?.tenantName?.trim() || firstString(['organizationName']) || '—',
@@ -77,14 +84,16 @@ async function selectAdjacentTab(event: KeyboardEvent, tab: ProfileTab): Promise
   if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
 
   event.preventDefault()
-  const nextTab =
+  const currentIndex = profileTabs.indexOf(tab)
+  const nextTab: ProfileTab =
     event.key === 'Home'
       ? 'profile'
       : event.key === 'End'
-        ? 'secrets'
-        : tab === 'profile'
-          ? 'secrets'
-          : 'profile'
+        ? 'tokens'
+        : (profileTabs[
+            (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + profileTabs.length) %
+              profileTabs.length
+          ] ?? 'profile')
   selectTab(nextTab)
   await nextTick()
   document.getElementById(`${nextTab}-tab`)?.focus()
@@ -144,6 +153,21 @@ onMounted(() => {
             <KeyRound :size="17" :stroke-width="1.8" />
             <span>我的密钥</span>
           </button>
+          <button
+            id="tokens-tab"
+            type="button"
+            class="profile-page__tab"
+            :class="{ 'is-active': activeTab === 'tokens' }"
+            role="tab"
+            :aria-selected="activeTab === 'tokens'"
+            :tabindex="activeTab === 'tokens' ? 0 : -1"
+            aria-controls="tokens-panel"
+            @click="selectTab('tokens')"
+            @keydown="selectAdjacentTab($event, 'tokens')"
+          >
+            <KeySquare :size="17" :stroke-width="1.8" />
+            <span>个人 Token</span>
+          </button>
         </nav>
 
         <el-tooltip v-if="activeTab === 'profile'" content="刷新用户信息" placement="bottom">
@@ -162,7 +186,7 @@ onMounted(() => {
 
     <main
       class="profile-page__content"
-      :class="{ 'profile-page__content--secrets': activeTab === 'secrets' }"
+      :class="{ 'profile-page__content--wide': activeTab !== 'profile' }"
     >
       <section
         v-show="activeTab === 'profile'"
@@ -218,8 +242,8 @@ onMounted(() => {
                 ><UsersRound :size="17" :stroke-width="1.7"
               /></span>
               <span class="profile-details__copy">
-                <small>部门</small>
-                <strong :title="departmentName">{{ departmentName }}</strong>
+                <small>项目组</small>
+                <strong :title="projectGroupName">{{ projectGroupName }}</strong>
               </span>
             </div>
             <div class="profile-details__item profile-details__item--wide">
@@ -272,6 +296,16 @@ onMounted(() => {
         class="profile-page__tab-panel"
       >
         <PersonalSecretPanel v-if="activeTab === 'secrets'" />
+      </section>
+
+      <section
+        v-show="activeTab === 'tokens'"
+        id="tokens-panel"
+        role="tabpanel"
+        aria-labelledby="tokens-tab"
+        class="profile-page__tab-panel"
+      >
+        <PersonalTokenPanel v-if="activeTab === 'tokens'" />
       </section>
     </main>
   </section>
@@ -399,7 +433,7 @@ onMounted(() => {
     width: min(920px, calc(100% - 48px));
     margin: 24px auto;
 
-    &--secrets {
+    &--wide {
       width: min(1280px, calc(100% - 48px));
     }
   }
@@ -622,15 +656,16 @@ onMounted(() => {
     }
 
     &__tab {
-      min-width: 104px;
-      padding: 0 10px;
+      min-width: 0;
+      flex: 1 1 0;
+      padding: 0 8px;
     }
 
     &__content {
       width: calc(100% - 32px);
       margin: 16px auto;
 
-      &--secrets {
+      &--wide {
         width: calc(100% - 32px);
       }
     }

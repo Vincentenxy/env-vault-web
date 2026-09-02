@@ -28,6 +28,7 @@ import { copyToClipboard } from '@/utils/copy'
 import CardEditDialog, { type CardEditPayload } from '@/components/CardEditDialog.vue'
 import ManagerSelect from '@/components/ManagerSelect.vue'
 import { useManagerSelection } from '@/composables/use-manager-selection'
+import { resolveCreateFolderManagerId } from '@/utils/folder-manager'
 import { listEnvironments } from '@/api/env'
 import { listAuditRecords } from '@/api/audit'
 import { getOrganizationsWithProjects } from '@/api/organization'
@@ -924,11 +925,15 @@ function onCreateFolderOrganizationChange(): void {
 
 function openCreateFolder(parentFolder: VaultFolder | null = null): void {
   createFolderParent.value = parentFolder
-  const restoredDraft = restoreCreateFolderDraft()
+  restoreCreateFolderDraft()
   if (parentFolder) {
     createFolderForm.organizationId = selectedOrgId.value
     createFolderForm.projectId = parentFolder.projectId
-    if (!restoredDraft) createFolderForm.type = 'common'
+    createFolderForm.type = 'common'
+    createFolderForm.managerId = resolveCreateFolderManagerId(
+      parentFolder,
+      createFolderForm.managerId,
+    )
   }
   createFolderFormRef.value?.clearValidate()
   createFolderDialogVisible.value = true
@@ -983,9 +988,15 @@ async function createFolder(): Promise<void> {
     const parentFolder = createFolderParent.value
     const organizationId = createFolderForm.organizationId
     const projectId = createFolderForm.projectId
-    const managerId = await resolveManagerId(createFolderForm.managerId)
+    const managerId = parentFolder
+      ? resolveCreateFolderManagerId(parentFolder, createFolderForm.managerId)
+      : await resolveManagerId(createFolderForm.managerId)
     if (!managerId) {
-      ElMessage.error('无法获取当前用户，请选择管理员后重试')
+      ElMessage.error(
+        parentFolder
+          ? 'groups 目录缺少管理员信息，无法创建子目录'
+          : '无法获取当前用户，请选择管理员后重试',
+      )
       return
     }
     await createSecretFolder({
@@ -3669,7 +3680,8 @@ watch(
             <ManagerSelect
               v-model="createFolderForm.managerId"
               :project-id="createFolderForm.projectId"
-              :disabled="createFolderSubmitting"
+              :selected-name="createFolderParent?.owner ?? ''"
+              :disabled="createFolderSubmitting || Boolean(createFolderParent)"
             />
           </el-form-item>
           <el-form-item label="备注" prop="remark">
