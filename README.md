@@ -40,6 +40,8 @@ EnvVault Web 是 EnvVault 密钥管理平台的前端工程。后端提供基于
 
 ## 3. 整体架构
 
+### 3.1 Vue 应用分层
+
 前端在数据流上保持单向,分层严格自上而下:
 
 ```text
@@ -57,6 +59,103 @@ view (pages)  ──►  composable  ──►  store (Pinia)  ──►  api (A
 - **composable 是 view 复用逻辑的容器**,不持业务数据,只组合 store + 工具。
 - **错误码统一在拦截器中转**,store 内只关心成功路径,失败由拦截器统一弹 toast 并抛出受控错误。
 - **Secret 明文 value** 在前端只在用户主动 reveal 这一次进入内存,不做任何持久化,不做路由 state 缓存,不做 store 缓存。
+
+### 3.2 部署组件与职责
+
+生产部署中的“前端”不只有 Vue 页面。`env-vault-web` 容器同时运行 Web Nginx,由它提供静态文件并代理 `/api/**`。浏览器不直接访问 Go Pod。
+
+| 组件 | 所在位置 | 职责 |
+| --- | --- | --- |
+| Vue 应用 | `env-vault-web` 容器的静态文件 | 页面渲染、路由守卫、状态管理和 API 调用 |
+| Web Nginx | `env-vault-web` 容器 | 提供 Vue 静态文件,将 `/api/**` 优先代理到普通后端 Service,并处理启动回退 |
+| Ingress Nginx | Kubernetes 集群入口 | 将外部 `/envvault/**` 去除前缀后转发到 `env-vault-web` Service |
+| `env-vault-web` Service | Kubernetes | 将 Ingress 流量转发到 Web Nginx |
+| `env-vault` Service | Kubernetes | 只选择已经加载主密钥且 readiness 通过的 Go Pod |
+| `env-vault-bootstrap` Service | Kubernetes | 固定选择 Pod 0并包含 NotReady Pod,只作为 Web Nginx 的启动回退上游 |
+| Go Pod 0/1/2 | 后端 StatefulSet | 提供认证、主密钥和普通业务接口 |
+
+Web Nginx 的 API 代理规则定义在 `deploy/nginx.conf.template`:
+
+```nginx
+location /api/ {
+    proxy_pass ${API_UPSTREAM};
+    proxy_intercept_errors on;
+    error_page 502 503 504 = @api_bootstrap;
+}
+
+location @api_bootstrap {
+    proxy_method $request_method;
+    proxy_pass ${API_BOOTSTRAP_UPSTREAM};
+}
+```
+
+`API_UPSTREAM` 指向普通 `env-vault` Service,`API_BOOTSTRAP_UPSTREAM` 指向只选择 Pod 0的 `env-vault-bootstrap` Service。bootstrap Service 不由 Ingress 直接暴露。
+
+当前示例清单部署三个 `env-vault-web` 副本,通过健康探针、跨节点分散和 PodDisruptionBudget 保证 Web Nginx 入口可用。Ingress Controller 是独立的集群入口组件,其副本数和高可用仍需要在 ingress-nginx 的 Helm values 或控制器清单中单独配置。
+
+### 3.3 首次启动请求链路
+
+首次启动时所有 Go Pod 都没有主密钥,因此普通 `env-vault` Service 没有 Ready Endpoint。Web Nginx 访问普通 Service 得到 502、503或504后,将原请求回退到 Pod 0。
+
+```mermaid
+flowchart LR
+    B[浏览器] --> I[Ingress Nginx]
+    I --> WS[env-vault-web Service]
+    WS --> W[Web Nginx]
+    W --> S[env-vault Service]
+    S --> X[没有 Ready Endpoint]
+    X -->|502 503 504| W
+    W --> BS[env-vault-bootstrap Service]
+    BS --> P0[Pod 0]
+    P0 --> A[登录和主密钥启动接口]
+```
+
+该回退保证 `/pub/auth/login`、`/masterKey/status` 和 `/masterKey/share` 在普通 Service 为空时仍能访问,并保证三份分片始终提交到同一个 Pod 0。普通业务接口到达 Pod 0后仍会被后端 Ready 中间件阻止,返回 HTTP 200和业务码 `-2`。
+
+### 3.4 正常运行请求链路
+
+主密钥加载后,Pod 0、1、2按各自 readiness 状态进入普通 Service。包括 `/masterKey/status` 在内的所有外部 API 都由普通 Service 分发,不会固定依赖 Pod 0。
+
+```mermaid
+flowchart LR
+    B[浏览器] --> I[Ingress Nginx]
+    I --> W[Web Nginx]
+    W --> S[env-vault Service]
+    S --> P0[Pod 0 Ready]
+    S --> P1[Pod 1 Ready]
+    S --> P2[Pod 2 Ready]
+```
+
+### 3.5 Pod 0重启链路
+
+Pod 0重启时,Pod 1和 Pod 2仍在普通 Service 中。浏览器状态检查和业务请求继续由 Pod 1或 Pod 2处理,Web Nginx 不触发 bootstrap 回退。Pod 0启动后通过后端内部 Peer 恢复链路获取主密钥,Ready 后重新加入普通 Service。
+
+```mermaid
+flowchart LR
+    B[浏览器] --> W[Web Nginx]
+    W --> S[env-vault Service]
+    S --> P1[Pod 1 Ready]
+    S --> P2[Pod 2 Ready]
+    P0[Pod 0重启中] -->|内部主密钥恢复| S
+    S -->|任意 Ready Peer 返回加密信封| P0
+```
+
+只有普通 Service 没有任何 Ready Endpoint 时 Web Nginx 才使用 bootstrap Service。如果此时 Pod 0也不可访问,请求会保留为传输层 502、503或504,不会伪装成业务码 `-2`。
+
+### 3.6 Gateway拆分预留
+
+当前 Web Nginx与 Vue静态文件位于同一个 `env-vault-web` 镜像。Web Pod不等待 bootstrap或 Pod 0启动:Pod 0暂不可用时仍可提供登录和等待页面,API回退在 bootstrap恢复后自动可用。bootstrap使用稳定 ClusterIP,因此 Pod 0重建和 Pod IP变化不要求 Web Nginx重新解析 Pod地址。
+
+未来只有在 API代理需要独立扩容、独立发布或由单独组件维护时才拆分 `env-vault-gateway`。拆分后的职责如下:
+
+```text
+Ingress
+├── /envvault/api/** -> env-vault-gateway -> env-vault Service
+│                                        -> env-vault-bootstrap 回退
+└── /envvault/**     -> env-vault-web     -> Vue静态文件
+```
+
+`env-vault-gateway` 必须继续承担 502、503、504启动回退,保持 `code=-2` 处理语义,并按 Web入口标准配置三副本、健康探针、跨节点分布和 PodDisruptionBudget。前端与 Gateway继续使用同一域名,避免引入额外 CORS和认证配置。
 
 ## 4. 目录结构
 
@@ -188,7 +287,7 @@ env-vault-web/
 ```text
 /                            重定向到 /app/dashboard
 /login                       登录(开发态: dev token 签发;生产: 外部 IdP 跳转)
-/masterKey                   系统启动阶段的公开主密钥分片输入页
+/masterKey                   系统启动阶段的受认证等待与分片输入页
 /app
   /dashboard                 首页(欢迎 + 快捷入口)
   /orgs                      组织列表
@@ -214,18 +313,23 @@ env-vault-web/
 
 - 路由 name 使用 kebab-case 字符串,首字母大写,例如 `OrgProjectList`。
 - 路由 path 中路径参数使用 `:orgId` / `:projectId` / `:envId` / `:folderId` / `:encodedPath`,与后端响应字段一致(camelCase)。
-- 所有非 `login` / `masterKey` / `forbidden` / `notFound` 路由都通过 `meta.requiresAuth = true` 标记,鉴权守卫统一拦截。
+- `/masterKey` 本身使用 `meta.requiresAuth = true`;所有 `/app/**` 业务路由同样要求登录,只有 `/login` 等明确公开路由不要求 token。
 - 需要特定权限的路由通过 `meta.permissions: ['secret:reveal']` 标记,权限守卫校验。
 - 路由懒加载使用动态 import。
 - 详情页默认重定向到第一个 tab,例如 `OrgDetail` 重定向到 `orgs/:orgId/projects`。
 
 ### 5.3 守卫
 
-`router/guards.ts` 内串联三段守卫:
+`router/guards.ts` 按以下顺序处理导航:
 
-1. `authGuard`:从 `useAuthStore` 拿当前 token / 用户。`meta.requiresAuth` 命中但未登录 → 跳 `/login`,并保留 `redirect` query。
-2. `permissionGuard`:命中 `meta.permissions` 时调用 `usePermission().hasAll(...)`。失败 → 跳 `/forbidden`。
-3. `titleGuard`:读取 `meta.title` 设置 `document.title`。
+1. 已登录用户访问 `/login` 时进入组织管理页面
+2. `meta.requiresAuth` 命中但本地没有 token 时跳转 `/login`,并保留 `redirect` query
+3. `meta.requiresMasterKey` 命中时读取 `useMasterKeyStore` 中的状态快照,没有快照才调用 `/masterKey/status`
+4. 状态明确为 `ready=false` 时跳转 `/masterKey`,并保留原目标地址
+5. 状态接口发生网络或网关错误时采用失败关闭策略,同样进入 `/masterKey` 的错误重试页面
+6. 导航完成后根据 `meta.title` 更新 `document.title`
+
+路由守卫的状态检查与 Axios 对 `code=-2` 的处理互为补充。守卫用于页面进入前的主动检查；Axios 拦截器用于已经进入业务页面后,任意接口发现系统未就绪时统一跳转。正常运行时 `/masterKey/status` 通过普通 `env-vault` Service 访问任意 Ready Pod,不能固定转发到 Pod 0。
 
 ## 6. 状态管理
 
@@ -303,17 +407,40 @@ export class ApiError extends Error {
 
 `ApiError` 是拦截器抛出的唯一错误类型;`message` 直接来自后端 `msg`(已对用户可读)。调用方用 `e instanceof ApiError ? e.message : '兜底文案'` 取文案。
 
-### 7.4 响应协议(简化的"code 二元化"模型)
+### 7.4 统一响应协议与特殊状态码
 
 **所有 `/api/v1/*` 接口的 HTTP 响应体都是 `{code, msg, data}` envelope,与 HTTP 状态码无关**。前端识别以下情况:
 
 | body.code | 含义 | 拦截器处理 | 调用方见到 |
 | --- | --- | --- | --- |
 | `0` | 业务成功 | 返回 `data.data`;`list: null` 归一为 `list: []` | 直接拿到的就是 `data` |
-| `-2` | 系统主密钥未就绪 | 保留当前地址并跳转 `/masterKey` | 抛出 `ApiError`,页面通常已开始跳转 |
+| `-2` | 系统主密钥未就绪 | 不弹 toast,保留当前地址并跳转 `/masterKey` | 抛出 `ApiError`,页面通常已开始跳转 |
 | 其他 | 业务失败 | 抛 `ApiError`,`message` 取 `data.msg` | catch 后展示 `e.message` |
 
-错误码的完整常量表见 `constants/error-code.ts`,但**前端当前不基于具体码做差异化 UI**,所有非 0 都走同一路径("展示 msg")。后续如果某个码需要特殊处理(例如 `1401` 自动跳登录),在 `withApiCall` 内集中扩展。
+`-2` 是启动阶段专用业务码,不是 HTTP 503的别名。后端仅在主密钥未就绪且请求不在启动白名单时返回以下响应:
+
+```json
+{
+  "code": -2,
+  "msg": "系统启动中",
+  "data": null
+}
+```
+
+```mermaid
+flowchart TD
+    R[Axios 收到响应] --> E{是否统一 envelope}
+    E -->|否| T[转换为传输层 ApiError]
+    E -->|是| C{body.code}
+    C -->|0| S[返回 data]
+    C -->|-2| M[保存当前站内地址]
+    M --> K[跳转到 masterKey 页面]
+    C -->|其他| F[抛出 ApiError并按规则提示]
+```
+
+HTTP 502、503、504表示 Ingress、Web Nginx 或 Service 当前没有可用连接,属于传输层错误。它们先由 Web Nginx尝试回退 bootstrap；回退仍失败时,Axios 才将其转换为 `code=-1` 的 `ApiError`。前端不得根据 HTTP 503直接判断主密钥未加载。
+
+错误码的完整常量表见 `constants/error-code.ts`。当前只有 `-2` 和认证失败具有集中式导航行为,其他非 0业务码统一抛出 `ApiError` 并展示 `msg`。后续特殊处理继续集中放在 `api/http.ts`,不得散落到 view。
 
 应用内 envelope 之外的两类兜底:
 
@@ -424,8 +551,9 @@ export interface ParsedSecretPath {
 ### 10.1 处理原则
 
 - 拦截器已经把所有 `code !== 0` 归一为 `ApiError`,业务代码只需要 `try { ... } catch (e) { ElMessage.error(e instanceof ApiError ? e.message : '兜底') }`。
-- **不做基于具体错误码的差异化 UI**:所有非 0 码都走"展示 msg"路径。鉴权失效、权限不足等场景的统一处理由路由守卫负责(token 不存在 → 跳登录),不依赖后端错误码。
-- 错误码常量在 `constants/error-code.ts` 内集中维护,作为"与后端契约的参考"。后续如需差异化,在 `withApiCall` 集中扩展。
+- `code=-2` 由 `api/http.ts` 集中保存当前地址并跳转 `/masterKey`,HTTP 401或认证业务码由同一拦截器清理 token 并跳转 `/login`。
+- 除上述全局导航行为外,业务 view 不基于具体错误码分支,普通非 0码统一展示后端 `msg`。
+- 错误码常量在 `constants/error-code.ts` 内集中维护。后续如需新的差异化处理,继续在 `api/http.ts` 集中扩展。
 
 ### 10.2 列表分页约定(基于 `total` 的归一)
 
@@ -559,7 +687,7 @@ VITE_APP_TITLE=EnvVault
 | 字段命名 | camelCase | camelCase,直接使用 |
 | 列表分页 | `{ pageNum, pageSize, total, list }`,空页 `list` 可能为 `null` | `PageResp<T>` 一一对应,store / view 按 `(total > 0 ? list : null) ?? []` 取值 |
 | 统一响应 | `{ code, msg, data }`(所有 HTTP 响应都是 envelope) | 拦截器剥到 `data.data`,业务只见到 `data` |
-| 错误模型 | 简化的"code 二元化" | `code: 0` 成功;其他都失败,统一抛 `ApiError`,展示 `msg` |
+| 错误模型 | 统一 envelope和集中式特殊码处理 | `code: 0` 成功;其他均抛 `ApiError`;`-2` 和认证失败附带全局导航行为 |
 | 业务 code | `0` 成功,`-1` 业务通用失败,`-2` 系统启动中;`1002/1401/1403/1404/1409/1500/1503` 已知码 | `constants/error-code.ts` 内集中常量;`-2` 统一跳转主密钥页面 |
 | 鉴权失败 | `code: 1401` 或 HTTP 401 | 路由守卫统一处理(token 不存在 / 过期 → 跳 `/login`) |
 | 非 envelope 错误 | 网络断开 / nginx 5xx / 网关 | 拦截器兜底为 `ApiError`,`code: -1`,`msg` 取 axios error |

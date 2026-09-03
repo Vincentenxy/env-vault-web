@@ -11,7 +11,12 @@ metadata:
     app.kubernetes.io/name: env-vault-web
     app.kubernetes.io/component: web
 spec:
-  replicas: 1
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: env-vault-web
@@ -24,6 +29,14 @@ spec:
     spec:
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 10
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: env-vault-web
+              app.kubernetes.io/component: web
       containers:
         - name: env-vault-web
           image: harbor.gtjaqh.net/lucy-dev/env-vault-web:0.0.1-alpha.2
@@ -32,6 +45,27 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
           env:
             # Normal traffic uses the ready backend replicas; Nginx falls back to
             # env-vault-bootstrap while the master key is still locked.
@@ -64,6 +98,21 @@ spec:
     - name: http
       port: 80
       targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: env-vault-web
+  namespace: env-vault
+  labels:
+    app.kubernetes.io/name: env-vault-web
+    app.kubernetes.io/component: web
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: env-vault-web
+      app.kubernetes.io/component: web
 ---
 # All /envvault requests enter the Web container. The prefix is removed before
 # forwarding; /api requests are then proxied by Web Nginx to the backend Service.
