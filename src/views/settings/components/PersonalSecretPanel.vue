@@ -474,9 +474,6 @@ onBeforeUnmount(() => {
         <el-table-column prop="account" label="登录用户名" min-width="150" show-overflow-tooltip>
           <template #default="{ row }">{{ row.account || '—' }}</template>
         </el-table-column>
-        <el-table-column prop="loginUrl" label="登录地址" min-width="190" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.loginUrl || '—' }}</template>
-        </el-table-column>
         <el-table-column min-width="260">
           <template #header>
             <div class="personal-secret-password personal-secret-password--header">
@@ -510,6 +507,9 @@ onBeforeUnmount(() => {
               </button>
             </div>
           </template>
+        </el-table-column>
+        <el-table-column prop="loginUrl" label="登录地址" min-width="190" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.loginUrl || '—' }}</template>
         </el-table-column>
         <el-table-column label="更新时间" min-width="165">
           <template #default="{ row }">
