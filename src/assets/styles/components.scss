@@ -323,8 +323,36 @@
   max-width: 620px;
 }
 
-.resource-edit-dialog__content {
-  min-height: 430px;
+// 固定管理弹框尺寸，切换 Tab 时只滚动内容，保留顶部菜单和底部操作
+.vault-card-edit-dialog.resource-edit-dialog.el-dialog {
+  height: 620px;
+  max-height: 90dvh;
+
+  > .el-dialog__header,
+  > .el-dialog__footer {
+    flex-shrink: 0;
+  }
+
+  > .el-dialog__body {
+    display: flex;
+    flex: 1;
+  }
+
+  .tenant-edit-tabs {
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .tenant-edit-tabs__item {
+    flex-shrink: 0;
+  }
+
+  .resource-edit-dialog__content {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+  }
 }
 
 .resource-edit-dialog__audit {
@@ -824,6 +852,10 @@
   .tenant-edit-dialog__content {
     min-height: 320px;
     padding: 18px 16px 20px;
+  }
+
+  .resource-edit-dialog__audit {
+    margin: -18px -16px -20px;
   }
 
   .resource-members__toolbar {
