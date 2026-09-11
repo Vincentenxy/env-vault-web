@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useNavigationMemory } from '@/composables/use-navigation-memory'
+import PageRefreshButton from '@/components/PageRefreshButton.vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import {
   ArrowLeft,
@@ -14,7 +16,6 @@ import {
   InfoFilled,
   Key as KeyIcon,
   Plus,
-  Refresh,
 } from '@element-plus/icons-vue'
 import { useEnvStore } from '@/stores/env'
 import { useOrganizationStore } from '@/stores/organization'
@@ -60,6 +61,13 @@ const { resolveManagerId } = useManagerSelection()
 
 const projectId = computed<string>(() => String(route.params.projectId ?? ''))
 const orgId = computed<string>(() => String(route.query.orgId ?? ''))
+const navigation = useNavigationMemory(`project:${projectId.value}`, {
+  folderId: '',
+  mode: 'list',
+  tab: 'secrets',
+  expanded: [] as string[],
+})
+const navigationReady = ref(false)
 
 // ==================== 当前项目 ====================
 const project = ref<Project | null>(null)
@@ -102,7 +110,7 @@ type ViewMode = 'list' | 'detail'
 const viewMode = ref<ViewMode>('list')
 
 /** L1 行展开状态 —— 默认全部折叠,点箭头展开/收起 */
-const expandedRowIds = ref<Set<string>>(new Set())
+const expandedRowIds = ref<Set<string>>(new Set(navigation.saved.expanded))
 
 function toggleRowExpand(folderId: string): void {
   if (expandedRowIds.value.has(folderId)) {
@@ -141,7 +149,7 @@ function findFolderNode(
   id: string,
 ): { node: FolderNode; parent: FolderNode | null } | null {
   for (const n of list) {
-    if (n.id === id) return { node: n, parent: null }
+    if (n.id === id || n.folderGroupId === id) return { node: n, parent: null }
     if (n.subFolders?.length) {
       const r = findFolderNode(n.subFolders, id)
       if (r) return { node: r.node, parent: r.parent ?? n }
@@ -167,12 +175,28 @@ async function loadFolderTree(): Promise<void> {
       }))
     folderTree.value = bindProjectEnvironments(resp.folderList ?? [])
     // 校验:之前选中的节点如果不在新树里,清掉
-    if (
-      selectedFolderNode.value &&
-      !findFolderNode(folderTree.value, selectedFolderNode.value.id)
-    ) {
-      selectedFolderNode.value = null
-      activeTab.value = 'secrets'
+    if (selectedFolderNode.value) {
+      selectedFolderNode.value =
+        findFolderNode(
+          folderTree.value,
+          selectedFolderNode.value.folderGroupId || selectedFolderNode.value.id,
+        )?.node ?? null
+      if (!selectedFolderNode.value) {
+        viewMode.value = 'list'
+        activeTab.value = 'secrets'
+      }
+    }
+    if (!navigationReady.value) {
+      selectedFolderNode.value =
+        findFolderNode(folderTree.value, navigation.saved.folderId)?.node ?? null
+      viewMode.value =
+        selectedFolderNode.value && navigation.saved.mode === 'detail' ? 'detail' : 'list'
+      activeTab.value =
+        (['info', 'subfolders', 'secrets'] as TabKey[]).find(
+          (tab) => tab === navigation.saved.tab,
+        ) ?? 'secrets'
+      navigationReady.value = true
+      if (viewMode.value === 'detail') await loadSecretsOfCurrent()
     }
   } catch (e) {
     const msg = e instanceof ApiError ? e.message : '加载目录失败'
@@ -244,6 +268,15 @@ const currentSubfolders = computed<FolderNode[]>(() => {
 // 顺序:secrets → subfolders(仅 L1 可建 L2)→ info
 type TabKey = 'secrets' | 'subfolders' | 'info'
 const activeTab = ref<TabKey>('secrets')
+navigation.track(() => {
+  if (!navigationReady.value || folderTreeLoading.value) return null
+  return {
+    folderId: selectedFolderNode.value?.folderGroupId || selectedFolderNode.value?.id || '',
+    mode: viewMode.value,
+    tab: activeTab.value,
+    expanded: [...expandedRowIds.value],
+  }
+})
 
 // ==================== Secret 列表(走 /secret/list 接口)====================
 //
@@ -897,14 +930,8 @@ async function saveEditRow(): Promise<void> {
 async function refreshAll(): Promise<void> {
   // 新数据模型:一次刷新整棵 folder 树
   await loadFolderTree()
-  // 同时清掉详情侧状态 + 切回 LIST 视图 —— 否则仅清 selectedFolderNode
-  // 之后 DETAIL 视图的 v-if 会变 false,但 LIST 视图的 v-show="viewMode === 'list'"
-  // 仍受旧的 viewMode 控制,如果用户原本在 detail 视图就会"两个视图都不渲染"
-  // → 整片空白。
-  selectedFolderNode.value = null
-  viewMode.value = 'list'
-  activeTab.value = 'secrets'
-  secretStore.clear()
+  if (selectedFolderNode.value && viewMode.value === 'detail') await loadSecretsOfCurrent()
+  else secretStore.clear()
 }
 
 function onBack(): void {
@@ -965,7 +992,11 @@ watch(
         </div>
       </div>
       <div class="proj-header__actions">
-        <el-button :icon="Refresh" :disabled="!projectId" @click="refreshAll"> 刷新 </el-button>
+        <PageRefreshButton
+          :action="refreshAll"
+          :loading="folderTreeLoading || secretStore.loading"
+          :disabled="!projectId"
+        />
       </div>
     </header>
 
@@ -1181,17 +1212,16 @@ watch(
                   </el-tag>
                 </div>
                 <div class="tab-pane__actions">
-                  <el-tooltip content="操作日志" placement="top">
-                    <el-button
-                      type="primary"
-                      plain
-                      size="small"
-                      :icon="Clock"
-                      @click="openFolderAudit(selectedFolderNode)"
-                    >
-                      操作日志
-                    </el-button>
-                  </el-tooltip>
+                  <el-button
+                    type="primary"
+                    plain
+                    size="small"
+                    :icon="Clock"
+                    @click="openFolderAudit(selectedFolderNode)"
+                  >
+                    操作日志
+                  </el-button>
+
                   <el-button
                     type="primary"
                     plain

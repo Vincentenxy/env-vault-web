@@ -488,16 +488,15 @@ watch([activeType, form], persistDraft, { deep: true })
         <section v-if="activeType === 'project'" class="environment-editor">
           <header class="environment-editor__heading">
             <strong>环境配置</strong>
-            <el-tooltip content="新建环境" placement="top">
-              <button
-                type="button"
-                class="environment-editor__add"
-                aria-label="新建环境"
-                @click="addEnvironment"
-              >
-                <el-icon><Plus /></el-icon>
-              </button>
-            </el-tooltip>
+
+            <button
+              type="button"
+              class="environment-editor__add"
+              aria-label="新建环境"
+              @click="addEnvironment"
+            >
+              <el-icon><Plus /></el-icon>
+            </button>
           </header>
 
           <div v-if="form.environments.length" class="environment-editor__table">
@@ -536,16 +535,15 @@ watch([activeType, form], persistDraft, { deep: true })
                   />
                 </el-tooltip>
               </span>
-              <el-tooltip content="删除环境" placement="top">
-                <button
-                  type="button"
-                  class="environment-editor__delete vault-delete-action"
-                  :aria-label="`删除第 ${index + 1} 个环境`"
-                  @click="removeEnvironment(index)"
-                >
-                  <el-icon><Delete /></el-icon>
-                </button>
-              </el-tooltip>
+
+              <button
+                type="button"
+                class="environment-editor__delete vault-delete-action"
+                :aria-label="`删除第 ${index + 1} 个环境`"
+                @click="removeEnvironment(index)"
+              >
+                <el-icon><Delete /></el-icon>
+              </button>
             </div>
           </div>
           <div v-else class="environment-editor__empty">暂无环境，点击「新建环境」添加</div>

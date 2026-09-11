@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useNavigationMemory } from '@/composables/use-navigation-memory'
+import PageRefreshButton from '@/components/PageRefreshButton.vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import {
   CircleClose,
@@ -9,7 +11,6 @@ import {
   MoreFilled,
   Plus,
   Position,
-  Refresh,
   Right,
   Search,
   View,
@@ -34,8 +35,11 @@ const orgStore = useOrganizationStore()
 const { has, rbac } = usePermission()
 const { resolveManagerId } = useManagerSelection()
 const router = useRouter()
+const navigation = useNavigationMemory('projects', { orgId: '', page: 1 })
 
-const selectedOrgId = ref<string>('')
+const selectedOrgId = ref(navigation.saved.orgId)
+const currentPage = ref(navigation.saved.page)
+navigation.track(() => ({ orgId: selectedOrgId.value, page: currentPage.value }))
 const searchKeyword = ref('')
 
 // ==================== 列表 ====================
@@ -55,7 +59,7 @@ async function onRefresh(): Promise<void> {
   try {
     await projectStore.fetchList({
       orgId: selectedOrgId.value,
-      pageNum: projectStore.lastQuery.pageNum ?? 1,
+      pageNum: currentPage.value,
       pageSize: projectStore.lastQuery.pageSize ?? 20,
     })
   } catch (e) {
@@ -66,6 +70,7 @@ async function onRefresh(): Promise<void> {
 
 function onOrgChange(orgId: string): void {
   selectedOrgId.value = orgId
+  currentPage.value = 1
   projectStore.fetchList({ orgId, pageNum: 1, pageSize: 20 }).catch((e: unknown) => {
     const msg = e instanceof ApiError ? e.message : '加载失败'
     ElMessage.error(msg)
@@ -74,6 +79,7 @@ function onOrgChange(orgId: string): void {
 
 function onPageChange(pageNum: number, pageSize: number): void {
   if (!selectedOrgId.value) return
+  currentPage.value = pageNum
   projectStore.fetchList({ orgId: selectedOrgId.value, pageNum, pageSize }).catch((e: unknown) => {
     const msg = e instanceof ApiError ? e.message : '加载失败'
     ElMessage.error(msg)
@@ -273,10 +279,12 @@ onMounted(async () => {
     }
   }
   if (orgStore.items.length > 0) {
-    const first = orgStore.items[0]
-    if (first) {
-      selectedOrgId.value = first.id
-      onOrgChange(first.id)
+    const selected =
+      orgStore.items.find((item) => item.id === selectedOrgId.value) ?? orgStore.items[0]
+    if (selected) {
+      if (selectedOrgId.value !== selected.id) currentPage.value = 1
+      selectedOrgId.value = selected.id
+      await onRefresh()
     }
   }
 })
@@ -299,7 +307,6 @@ watch(
         <p class="page-header__desc">项目归属于组织,环境在创建项目时可选内联创建。</p>
       </div>
       <div class="page-header__actions">
-        <el-button :icon="Refresh" :disabled="!selectedOrgId" @click="onRefresh">刷新</el-button>
         <el-select
           v-model="selectedOrgId"
           placeholder="选择组织"
@@ -335,6 +342,11 @@ watch(
         >
           新建项目
         </el-button>
+        <PageRefreshButton
+          :action="onRefresh"
+          :loading="projectStore.loading"
+          :disabled="!selectedOrgId"
+        />
       </div>
     </header>
 
@@ -357,16 +369,15 @@ watch(
               <el-icon><Files /></el-icon>
             </div>
             <div class="project-card__actions">
-              <el-tooltip content="编辑项目" placement="top">
-                <button
-                  type="button"
-                  class="project-card__edit vault-edit-action"
-                  :aria-label="`编辑${row.name}`"
-                  @click.stop="openProjectEdit(row)"
-                >
-                  <el-icon><Edit /></el-icon>
-                </button>
-              </el-tooltip>
+              <button
+                type="button"
+                class="project-card__edit vault-edit-action"
+                :aria-label="`编辑${row.name}`"
+                @click.stop="openProjectEdit(row)"
+              >
+                <el-icon><Edit /></el-icon>
+              </button>
+
               <el-dropdown
                 trigger="click"
                 placement="bottom-end"

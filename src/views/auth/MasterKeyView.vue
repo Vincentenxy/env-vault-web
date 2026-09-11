@@ -150,16 +150,10 @@ onBeforeUnmount(() => {
           />
           {{ statusText }}
         </span>
-        <el-tooltip content="退出登录" placement="bottom">
-          <button
-            type="button"
-            class="master-key-page__logout"
-            aria-label="退出登录"
-            @click="logout"
-          >
-            <LogOut :size="17" :stroke-width="1.8" />
-          </button>
-        </el-tooltip>
+
+        <button type="button" class="master-key-page__logout" aria-label="退出登录" @click="logout">
+          <LogOut :size="17" :stroke-width="1.8" />
+        </button>
       </span>
     </header>
 
@@ -194,17 +188,16 @@ onBeforeUnmount(() => {
               <ArrowLeft v-else :size="17" :stroke-width="1.8" />
             </button>
           </el-tooltip>
-          <el-tooltip content="重新检查系统状态" placement="bottom">
-            <button
-              type="button"
-              class="master-key-panel__action"
-              :disabled="masterKey.checking || masterKey.submitting || enteringSystem"
-              aria-label="重新检查系统状态"
-              @click="loadStatus()"
-            >
-              <RefreshCw :size="17" :stroke-width="1.8" />
-            </button>
-          </el-tooltip>
+
+          <button
+            type="button"
+            class="master-key-panel__action"
+            :disabled="masterKey.checking || masterKey.submitting || enteringSystem"
+            aria-label="重新检查系统状态"
+            @click="loadStatus()"
+          >
+            <RefreshCw :size="17" :stroke-width="1.8" />
+          </button>
         </span>
       </header>
 

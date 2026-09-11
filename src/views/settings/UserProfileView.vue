@@ -13,6 +13,7 @@ import {
   UsersRound,
 } from '@lucide/vue'
 import { useRouter } from 'vue-router'
+import { useNavigationMemory } from '@/composables/use-navigation-memory'
 import { getMe } from '@/api/me'
 import { useAuthStore } from '@/stores/auth'
 import type { UserProject } from '@/types/user'
@@ -25,7 +26,11 @@ const profileTabs: ProfileTab[] = ['profile', 'secrets', 'tokens']
 
 const auth = useAuthStore()
 const router = useRouter()
-const activeTab = ref<ProfileTab>('profile')
+const navigation = useNavigationMemory('profile', { tab: 'profile' })
+const activeTab = ref<ProfileTab>(
+  profileTabs.find((tab) => tab === navigation.saved.tab) ?? 'profile',
+)
+navigation.track(() => ({ tab: activeTab.value }))
 const loading = ref(false)
 const loadFailed = ref(false)
 const avatarLoadFailed = ref(false)
@@ -170,7 +175,7 @@ onMounted(() => {
           </button>
         </nav>
 
-        <el-tooltip v-if="activeTab === 'profile'" content="刷新用户信息" placement="bottom">
+        <template v-if="activeTab === 'profile'">
           <button
             type="button"
             class="profile-page__refresh"
@@ -180,7 +185,7 @@ onMounted(() => {
           >
             <RefreshCw :size="16" :stroke-width="1.8" />
           </button>
-        </el-tooltip>
+        </template>
       </div>
     </header>
 

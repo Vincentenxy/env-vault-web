@@ -7,6 +7,7 @@ import { getMe } from '@/api/me'
 import { useRbacStore } from '@/stores/rbac'
 import { useUserStore } from '@/stores/user'
 import { localLogin, type LocalLoginRequest } from '@/api/auth'
+import { clearNavigationMemory } from '@/composables/use-navigation-memory'
 
 const STORAGE_KEY = AUTH_TOKEN_STORAGE_KEY
 
@@ -37,6 +38,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function clearToken(): void {
+    clearNavigationMemory()
     token.value = ''
     tokenStore.clear()
     storage.remove(STORAGE_KEY)
@@ -49,6 +51,7 @@ export const useAuthStore = defineStore('auth', () => {
   /** 使用本地用户名密码登录；用户资料在系统 Ready 后读取 */
   async function login(credentials: LocalLoginRequest): Promise<void> {
     const result = await localLogin(credentials)
+    clearNavigationMemory()
     setToken(result.accessToken)
     setCurrentUser(null)
     useRbacStore().clear()

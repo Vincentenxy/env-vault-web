@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useNavigationMemory } from '@/composables/use-navigation-memory'
 import { Building2, KeyRound, RefreshCw, Search, Settings, UsersRound } from '@lucide/vue'
 import { listTenants, type Tenant } from '@/api/tenant'
 import { listManagedUsers, type UserManagementListItem } from '@/api/user'
@@ -10,8 +11,10 @@ import UserEditDialog from './components/UserEditDialog.vue'
 defineOptions({ name: 'UserManagementView' })
 
 const tenantPageSize = 200
+const navigation = useNavigationMemory('users', { tenantId: '' })
 const tenantOptions = ref<Tenant[]>([])
-const selectedTenantID = ref('')
+const selectedTenantID = ref(navigation.saved.tenantId)
+navigation.track(() => ({ tenantId: selectedTenantID.value }))
 const tenantLoading = ref(false)
 
 const keywordDraft = ref('')
@@ -187,31 +190,29 @@ onMounted(() => {
           @keyup.enter="searchUsers"
           @clear="clearSearch"
         />
-        <el-tooltip content="查询" placement="bottom">
-          <button
-            type="button"
-            class="user-management-round-action"
-            aria-label="查询用户"
-            @click="searchUsers"
-          >
-            <Search :size="16" :stroke-width="1.8" />
-          </button>
-        </el-tooltip>
-        <el-tooltip content="刷新" placement="bottom">
-          <button
-            type="button"
-            class="user-management-round-action"
-            :disabled="listLoading || tenantLoading"
-            aria-label="刷新用户列表"
-            @click="refresh"
-          >
-            <RefreshCw
-              :size="16"
-              :stroke-width="1.8"
-              :class="{ 'is-spinning': listLoading || tenantLoading }"
-            />
-          </button>
-        </el-tooltip>
+
+        <button
+          type="button"
+          class="user-management-round-action"
+          aria-label="查询用户"
+          @click="searchUsers"
+        >
+          <Search :size="16" :stroke-width="1.8" />
+        </button>
+
+        <button
+          type="button"
+          class="user-management-round-action"
+          :disabled="listLoading || tenantLoading"
+          aria-label="刷新用户列表"
+          @click="refresh"
+        >
+          <RefreshCw
+            :size="16"
+            :stroke-width="1.8"
+            :class="{ 'is-spinning': listLoading || tenantLoading }"
+          />
+        </button>
       </div>
     </header>
 

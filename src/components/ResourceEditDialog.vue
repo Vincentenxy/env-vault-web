@@ -18,6 +18,7 @@ import {
 import { createEnvironment, listEnvironments, updateEnvironment } from '@/api/env'
 import ManagerSelect from '@/components/ManagerSelect.vue'
 import ResourceAuditPanel from '@/components/ResourceAuditPanel.vue'
+import TenantTagPanel from '@/components/TenantTagPanel.vue'
 import { ApiError } from '@/types/api'
 import type { Environment } from '@/types/env'
 import { calculateEnvironmentOrderNo } from '@/utils/environment-order'
@@ -31,7 +32,7 @@ export interface ResourceEditPayload {
   managerId: string
 }
 
-type ResourceEditTab = 'basic' | 'environments' | 'users' | 'audit'
+type ResourceEditTab = 'basic' | 'environments' | 'users' | 'audit' | 'tags'
 
 interface EnvironmentCreateForm {
   code: string
@@ -79,6 +80,7 @@ const allocationType = computed<UserResourceType>(() =>
   props.resourceType === 'organization' ? 'org' : props.resourceType,
 )
 const activeTab = ref<ResourceEditTab>('basic')
+const tagBusy = ref(false)
 const formRef = ref<FormInstance>()
 const form = reactive({ name: '', remark: '', managerId: '' })
 const rules: FormRules<ResourceEditPayload> = {
@@ -289,6 +291,7 @@ function resetDialog(): void {
 }
 
 function switchTab(tab: ResourceEditTab): void {
+  if (tagBusy.value) return
   activeTab.value = tab
   if (tab === 'users') void loadMembers()
   if (tab === 'environments') void loadEnvironments()
@@ -520,8 +523,8 @@ watch(
     width="860px"
     class="vault-card-edit-dialog tenant-edit-dialog resource-edit-dialog"
     :close-on-click-modal="false"
-    :close-on-press-escape="!submitting"
-    :show-close="!submitting"
+    :close-on-press-escape="!submitting && !tagBusy"
+    :show-close="!submitting && !tagBusy"
     align-center
     destroy-on-close
     @closed="resetDialog"
@@ -536,6 +539,16 @@ watch(
           @click="switchTab('basic')"
         >
           基础信息
+        </button>
+        <button
+          v-if="resourceType === 'tenant'"
+          type="button"
+          class="tenant-edit-tabs__item"
+          :class="{ 'is-active': activeTab === 'tags' }"
+          :aria-current="activeTab === 'tags' ? 'page' : undefined"
+          @click="switchTab('tags')"
+        >
+          tag管理
         </button>
         <button
           v-if="resourceType === 'project'"
@@ -618,17 +631,16 @@ watch(
             <strong>环境列表</strong>
             <span>{{ environments.length }} 个</span>
           </div>
-          <el-tooltip content="新建环境" placement="top">
-            <button
-              type="button"
-              class="resource-members__add"
-              aria-label="新建环境"
-              :disabled="environmentLoading || environmentDraftVisible"
-              @click="openEnvironmentDraft"
-            >
-              <el-icon><Plus /></el-icon>
-            </button>
-          </el-tooltip>
+
+          <button
+            type="button"
+            class="resource-members__add"
+            aria-label="新建环境"
+            :disabled="environmentLoading || environmentDraftVisible"
+            @click="openEnvironmentDraft"
+          >
+            <el-icon><Plus /></el-icon>
+          </button>
         </header>
 
         <div v-loading="environmentLoading" class="resource-members__table-wrap">
@@ -755,32 +767,29 @@ watch(
                     </td>
                     <td>
                       <span class="resource-environments__draft-actions">
-                        <el-tooltip content="创建环境" placement="top">
-                          <button
-                            type="button"
-                            class="resource-environments__draft-action is-submit"
-                            aria-label="创建环境"
-                            :disabled="environmentCreateSubmitting"
-                            @click="createProjectEnvironment"
-                          >
-                            <span
-                              v-if="environmentCreateSubmitting"
-                              class="resource-members__spinner"
-                            ></span>
-                            <el-icon v-else><Check /></el-icon>
-                          </button>
-                        </el-tooltip>
-                        <el-tooltip content="取消新增" placement="top">
-                          <button
-                            type="button"
-                            class="resource-environments__draft-action"
-                            aria-label="取消新增"
-                            :disabled="environmentCreateSubmitting"
-                            @click="closeEnvironmentDraft"
-                          >
-                            <el-icon><Close /></el-icon>
-                          </button>
-                        </el-tooltip>
+                        <button
+                          type="button"
+                          class="resource-environments__draft-action is-submit"
+                          aria-label="创建环境"
+                          :disabled="environmentCreateSubmitting"
+                          @click="createProjectEnvironment"
+                        >
+                          <span
+                            v-if="environmentCreateSubmitting"
+                            class="resource-members__spinner"
+                          ></span>
+                          <el-icon v-else><Check /></el-icon>
+                        </button>
+
+                        <button
+                          type="button"
+                          class="resource-environments__draft-action"
+                          aria-label="取消新增"
+                          :disabled="environmentCreateSubmitting"
+                          @click="closeEnvironmentDraft"
+                        >
+                          <el-icon><Close /></el-icon>
+                        </button>
                       </span>
                     </td>
                   </template>
@@ -822,16 +831,15 @@ watch(
                 <el-icon><Search /></el-icon>
               </template>
             </el-input>
-            <el-tooltip content="添加成员" placement="top">
-              <button
-                type="button"
-                class="resource-members__add"
-                aria-label="添加成员"
-                @click="openAddDialog"
-              >
-                <el-icon><Plus /></el-icon>
-              </button>
-            </el-tooltip>
+
+            <button
+              type="button"
+              class="resource-members__add"
+              aria-label="添加成员"
+              @click="openAddDialog"
+            >
+              <el-icon><Plus /></el-icon>
+            </button>
           </div>
         </header>
 
@@ -883,7 +891,8 @@ watch(
                 </td>
                 <td class="resource-members__operation">
                   <el-tooltip
-                    :content="userIdOf(user) === managerId ? '请先更换管理员' : '移除成员'"
+                    content="请先更换管理员"
+                    :disabled="userIdOf(user) !== managerId"
                     placement="top"
                   >
                     <span>
@@ -913,6 +922,14 @@ watch(
         </div>
       </section>
 
+      <TenantTagPanel
+        v-if="resourceType === 'tenant' && dialogVisible"
+        v-show="activeTab === 'tags'"
+        :tenant-id="resourceId"
+        :active="activeTab === 'tags'"
+        @busy="tagBusy = $event"
+      />
+
       <ResourceAuditPanel
         v-show="activeTab === 'audit'"
         class="resource-edit-dialog__audit"
@@ -924,7 +941,7 @@ watch(
     </div>
 
     <template #footer>
-      <el-button :disabled="submitting" @click="dialogVisible = false">
+      <el-button :disabled="submitting || tagBusy" @click="dialogVisible = false">
         {{ activeTab === 'basic' ? '取消' : '关闭' }}
       </el-button>
       <el-button

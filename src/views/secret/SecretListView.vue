@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, type Component, watch } from 'vue'
+import { useNavigationMemory } from '@/composables/use-navigation-memory'
+import PageRefreshButton from '@/components/PageRefreshButton.vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { ClipboardList, FolderOpen, Globe, History, KeyRound, Maximize2 } from '@lucide/vue'
@@ -151,6 +153,15 @@ interface BatchVersionEntry {
 
 const route = useRoute()
 const router = useRouter()
+const navigation = useNavigationMemory('secrets', {
+  orgId: '',
+  projectId: '',
+  folderId: '',
+  groupId: '',
+  page: 1,
+  folderSearch: '',
+})
+const navigationReady = ref(false)
 
 const collaborationOrganizationId = '__collaboration__'
 
@@ -487,6 +498,26 @@ const activeServiceGroup = computed(
   () => serviceGroups.value.find((item) => item.id === activeGroupId.value) ?? null,
 )
 const activeSecretFolder = computed(() => activeServiceGroup.value ?? activeFolder.value)
+navigation.track(() => {
+  if (
+    !navigationReady.value ||
+    scopeLoading.value ||
+    folderLoading.value ||
+    groupLoading.value ||
+    environmentLoading.value ||
+    folderLoadFailed.value ||
+    groupLoadFailed.value
+  )
+    return null
+  return {
+    orgId: selectedOrgId.value,
+    projectId: selectedProjectId.value,
+    folderId: activeFolder.value?.folderGroupId || activeFolder.value?.id || '',
+    groupId: activeServiceGroup.value?.folderGroupId || activeServiceGroup.value?.id || '',
+    page: folderPage.value,
+    folderSearch: folderListSearch.value,
+  }
+})
 const visibleFolders = computed(() =>
   favoriteOnly.value ? folders.value.filter((folder) => folder.favorite) : folders.value,
 )
@@ -730,6 +761,31 @@ function reloadActiveSecrets(): void {
   if (activeSecretFolder.value) void loadSecretsForFolder(activeSecretFolder.value)
 }
 
+// 刷新当前层级的数据，不重置项目、目录、分页或浏览器页面
+async function refreshCurrentView(): Promise<void> {
+  if (!navigationReady.value) {
+    await loadScopeOptions()
+  } else if (!activeFolder.value) {
+    await loadFolders()
+  } else if (activeFolder.value.type === 'groups' && !activeGroupId.value) {
+    await loadGroupFolders(activeFolder.value)
+  } else if (activeSecretFolder.value) {
+    await Promise.all([
+      loadProjectEnvironments(selectedProjectId.value),
+      loadSecretsForFolder(activeSecretFolder.value),
+    ])
+  }
+}
+
+const pageRefreshing = computed(
+  () =>
+    scopeLoading.value ||
+    folderLoading.value ||
+    groupLoading.value ||
+    secretLoading.value ||
+    environmentLoading.value,
+)
+
 async function loadFolders(): Promise<void> {
   finishInlineEdit(false)
   closeKeyHistory()
@@ -761,6 +817,11 @@ async function loadFolders(): Promise<void> {
     if (requestSequence !== folderRequestSequence) return
     folders.value = mergeMappedFolders(response.list, projectId)
     folderTotal.value = Number(response.total) || 0
+    const lastPage = Math.max(1, Math.ceil(folderTotal.value / folderPageSize))
+    if (folderPage.value > lastPage) {
+      folderPage.value = lastPage
+      await loadFolders()
+    }
   } catch {
     if (requestSequence !== folderRequestSequence) return
     folders.value = []
@@ -831,15 +892,35 @@ async function loadScopeOptions(): Promise<void> {
     projects.value = [...organizationProjects, ...collaborationProjects]
     const queryProjectId =
       typeof route.query.projectId === 'string' ? route.query.projectId.trim() : ''
-    const queryProject = projects.value.find((project) => project.id === queryProjectId)
-    selectedOrgId.value = queryProject?.orgId ?? organizations.value[0]?.id ?? ''
+    const queryProject = projects.value.find(
+      (project) => project.id === (queryProjectId || navigation.saved.projectId),
+    )
+    const rememberedOrg = organizations.value.find((org) => org.id === navigation.saved.orgId)
+    selectedOrgId.value =
+      queryProject?.orgId ?? rememberedOrg?.id ?? organizations.value[0]?.id ?? ''
     selectedProjectId.value =
       queryProject?.id ??
       projects.value.find((project) => project.orgId === selectedOrgId.value)?.id ??
       ''
-    folderPage.value = 1
+    const restoreFolder = selectedProjectId.value === navigation.saved.projectId
+    folderPage.value = restoreFolder ? navigation.saved.page : 1
+    folderListSearch.value = restoreFolder ? navigation.saved.folderSearch : ''
     await loadProjectEnvironments(selectedProjectId.value)
     await loadFolders()
+    // 先恢复项目目录，再恢复 groups 下的子目录，使用最新接口数据校验当前位置
+    if (restoreFolder && !folderLoadFailed.value) {
+      const folder = folders.value.find(
+        (item) => (item.folderGroupId || item.id) === navigation.saved.folderId,
+      )
+      if (folder) {
+        await openFolder(folder)
+        const group = serviceGroups.value.find(
+          (item) => (item.folderGroupId || item.id) === navigation.saved.groupId,
+        )
+        if (group) openServiceGroup(group)
+      }
+    }
+    navigationReady.value = true
   } catch {
     organizations.value = []
     projects.value = []
@@ -1045,7 +1126,7 @@ function selectCascadeItem(id: string): void {
   else selectProject(id)
 }
 
-function openFolder(folder: VaultFolder): void {
+async function openFolder(folder: VaultFolder): Promise<void> {
   finishInlineEdit(false)
   closeKeyHistory()
   activeFolderId.value = folder.id
@@ -1053,10 +1134,10 @@ function openFolder(folder: VaultFolder): void {
   folderSearch.value = ''
   serviceGroups.value = []
   if (folder.type === 'groups') {
-    void loadGroupFolders(folder)
+    await loadGroupFolders(folder)
     return
   }
-  void loadSecretsForFolder(folder)
+  await loadSecretsForFolder(folder)
 }
 
 function openServiceGroup(group: VaultFolder): void {
@@ -2167,6 +2248,7 @@ onBeforeUnmount(() => {
 })
 
 watch(folderListSearch, () => {
+  if (!navigationReady.value) return
   window.clearTimeout(folderSearchTimer)
   folderSearchTimer = window.setTimeout(() => {
     folderPage.value = 1
@@ -2288,29 +2370,28 @@ watch(
               ><el-icon><Search /></el-icon
             ></template>
           </el-input>
-          <el-tooltip content="新建" placement="bottom">
-            <button
-              type="button"
-              class="vault-round-action vault-round-action--primary"
-              :disabled="scopeLoading"
-              aria-label="新建"
-              @click="openCreateFolder()"
-            >
-              <el-icon><Plus /></el-icon>
-            </button>
-          </el-tooltip>
-          <el-tooltip :content="favoriteOnly ? '显示全部' : '仅显示收藏'" placement="bottom">
-            <button
-              type="button"
-              class="vault-round-action"
-              :class="{ 'is-active': favoriteOnly }"
-              :aria-pressed="favoriteOnly"
-              aria-label="筛选收藏"
-              @click="favoriteOnly = !favoriteOnly"
-            >
-              <el-icon><StarFilled v-if="favoriteOnly" /><Star v-else /></el-icon>
-            </button>
-          </el-tooltip>
+
+          <button
+            type="button"
+            class="vault-round-action vault-round-action--primary"
+            :disabled="scopeLoading"
+            aria-label="新建"
+            @click="openCreateFolder()"
+          >
+            <el-icon><Plus /></el-icon>
+          </button>
+
+          <button
+            type="button"
+            class="vault-round-action"
+            :class="{ 'is-active': favoriteOnly }"
+            :aria-pressed="favoriteOnly"
+            aria-label="筛选收藏"
+            @click="favoriteOnly = !favoriteOnly"
+          >
+            <el-icon><StarFilled v-if="favoriteOnly" /><Star v-else /></el-icon>
+          </button>
+
           <el-tooltip :content="managementMode ? '退出管理' : '管理卡片'" placement="bottom">
             <button
               type="button"
@@ -2323,6 +2404,7 @@ watch(
               <el-icon><Setting /></el-icon>
             </button>
           </el-tooltip>
+          <PageRefreshButton :action="refreshCurrentView" :loading="pageRefreshing" />
         </div>
       </div>
 
@@ -2361,37 +2443,34 @@ watch(
                       </el-icon>
                     </button>
                     <template v-if="managementMode">
-                      <el-tooltip content="编辑配置目录" placement="top">
-                        <button
-                          type="button"
-                          class="vault-folder__edit vault-edit-action"
-                          :disabled="!!deletingFolderGroupId"
-                          :aria-label="`编辑${folder.name}`"
-                          @click.stop="openFolderEdit(folder)"
-                          @keydown.enter.stop
+                      <button
+                        type="button"
+                        class="vault-folder__edit vault-edit-action"
+                        :disabled="!!deletingFolderGroupId"
+                        :aria-label="`编辑${folder.name}`"
+                        @click.stop="openFolderEdit(folder)"
+                        @keydown.enter.stop
+                      >
+                        <el-icon><Edit /></el-icon>
+                      </button>
+
+                      <button
+                        type="button"
+                        class="vault-folder__delete vault-delete-action"
+                        :disabled="!!deletingFolderGroupId"
+                        :aria-label="`删除${folder.name}`"
+                        @click.stop="confirmFolderDelete(folder)"
+                        @keydown.enter.stop
+                      >
+                        <el-icon
+                          :class="{
+                            'is-loading': deletingFolderGroupId === folder.folderGroupId,
+                          }"
                         >
-                          <el-icon><Edit /></el-icon>
-                        </button>
-                      </el-tooltip>
-                      <el-tooltip content="删除配置目录" placement="top">
-                        <button
-                          type="button"
-                          class="vault-folder__delete vault-delete-action"
-                          :disabled="!!deletingFolderGroupId"
-                          :aria-label="`删除${folder.name}`"
-                          @click.stop="confirmFolderDelete(folder)"
-                          @keydown.enter.stop
-                        >
-                          <el-icon
-                            :class="{
-                              'is-loading': deletingFolderGroupId === folder.folderGroupId,
-                            }"
-                          >
-                            <Loading v-if="deletingFolderGroupId === folder.folderGroupId" />
-                            <Delete v-else />
-                          </el-icon>
-                        </button>
-                      </el-tooltip>
+                          <Loading v-if="deletingFolderGroupId === folder.folderGroupId" />
+                          <Delete v-else />
+                        </el-icon>
+                      </button>
                     </template>
                   </span>
                 </div>
@@ -2480,17 +2559,16 @@ watch(
           <template v-else>
             <span v-if="activeGroupId" class="vault-page__folder-code">
               <span>folder-code：</span>
-              <el-tooltip content="点击复制 folder code" placement="top">
-                <button
-                  type="button"
-                  :aria-label="`复制 folder code ${activeServiceGroup?.code || ''}`"
-                  :disabled="!activeServiceGroup?.code"
-                  @click="copyValue(activeServiceGroup?.code || '')"
-                >
-                  <code>{{ activeServiceGroup?.code || '--' }}</code>
-                  <el-icon><CopyDocument /></el-icon>
-                </button>
-              </el-tooltip>
+
+              <button
+                type="button"
+                :aria-label="`复制 folder code ${activeServiceGroup?.code || ''}`"
+                :disabled="!activeServiceGroup?.code"
+                @click="copyValue(activeServiceGroup?.code || '')"
+              >
+                <code>{{ activeServiceGroup?.code || '--' }}</code>
+                <el-icon><CopyDocument /></el-icon>
+              </button>
             </span>
             <span>{{ activeRows.length }} 个密钥</span>
           </template>
@@ -2499,17 +2577,16 @@ watch(
           v-if="activeFolder.type === 'groups' && !activeGroupId"
           class="vault-page__toolbar-actions"
         >
-          <el-tooltip content="新建配置集" placement="bottom">
-            <button
-              type="button"
-              class="vault-round-action vault-round-action--primary"
-              :disabled="groupLoading"
-              aria-label="新建配置集"
-              @click="openCreateFolder(activeFolder)"
-            >
-              <el-icon><Plus /></el-icon>
-            </button>
-          </el-tooltip>
+          <button
+            type="button"
+            class="vault-round-action vault-round-action--primary"
+            :disabled="groupLoading"
+            aria-label="新建配置集"
+            @click="openCreateFolder(activeFolder)"
+          >
+            <el-icon><Plus /></el-icon>
+          </button>
+
           <el-tooltip :content="managementMode ? '退出管理' : '管理卡片'" placement="bottom">
             <button
               type="button"
@@ -2522,6 +2599,7 @@ watch(
               <el-icon><Setting /></el-icon>
             </button>
           </el-tooltip>
+          <PageRefreshButton :action="refreshCurrentView" :loading="pageRefreshing" />
         </div>
         <div v-else class="vault-page__toolbar-actions">
           <el-input
@@ -2531,17 +2609,22 @@ watch(
             class="vault-page__search"
             placeholder="搜索密钥名..."
           />
-          <el-tooltip content="添加密钥" placement="bottom">
-            <button
-              type="button"
-              class="vault-round-action vault-round-action--primary"
-              :disabled="environmentLoading || !!editingKey || keySubmitting || !!deletingKey"
-              aria-label="添加密钥"
-              @click="openKeyDialog"
-            >
-              <el-icon><Plus /></el-icon>
-            </button>
-          </el-tooltip>
+
+          <button
+            type="button"
+            class="vault-round-action vault-round-action--primary"
+            :disabled="environmentLoading || !!editingKey || keySubmitting || !!deletingKey"
+            aria-label="添加密钥"
+            @click="openKeyDialog"
+          >
+            <el-icon><Plus /></el-icon>
+          </button>
+
+          <PageRefreshButton
+            :action="refreshCurrentView"
+            :loading="pageRefreshing"
+            :disabled="!!editingKey || keySubmitting || !!deletingKey"
+          />
         </div>
       </div>
 
@@ -2569,35 +2652,30 @@ watch(
             <span>{{ group.count ?? '--' }} 个密钥</span>
             <span class="vault-groups__actions">
               <template v-if="managementMode">
-                <el-tooltip content="编辑配置目录" placement="top">
-                  <button
-                    type="button"
-                    class="vault-groups__edit vault-edit-action"
-                    :disabled="!!deletingFolderGroupId"
-                    :aria-label="`编辑${group.name}`"
-                    @click.stop="openFolderEdit(group)"
-                    @keydown.enter.stop
-                  >
-                    <el-icon><Edit /></el-icon>
-                  </button>
-                </el-tooltip>
-                <el-tooltip content="删除配置目录" placement="top">
-                  <button
-                    type="button"
-                    class="vault-groups__delete vault-delete-action"
-                    :disabled="!!deletingFolderGroupId"
-                    :aria-label="`删除${group.name}`"
-                    @click.stop="confirmFolderDelete(group)"
-                    @keydown.enter.stop
-                  >
-                    <el-icon
-                      :class="{ 'is-loading': deletingFolderGroupId === group.folderGroupId }"
-                    >
-                      <Loading v-if="deletingFolderGroupId === group.folderGroupId" />
-                      <Delete v-else />
-                    </el-icon>
-                  </button>
-                </el-tooltip>
+                <button
+                  type="button"
+                  class="vault-groups__edit vault-edit-action"
+                  :disabled="!!deletingFolderGroupId"
+                  :aria-label="`编辑${group.name}`"
+                  @click.stop="openFolderEdit(group)"
+                  @keydown.enter.stop
+                >
+                  <el-icon><Edit /></el-icon>
+                </button>
+
+                <button
+                  type="button"
+                  class="vault-groups__delete vault-delete-action"
+                  :disabled="!!deletingFolderGroupId"
+                  :aria-label="`删除${group.name}`"
+                  @click.stop="confirmFolderDelete(group)"
+                  @keydown.enter.stop
+                >
+                  <el-icon :class="{ 'is-loading': deletingFolderGroupId === group.folderGroupId }">
+                    <Loading v-if="deletingFolderGroupId === group.folderGroupId" />
+                    <Delete v-else />
+                  </el-icon>
+                </button>
               </template>
               <el-icon><ArrowRight /></el-icon>
             </span>
@@ -2685,17 +2763,12 @@ watch(
                       :aria-label="`编辑${environment.name}环境值`"
                     />
                     <span class="vault-table__edit-value-actions">
-                      <el-tooltip
-                        v-if="environment.isCheckPerm"
-                        :content="
-                          isSecretValueVisible(row.key, environment.code) ? '隐藏值' : '显示值'
-                        "
-                        placement="top"
-                      >
+                      <template v-if="environment.isCheckPerm">
                         <button
                           type="button"
                           :disabled="keySubmitting"
                           :aria-label="`${isSecretValueVisible(row.key, environment.code) ? '隐藏' : '显示'}当前密钥的${environment.name}环境值`"
+                          :aria-pressed="isSecretValueVisible(row.key, environment.code)"
                           @click="toggleSecretValueVisibility(row.key, environment.code)"
                         >
                           <el-icon>
@@ -2703,17 +2776,16 @@ watch(
                             <Hide v-else />
                           </el-icon>
                         </button>
-                      </el-tooltip>
-                      <el-tooltip content="展开编辑" placement="top">
-                        <button
-                          type="button"
-                          :disabled="keySubmitting"
-                          :aria-label="`展开编辑${environment.name}环境值`"
-                          @click="openExpandedKeyEdit"
-                        >
-                          <el-icon><Maximize2 :stroke-width="1.8" /></el-icon>
-                        </button>
-                      </el-tooltip>
+                      </template>
+
+                      <button
+                        type="button"
+                        :disabled="keySubmitting"
+                        :aria-label="`展开编辑${environment.name}环境值`"
+                        @click="openExpandedKeyEdit"
+                      >
+                        <el-icon><Maximize2 :stroke-width="1.8" /></el-icon>
+                      </button>
                     </span>
                   </div>
                   <span v-else class="vault-table__value">
@@ -2778,95 +2850,85 @@ watch(
                         <span class="vault-table__commit-required" aria-hidden="true">*</span>
                       </template>
                     </el-input>
-                    <el-tooltip content="保存" placement="top">
-                      <button
-                        type="button"
-                        class="is-success"
-                        :disabled="keySubmitting"
-                        aria-label="保存修改"
-                        @click="updateKey"
-                      >
-                        <el-icon :class="{ 'is-loading': keySubmitting }">
-                          <Loading v-if="keySubmitting" />
-                          <Check v-else />
-                        </el-icon>
-                      </button>
-                    </el-tooltip>
-                    <el-tooltip content="取消" placement="top">
-                      <button
-                        type="button"
-                        :disabled="keySubmitting"
-                        aria-label="取消编辑"
-                        @click="cancelKeyEdit"
-                      >
-                        <el-icon><Close /></el-icon>
-                      </button>
-                    </el-tooltip>
+
+                    <button
+                      type="button"
+                      class="is-success"
+                      :disabled="keySubmitting"
+                      aria-label="保存修改"
+                      @click="updateKey"
+                    >
+                      <el-icon :class="{ 'is-loading': keySubmitting }">
+                        <Loading v-if="keySubmitting" />
+                        <Check v-else />
+                      </el-icon>
+                    </button>
+
+                    <button
+                      type="button"
+                      :disabled="keySubmitting"
+                      aria-label="取消编辑"
+                      @click="cancelKeyEdit"
+                    >
+                      <el-icon><Close /></el-icon>
+                    </button>
                   </template>
                   <template v-else>
-                    <el-tooltip content="编辑" placement="top">
-                      <button
-                        type="button"
-                        class="vault-edit-action"
-                        :disabled="
-                          !!editingKey || keySubmitting || !!deletingKey || !!historyLoadingKey
-                        "
-                        aria-label="编辑密钥"
-                        @click="editKey(row)"
-                      >
-                        <el-icon><Edit /></el-icon>
-                      </button>
-                    </el-tooltip>
-                    <el-tooltip
-                      :content="expandedHistoryKey === row.key ? '收起历史版本' : '历史版本'"
-                      placement="top"
+                    <button
+                      type="button"
+                      class="vault-edit-action"
+                      :disabled="
+                        !!editingKey || keySubmitting || !!deletingKey || !!historyLoadingKey
+                      "
+                      aria-label="编辑密钥"
+                      @click="editKey(row)"
                     >
-                      <button
-                        type="button"
-                        class="is-history"
-                        :class="{ 'is-active': expandedHistoryKey === row.key }"
-                        :disabled="
-                          !!editingKey || keySubmitting || !!deletingKey || !!historyLoadingKey
-                        "
-                        aria-label="查看密钥历史版本"
-                        :aria-expanded="expandedHistoryKey === row.key"
-                        @click="openKeyHistory(row)"
-                      >
-                        <el-icon :class="{ 'is-loading': historyLoadingKey === row.key }">
-                          <Loading v-if="historyLoadingKey === row.key" />
-                          <History v-else :stroke-width="1.8" />
-                        </el-icon>
-                      </button>
-                    </el-tooltip>
-                    <el-tooltip content="操作日志" placement="top">
-                      <button
-                        type="button"
-                        class="is-audit"
-                        :disabled="
-                          !!editingKey || keySubmitting || !!deletingKey || !!historyLoadingKey
-                        "
-                        aria-label="查看密钥操作日志"
-                        @click="openSecretAudit(row)"
-                      >
-                        <el-icon><ClipboardList :stroke-width="1.8" /></el-icon>
-                      </button>
-                    </el-tooltip>
-                    <el-tooltip content="删除" placement="top">
-                      <button
-                        type="button"
-                        class="is-danger vault-delete-action"
-                        :disabled="
-                          !!editingKey || keySubmitting || !!deletingKey || !!historyLoadingKey
-                        "
-                        aria-label="删除密钥"
-                        @click="deleteKey(row)"
-                      >
-                        <el-icon :class="{ 'is-loading': deletingKey === row.key }">
-                          <Loading v-if="deletingKey === row.key" />
-                          <Delete v-else />
-                        </el-icon>
-                      </button>
-                    </el-tooltip>
+                      <el-icon><Edit /></el-icon>
+                    </button>
+
+                    <button
+                      type="button"
+                      class="is-history"
+                      :class="{ 'is-active': expandedHistoryKey === row.key }"
+                      :disabled="
+                        !!editingKey || keySubmitting || !!deletingKey || !!historyLoadingKey
+                      "
+                      aria-label="查看密钥历史版本"
+                      :aria-expanded="expandedHistoryKey === row.key"
+                      @click="openKeyHistory(row)"
+                    >
+                      <el-icon :class="{ 'is-loading': historyLoadingKey === row.key }">
+                        <Loading v-if="historyLoadingKey === row.key" />
+                        <History v-else :stroke-width="1.8" />
+                      </el-icon>
+                    </button>
+
+                    <button
+                      type="button"
+                      class="is-audit"
+                      :disabled="
+                        !!editingKey || keySubmitting || !!deletingKey || !!historyLoadingKey
+                      "
+                      aria-label="查看密钥操作日志"
+                      @click="openSecretAudit(row)"
+                    >
+                      <el-icon><ClipboardList :stroke-width="1.8" /></el-icon>
+                    </button>
+
+                    <button
+                      type="button"
+                      class="is-danger vault-delete-action"
+                      :disabled="
+                        !!editingKey || keySubmitting || !!deletingKey || !!historyLoadingKey
+                      "
+                      aria-label="删除密钥"
+                      @click="deleteKey(row)"
+                    >
+                      <el-icon :class="{ 'is-loading': deletingKey === row.key }">
+                        <Loading v-if="deletingKey === row.key" />
+                        <Delete v-else />
+                      </el-icon>
+                    </button>
                   </template>
                 </td>
               </tr>
@@ -3072,28 +3134,24 @@ watch(
             <div class="vault-history-detail-dialog__section-head">
               <strong>环境值</strong>
               <span class="vault-history-detail-dialog__value-actions">
-                <el-tooltip
-                  v-if="historyVersionSelection.environment.isCheckPerm"
-                  :content="historyDetailValueVisible ? '隐藏值' : '显示值'"
-                  placement="top"
-                >
+                <template v-if="historyVersionSelection.environment.isCheckPerm">
                   <button
                     type="button"
                     :aria-label="historyDetailValueVisible ? '隐藏版本值' : '显示版本值'"
+                    :aria-pressed="historyDetailValueVisible"
                     @click="historyDetailValueVisible = !historyDetailValueVisible"
                   >
                     <el-icon><View v-if="historyDetailValueVisible" /><Hide v-else /></el-icon>
                   </button>
-                </el-tooltip>
-                <el-tooltip content="复制值" placement="top">
-                  <button
-                    type="button"
-                    aria-label="复制版本值"
-                    @click="copyValue(historyVersionSelection.item.value)"
-                  >
-                    <el-icon><CopyDocument /></el-icon>
-                  </button>
-                </el-tooltip>
+                </template>
+
+                <button
+                  type="button"
+                  aria-label="复制版本值"
+                  @click="copyValue(historyVersionSelection.item.value)"
+                >
+                  <el-icon><CopyDocument /></el-icon>
+                </button>
               </span>
             </div>
             <code
@@ -3229,14 +3287,11 @@ watch(
                             ></code>
                           </el-tooltip>
                           <span class="vault-history-detail-dialog__value-actions">
-                            <el-tooltip
-                              v-if="entry.environment.isCheckPerm"
-                              :content="isHistoryBatchValueVisible(entry) ? '隐藏值' : '显示值'"
-                              placement="top"
-                            >
+                            <template v-if="entry.environment.isCheckPerm">
                               <button
                                 type="button"
                                 :aria-label="`${isHistoryBatchValueVisible(entry) ? '隐藏' : '显示'}${entry.environment.name}环境值`"
+                                :aria-pressed="isHistoryBatchValueVisible(entry)"
                                 @click="toggleHistoryBatchValue(entry)"
                               >
                                 <el-icon>
@@ -3244,16 +3299,15 @@ watch(
                                   <Hide v-else />
                                 </el-icon>
                               </button>
-                            </el-tooltip>
-                            <el-tooltip content="复制值" placement="top">
-                              <button
-                                type="button"
-                                :aria-label="`复制${entry.environment.name}环境值`"
-                                @click="copyValue(entry.item.value)"
-                              >
-                                <el-icon><CopyDocument /></el-icon>
-                              </button>
-                            </el-tooltip>
+                            </template>
+
+                            <button
+                              type="button"
+                              :aria-label="`复制${entry.environment.name}环境值`"
+                              @click="copyValue(entry.item.value)"
+                            >
+                              <el-icon><CopyDocument /></el-icon>
+                            </button>
                           </span>
                         </div>
                       </td>
@@ -3476,17 +3530,16 @@ watch(
                 placeholder="可选说明"
                 :aria-label="`第 ${index + 1} 行说明`"
               />
-              <el-tooltip content="删除此行" placement="top">
-                <button
-                  type="button"
-                  class="vault-key-table__remove vault-delete-action"
-                  :disabled="keySubmitting || keyDraftRows.length <= 1"
-                  :aria-label="`删除第 ${index + 1} 行`"
-                  @click="removeKeyDraftRow(index)"
-                >
-                  <el-icon><Delete /></el-icon>
-                </button>
-              </el-tooltip>
+
+              <button
+                type="button"
+                class="vault-key-table__remove vault-delete-action"
+                :disabled="keySubmitting || keyDraftRows.length <= 1"
+                :aria-label="`删除第 ${index + 1} 行`"
+                @click="removeKeyDraftRow(index)"
+              >
+                <el-icon><Delete /></el-icon>
+              </button>
             </div>
           </div>
         </div>
@@ -3530,23 +3583,20 @@ watch(
                 </span>
                 <strong>{{ environment.name }}</strong>
               </span>
-              <el-tooltip
-                :content="isSecretValueVisible(editingKey, environment.code) ? '隐藏值' : '显示值'"
-                placement="top"
+
+              <button
+                type="button"
+                class="vault-secret-edit-dialog__visibility"
+                :disabled="keySubmitting"
+                :aria-label="`${isSecretValueVisible(editingKey, environment.code) ? '隐藏' : '显示'}当前密钥的${environment.name}环境值`"
+                :aria-pressed="isSecretValueVisible(editingKey, environment.code)"
+                @click="toggleSecretValueVisibility(editingKey, environment.code)"
               >
-                <button
-                  type="button"
-                  class="vault-secret-edit-dialog__visibility"
-                  :disabled="keySubmitting"
-                  :aria-label="`${isSecretValueVisible(editingKey, environment.code) ? '隐藏' : '显示'}当前密钥的${environment.name}环境值`"
-                  @click="toggleSecretValueVisibility(editingKey, environment.code)"
-                >
-                  <el-icon>
-                    <View v-if="isSecretValueVisible(editingKey, environment.code)" />
-                    <Hide v-else />
-                  </el-icon>
-                </button>
-              </el-tooltip>
+                <el-icon>
+                  <View v-if="isSecretValueVisible(editingKey, environment.code)" />
+                  <Hide v-else />
+                </el-icon>
+              </button>
             </div>
             <el-input
               v-model="keyForm.values[environment.code]"

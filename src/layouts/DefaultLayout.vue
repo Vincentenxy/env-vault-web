@@ -137,20 +137,15 @@ async function onLogout(): Promise<void> {
           </div>
         </el-popover>
 
-        <el-tooltip
-          :content="theme.mode === 'dark' ? '切换为亮色' : '切换为暗色'"
-          placement="bottom"
+        <button
+          type="button"
+          class="ops-layout__icon-button"
+          :aria-label="theme.mode === 'dark' ? '切换为亮色' : '切换为暗色'"
+          @click="theme.toggleMode"
         >
-          <button
-            type="button"
-            class="ops-layout__icon-button"
-            :aria-label="theme.mode === 'dark' ? '切换为亮色' : '切换为暗色'"
-            @click="theme.toggleMode"
-          >
-            <Sun v-if="theme.mode === 'dark'" :size="16" :stroke-width="1.7" />
-            <Moon v-else :size="16" :stroke-width="1.7" />
-          </button>
-        </el-tooltip>
+          <Sun v-if="theme.mode === 'dark'" :size="16" :stroke-width="1.7" />
+          <Moon v-else :size="16" :stroke-width="1.7" />
+        </button>
 
         <span class="ops-layout__tool-divider"></span>
 
@@ -247,7 +242,7 @@ async function onLogout(): Promise<void> {
     </aside>
 
     <main class="ops-layout__main">
-      <RouterView />
+      <RouterView :key="route.path" />
     </main>
   </div>
 </template>

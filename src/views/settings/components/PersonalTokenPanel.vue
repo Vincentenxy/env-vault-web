@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PageRefreshButton from '@/components/PageRefreshButton.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { Copy, Eye, EyeOff, KeySquare, Plus, Trash2 } from '@lucide/vue'
@@ -184,15 +185,22 @@ onBeforeUnmount(() => {
         <h2>个人 Token</h2>
         <span>{{ activeTokenCount }}/{{ MAX_ACTIVE_TOKENS }} 个有效</span>
       </div>
-      <button
-        type="button"
-        class="personal-tokens__add"
-        :disabled="createDisabled"
-        aria-label="新增个人 Token"
-        @click="openCreate"
-      >
-        <Plus :size="17" :stroke-width="2" />
-      </button>
+      <div class="personal-tokens__actions">
+        <button
+          type="button"
+          class="personal-tokens__add"
+          :disabled="createDisabled"
+          aria-label="新增个人 Token"
+          @click="openCreate"
+        >
+          <Plus :size="17" :stroke-width="2" />
+        </button>
+        <PageRefreshButton
+          :action="loadList"
+          :loading="listLoading"
+          :disabled="formSubmitting || !!deletingID"
+        />
+      </div>
     </header>
 
     <div v-loading="listLoading" class="personal-tokens__table-wrap">
@@ -332,6 +340,11 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped lang="scss">
+.personal-tokens__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 .personal-tokens {
   min-height: 420px;
   border: 1px solid var(--v-surface-border);

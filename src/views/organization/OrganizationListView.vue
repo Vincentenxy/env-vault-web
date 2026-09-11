@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useNavigationMemory } from '@/composables/use-navigation-memory'
+import PageRefreshButton from '@/components/PageRefreshButton.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowDown,
@@ -45,23 +47,37 @@ type CardTone = 'blue' | 'violet' | 'teal' | 'rose'
 type DeleteResourceHandler = (id: string) => Promise<unknown>
 
 const router = useRouter()
+const navigation = useNavigationMemory('organizations', {
+  tenantId: '',
+  orgId: '',
+  projectId: '',
+  page: 1,
+  search: '',
+})
 const tenantHierarchy = ref<TenantHierarchyOption[]>([])
 const tenants = ref<Tenant[]>([])
 const organizations = ref<Organization[]>([])
 const projects = ref<Project[]>([])
-const selectedTenantId = ref('')
-const selectedOrganizationId = ref('')
-const selectedProjectId = ref('')
+const selectedTenantId = ref(navigation.saved.tenantId)
+const selectedOrganizationId = ref(navigation.saved.orgId)
+const selectedProjectId = ref(navigation.saved.projectId)
 const hierarchyLoading = ref(false)
 const contentLoading = ref(false)
 const loadFailed = ref(false)
-const currentPage = ref(1)
+const currentPage = ref(navigation.saved.page)
 const pageSize = ref(10)
 const total = ref(0)
-const searchKeyword = ref('')
+const searchKeyword = ref(navigation.saved.search)
 const favoriteOnly = ref(false)
 const managementMode = ref(false)
 const favoriteIds = reactive(new Set<string>())
+navigation.track(() => ({
+  tenantId: selectedTenantId.value,
+  orgId: selectedOrganizationId.value,
+  projectId: selectedProjectId.value,
+  page: currentPage.value,
+  search: searchKeyword.value,
+}))
 
 // 后端删除接口开放后，按资源层级在此接入对应请求方法。
 const deleteResourceHandlers: Partial<Record<ResourceLevel, DeleteResourceHandler>> = {}
@@ -314,6 +330,19 @@ async function loadHierarchy(): Promise<void> {
     ) {
       selectedTenantId.value = ''
       selectedOrganizationId.value = ''
+      selectedProjectId.value = ''
+      currentPage.value = 1
+    }
+    const tenant = tenantHierarchy.value.find((item) => item.id === selectedTenantId.value)
+    const org = tenant?.orgList.find((item) => item.id === selectedOrganizationId.value)
+    if (selectedOrganizationId.value && !org) {
+      selectedOrganizationId.value = ''
+      selectedProjectId.value = ''
+      currentPage.value = 1
+    } else if (
+      selectedProjectId.value &&
+      !org?.projectList.some((item) => item.id === selectedProjectId.value)
+    ) {
       selectedProjectId.value = ''
     }
   } catch {
@@ -820,28 +849,27 @@ onBeforeUnmount(() => {
             ><el-icon><Search /></el-icon
           ></template>
         </el-input>
-        <el-tooltip content="新建" placement="bottom">
-          <button
-            type="button"
-            class="round-action round-action--primary"
-            aria-label="新建"
-            @click="openCreate"
-          >
-            <el-icon><Plus /></el-icon>
-          </button>
-        </el-tooltip>
-        <el-tooltip :content="favoriteOnly ? '显示全部' : '仅显示收藏'" placement="bottom">
-          <button
-            type="button"
-            class="round-action"
-            :class="{ 'is-active': favoriteOnly }"
-            :aria-pressed="favoriteOnly"
-            aria-label="筛选收藏"
-            @click="favoriteOnly = !favoriteOnly"
-          >
-            <el-icon><StarFilled v-if="favoriteOnly" /><Star v-else /></el-icon>
-          </button>
-        </el-tooltip>
+
+        <button
+          type="button"
+          class="round-action round-action--primary"
+          aria-label="新建"
+          @click="openCreate"
+        >
+          <el-icon><Plus /></el-icon>
+        </button>
+
+        <button
+          type="button"
+          class="round-action"
+          :class="{ 'is-active': favoriteOnly }"
+          :aria-pressed="favoriteOnly"
+          aria-label="筛选收藏"
+          @click="favoriteOnly = !favoriteOnly"
+        >
+          <el-icon><StarFilled v-if="favoriteOnly" /><Star v-else /></el-icon>
+        </button>
+
         <el-tooltip :content="managementMode ? '退出管理' : '管理卡片'" placement="bottom">
           <button
             type="button"
@@ -854,6 +882,7 @@ onBeforeUnmount(() => {
             <el-icon><Setting /></el-icon>
           </button>
         </el-tooltip>
+        <PageRefreshButton :action="refreshPage" :loading="hierarchyLoading || contentLoading" />
       </div>
     </header>
 
@@ -872,44 +901,40 @@ onBeforeUnmount(() => {
               <el-icon><Folder v-if="isProject(item)" /><OfficeBuilding v-else /></el-icon>
             </span>
             <span class="resource-card__actions">
-              <el-tooltip :content="favoriteIds.has(item.id) ? '取消收藏' : '收藏'" placement="top">
+              <button
+                type="button"
+                class="resource-card__favorite"
+                :class="{ 'is-active': favoriteIds.has(item.id) }"
+                :aria-label="favoriteIds.has(item.id) ? '取消收藏' : '收藏'"
+                @click.stop="toggleFavorite(item)"
+                @keydown.enter.stop
+              >
+                <el-icon>
+                  <StarFilled v-if="favoriteIds.has(item.id)" />
+                  <Star v-else />
+                </el-icon>
+              </button>
+
+              <template v-if="managementMode">
                 <button
                   type="button"
-                  class="resource-card__favorite"
-                  :class="{ 'is-active': favoriteIds.has(item.id) }"
-                  :aria-label="favoriteIds.has(item.id) ? '取消收藏' : '收藏'"
-                  @click.stop="toggleFavorite(item)"
+                  class="resource-card__edit vault-edit-action"
+                  :aria-label="`编辑${item.name}`"
+                  @click.stop="openResourceEdit(item)"
                   @keydown.enter.stop
                 >
-                  <el-icon>
-                    <StarFilled v-if="favoriteIds.has(item.id)" />
-                    <Star v-else />
-                  </el-icon>
+                  <el-icon><Edit /></el-icon>
                 </button>
-              </el-tooltip>
-              <template v-if="managementMode">
-                <el-tooltip :content="`编辑${resourceLabel(resourceLevel)}`" placement="top">
-                  <button
-                    type="button"
-                    class="resource-card__edit vault-edit-action"
-                    :aria-label="`编辑${item.name}`"
-                    @click.stop="openResourceEdit(item)"
-                    @keydown.enter.stop
-                  >
-                    <el-icon><Edit /></el-icon>
-                  </button>
-                </el-tooltip>
-                <el-tooltip :content="`删除${resourceLabel(resourceLevel)}`" placement="top">
-                  <button
-                    type="button"
-                    class="resource-card__delete vault-delete-action"
-                    :aria-label="`删除${item.name}`"
-                    @click.stop="confirmResourceDelete(item)"
-                    @keydown.enter.stop
-                  >
-                    <el-icon><Delete /></el-icon>
-                  </button>
-                </el-tooltip>
+
+                <button
+                  type="button"
+                  class="resource-card__delete vault-delete-action"
+                  :aria-label="`删除${item.name}`"
+                  @click.stop="confirmResourceDelete(item)"
+                  @keydown.enter.stop
+                >
+                  <el-icon><Delete /></el-icon>
+                </button>
               </template>
             </span>
           </div>

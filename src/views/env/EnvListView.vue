@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useNavigationMemory } from '@/composables/use-navigation-memory'
+import PageRefreshButton from '@/components/PageRefreshButton.vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import {
   ArrowRight,
@@ -8,7 +10,6 @@ import {
   Clock,
   FolderOpened,
   Plus,
-  Refresh,
   Search,
   View,
 } from '@element-plus/icons-vue'
@@ -31,9 +32,14 @@ const envStore = useEnvStore()
 const orgStore = useOrganizationStore()
 const projectStore = useProjectStore()
 const { has, rbac } = usePermission()
+const navigation = useNavigationMemory('environments', { orgId: '', projectId: '' })
+const navigationReady = ref(false)
 
 const selectedOrgId = ref<string>('')
 const selectedProjectId = ref<string>('')
+navigation.track(() =>
+  navigationReady.value ? { orgId: selectedOrgId.value, projectId: selectedProjectId.value } : null,
+)
 const searchKeyword = ref('')
 
 const orgOptions = computed<Organization[]>(() => orgStore.items)
@@ -61,13 +67,13 @@ async function onRefresh(): Promise<void> {
   }
 }
 
-function onOrgChange(orgId: string): void {
+async function onOrgChange(orgId: string): Promise<void> {
   selectedOrgId.value = orgId
   selectedProjectId.value = ''
   envStore.clear()
   if (!orgId) return
   // 加载该 org 下的 project 列表
-  projectStore.fetchList({ orgId, pageNum: 1, pageSize: 100 }).catch(() => undefined)
+  await projectStore.fetchList({ orgId, pageNum: 1, pageSize: 100 }).catch(() => undefined)
 }
 
 function onProjectChange(projectId: string): void {
@@ -220,36 +226,49 @@ onMounted(async () => {
   }
 
   // 2. 从 query 预选 org + project
-  const presetOrgId = (route.query.orgId as string | undefined) ?? ''
-  const presetProjectId = (route.query.projectId as string | undefined) ?? ''
+  const presetOrgId =
+    typeof route.query.orgId === 'string' ? route.query.orgId : navigation.saved.orgId
+  const presetProjectId =
+    typeof route.query.projectId === 'string'
+      ? route.query.projectId
+      : presetOrgId === navigation.saved.orgId
+        ? navigation.saved.projectId
+        : ''
 
   if (presetOrgId && orgStore.items.some((o) => o.id === presetOrgId)) {
-    onOrgChange(presetOrgId)
+    await onOrgChange(presetOrgId)
     if (presetProjectId) {
-      // 等待 project 列表加载
-      await projectStore
-        .fetchList({ orgId: presetOrgId, pageNum: 1, pageSize: 100 })
-        .catch(() => undefined)
       if (projectStore.items.some((p) => p.id === presetProjectId)) {
         onProjectChange(presetProjectId)
       }
     }
   } else if (orgStore.items.length > 0) {
     const first = orgStore.items[0]
-    if (first) onOrgChange(first.id)
+    if (first) await onOrgChange(first.id)
   }
+  navigationReady.value = true
 })
 
 // 监听 query 变化(支持跨页跳转)
 watch(
   () => [route.query.orgId, route.query.projectId],
-  ([orgId, projectId]) => {
-    const o = (orgId as string | undefined) ?? ''
-    const p = (projectId as string | undefined) ?? ''
-    if (o && o !== selectedOrgId.value) onOrgChange(o)
-    else if (p && p !== selectedProjectId.value) onProjectChange(p)
+  async ([orgId, projectId]) => {
+    if (!navigationReady.value) return
+    const o = typeof orgId === 'string' ? orgId : ''
+    const p = typeof projectId === 'string' ? projectId : ''
+    if (o === selectedOrgId.value && p === selectedProjectId.value) return
+    navigationReady.value = false
+    if (o !== selectedOrgId.value) await onOrgChange(o)
+    onProjectChange(projectOptions.value.some((item) => item.id === p) ? p : '')
+    navigationReady.value = true
   },
 )
+
+watch([selectedOrgId, selectedProjectId, navigationReady], ([orgId, projectId, ready]) => {
+  if (!ready) return
+  if (route.query.orgId === orgId && route.query.projectId === projectId) return
+  void router.replace({ query: { ...route.query, orgId, projectId } })
+})
 
 // 选中 project 后,切 rbac 当前 scope 到 project 级别
 watch(
@@ -270,9 +289,6 @@ watch(
         </p>
       </div>
       <div class="page-header__actions">
-        <el-button :icon="Refresh" :disabled="!selectedProjectId" @click="onRefresh">
-          刷新
-        </el-button>
         <el-select
           v-model="selectedOrgId"
           placeholder="选择组织"
@@ -325,6 +341,11 @@ watch(
         >
           新建环境
         </el-button>
+        <PageRefreshButton
+          :action="onRefresh"
+          :loading="envStore.loading"
+          :disabled="!selectedProjectId"
+        />
       </div>
     </header>
 
@@ -358,15 +379,14 @@ watch(
         </el-table-column>
         <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
-            <el-tooltip content="操作日志" placement="top">
-              <el-button
-                link
-                type="primary"
-                :icon="Clock"
-                aria-label="查看环境操作日志"
-                @click="openAudit(row as Environment)"
-              />
-            </el-tooltip>
+            <el-button
+              link
+              type="primary"
+              :icon="Clock"
+              aria-label="查看环境操作日志"
+              @click="openAudit(row as Environment)"
+            />
+
             <el-button
               link
               type="primary"

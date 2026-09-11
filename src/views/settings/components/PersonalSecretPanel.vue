@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PageRefreshButton from '@/components/PageRefreshButton.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import {
@@ -435,26 +436,30 @@ onBeforeUnmount(() => {
           @keyup.enter="search"
           @clear="clearSearch"
         />
-        <el-tooltip content="查询" placement="bottom">
-          <button
-            type="button"
-            class="personal-secrets__round-action"
-            aria-label="查询"
-            @click="search"
-          >
-            <Search :size="16" :stroke-width="1.8" />
-          </button>
-        </el-tooltip>
-        <el-tooltip content="新增" placement="bottom">
-          <button
-            type="button"
-            class="personal-secrets__round-action personal-secrets__round-action--primary"
-            aria-label="新增个人密钥"
-            @click="openCreate"
-          >
-            <Plus :size="16" :stroke-width="1.8" />
-          </button>
-        </el-tooltip>
+
+        <button
+          type="button"
+          class="personal-secrets__round-action"
+          aria-label="查询"
+          @click="search"
+        >
+          <Search :size="16" :stroke-width="1.8" />
+        </button>
+
+        <button
+          type="button"
+          class="personal-secrets__round-action personal-secrets__round-action--primary"
+          aria-label="新增个人密钥"
+          @click="openCreate"
+        >
+          <Plus :size="16" :stroke-width="1.8" />
+        </button>
+
+        <PageRefreshButton
+          :action="loadList"
+          :loading="listLoading"
+          :disabled="formSubmitting || !!deletingID"
+        />
       </div>
     </header>
 
@@ -552,7 +557,7 @@ onBeforeUnmount(() => {
       <div v-else-if="!listLoading" class="personal-secrets__empty">
         <span><KeyRound :size="25" :stroke-width="1.6" /></span>
         <strong>{{ keyword ? '没有匹配的个人密钥' : '暂无个人密钥' }}</strong>
-        <el-tooltip v-if="!keyword" content="新增" placement="bottom">
+        <template v-if="!keyword">
           <button
             type="button"
             class="personal-secrets__round-action personal-secrets__round-action--primary"
@@ -561,7 +566,7 @@ onBeforeUnmount(() => {
           >
             <Plus :size="16" :stroke-width="1.8" />
           </button>
-        </el-tooltip>
+        </template>
       </div>
     </div>
 

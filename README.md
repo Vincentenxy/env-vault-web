@@ -613,6 +613,16 @@ total.value = resp.total
 - 复制成功使用 `ElMessage.success('已复制')`,不允许 toast 滥用。
 - **Secret 明文展示**:使用 `ElDialog` + `ElInput(type=textarea, readonly)`,关闭时清空本地变量,且按钮触发后才调 `reveal`,不做进入页面自动拉明文。
 
+### 页面导航记忆
+
+- 当前标签页使用 `sessionStorage` 保存导航位置，刷新页面或切换菜单后返回时恢复
+- 密钥管理保存组织、项目、Folder、groups 二级目录及目录分页和筛选条件；组织管理保存租户、组织、项目层级及分页和筛选条件
+- 项目列表、项目详情目录和详情 Tab、环境管理的组织与项目、用户管理的租户、个人中心 Tab 同样支持恢复
+- 地址中明确指定的项目或组织优先于浏览器记忆，恢复目录前重新查询接口；已删除或无权访问的位置回退到可用的上级列表
+- 仅保存导航标识和选项，不保存 Secret 值、Token 明文、编辑内容或明文可见状态；登录新账号和退出登录时清理导航记忆
+- 刷新图标位于各页面内容操作栏最右侧，与搜索、新增等按钮同一行；复用当前页面查询方法，仅刷新当前层级的数据，保留项目、目录、分页和筛选条件，加载时旋转并禁止重复点击
+- 公共实现位于 `src/composables/use-navigation-memory.ts`，页面显式声明可保存的字段，异步恢复期间暂停写入
+
 ## 13. 安全实践
 
 - 严禁把 Secret 明文 value 写入 store 持久化数据、localStorage、URL query、history state、浏览器 console。

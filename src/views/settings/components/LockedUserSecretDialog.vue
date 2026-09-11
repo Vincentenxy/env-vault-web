@@ -165,16 +165,15 @@ watch(
             @keyup.enter="search"
             @clear="clearSearch"
           />
-          <el-tooltip content="查询" placement="bottom">
-            <button
-              type="button"
-              class="locked-user-secret-dialog__round-action"
-              aria-label="查询个人密钥"
-              @click="search"
-            >
-              <Search :size="16" :stroke-width="1.8" />
-            </button>
-          </el-tooltip>
+
+          <button
+            type="button"
+            class="locked-user-secret-dialog__round-action"
+            aria-label="查询个人密钥"
+            @click="search"
+          >
+            <Search :size="16" :stroke-width="1.8" />
+          </button>
         </div>
       </div>
     </template>
@@ -204,21 +203,17 @@ watch(
             <template #header>
               <div class="locked-user-secret-password locked-user-secret-password--header">
                 <span>密码</span>
-                <el-tooltip
-                  :content="allPasswordsVisible ? '隐藏全部密码' : '查看全部密码'"
-                  placement="top"
+
+                <button
+                  type="button"
+                  class="locked-user-secret-password__toggle"
+                  :aria-label="allPasswordsVisible ? '隐藏全部密码' : '查看全部密码'"
+                  :aria-pressed="allPasswordsVisible"
+                  @click="toggleAllPasswords"
                 >
-                  <button
-                    type="button"
-                    class="locked-user-secret-password__toggle"
-                    :aria-label="allPasswordsVisible ? '隐藏全部密码' : '查看全部密码'"
-                    :aria-pressed="allPasswordsVisible"
-                    @click="toggleAllPasswords"
-                  >
-                    <EyeOff v-if="allPasswordsVisible" :size="15" :stroke-width="1.8" />
-                    <Eye v-else :size="15" :stroke-width="1.8" />
-                  </button>
-                </el-tooltip>
+                  <EyeOff v-if="allPasswordsVisible" :size="15" :stroke-width="1.8" />
+                  <Eye v-else :size="15" :stroke-width="1.8" />
+                </button>
               </div>
             </template>
             <template #default="{ row }">
@@ -226,27 +221,23 @@ watch(
                 <code :title="isPasswordVisible(asPersonalSecret(row).id) ? row.value : ''">
                   {{ isPasswordVisible(asPersonalSecret(row).id) ? row.value || '—' : '••••••••' }}
                 </code>
-                <el-tooltip
-                  :content="isPasswordVisible(asPersonalSecret(row).id) ? '隐藏密码' : '查看密码'"
-                  placement="top"
+
+                <button
+                  type="button"
+                  class="locked-user-secret-password__toggle"
+                  :aria-label="
+                    isPasswordVisible(asPersonalSecret(row).id) ? '隐藏密码' : '查看密码'
+                  "
+                  :aria-pressed="isPasswordVisible(asPersonalSecret(row).id)"
+                  @click="togglePassword(asPersonalSecret(row).id)"
                 >
-                  <button
-                    type="button"
-                    class="locked-user-secret-password__toggle"
-                    :aria-label="
-                      isPasswordVisible(asPersonalSecret(row).id) ? '隐藏密码' : '查看密码'
-                    "
-                    :aria-pressed="isPasswordVisible(asPersonalSecret(row).id)"
-                    @click="togglePassword(asPersonalSecret(row).id)"
-                  >
-                    <EyeOff
-                      v-if="isPasswordVisible(asPersonalSecret(row).id)"
-                      :size="15"
-                      :stroke-width="1.8"
-                    />
-                    <Eye v-else :size="15" :stroke-width="1.8" />
-                  </button>
-                </el-tooltip>
+                  <EyeOff
+                    v-if="isPasswordVisible(asPersonalSecret(row).id)"
+                    :size="15"
+                    :stroke-width="1.8"
+                  />
+                  <Eye v-else :size="15" :stroke-width="1.8" />
+                </button>
               </div>
             </template>
           </el-table-column>
