@@ -25,8 +25,16 @@ export function listTags(
   return http.post('/tag/list', request)
 }
 
-export function createTag(request: TagForm & { tenantId: string }): Promise<Tag> {
-  return http.post('/tag/create', request)
+/** 查询租户标签详情 */
+export function getTag(request: { tenantId: string; id: string }): Promise<Tag> {
+  return http.post('/tag/info', request)
+}
+
+export function createTag(
+  request: TagForm & { tenantId: string },
+  options?: { silent?: boolean },
+): Promise<Tag> {
+  return http.post('/tag/create', request, options)
 }
 
 export function updateTag(

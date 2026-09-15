@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import {
   ElMessage,
   ElMessageBox,
@@ -7,7 +7,16 @@ import {
   type FormInstance,
   type FormRules,
 } from 'element-plus'
-import { Check, Close, Delete, Plus, Rank, Search, UserFilled } from '@element-plus/icons-vue'
+import {
+  ArrowLeft,
+  Check,
+  Close,
+  Delete,
+  Plus,
+  Rank,
+  Search,
+  UserFilled,
+} from '@element-plus/icons-vue'
 import {
   allocateUsers,
   listUsers,
@@ -69,7 +78,10 @@ const emit = defineEmits<{
 
 const dialogVisible = computed({
   get: () => props.modelValue,
-  set: (value: boolean) => emit('update:modelValue', value),
+  set: (value: boolean) => {
+    if (!value && (props.submitting || tagBusy.value || memberBusy.value)) return
+    emit('update:modelValue', value)
+  },
 })
 
 const resourceLabel = computed(() => {
@@ -96,15 +108,18 @@ const members = ref<UserListItem[]>([])
 const memberLoading = ref(false)
 const memberLoadFailed = ref(false)
 const memberSearch = ref('')
-const addDialogVisible = ref(false)
+const memberAdding = ref(false)
 const candidateUsers = ref<UserListItem[]>([])
 const candidateLoading = ref(false)
+const candidateLoadFailed = ref(false)
 const candidateSearch = ref('')
 const selectedCandidateIds = ref<string[]>([])
 const allocating = ref(false)
 const removingUserId = ref('')
+const memberBusy = computed(() => allocating.value || !!removingUserId.value)
 let memberRequestSequence = 0
 let candidateRequestSequence = 0
+let dialogSequence = 0
 
 const environments = ref<Environment[]>([])
 const environmentLoading = ref(false)
@@ -232,25 +247,32 @@ async function loadMembers(): Promise<void> {
 }
 
 async function loadCandidates(): Promise<void> {
+  if (!memberAdding.value) return
+  const requestSequence = ++candidateRequestSequence
+  candidateLoadFailed.value = false
   const scope = candidateScopeRequest()
   if (!scope) {
     candidateUsers.value = []
+    candidateLoadFailed.value = true
+    candidateLoading.value = false
     ElMessage.error(`当前${resourceLabel.value}缺少上级信息，无法添加成员`)
     return
   }
 
-  const requestSequence = ++candidateRequestSequence
   candidateLoading.value = true
   try {
     const response = await listUsers(scope)
     if (requestSequence !== candidateRequestSequence) return
     const memberIds = new Set(members.value.map(userIdOf))
     candidateUsers.value = response.list.filter(
-      (user) => !user.isBlocked && !memberIds.has(userIdOf(user)),
+      (user) => !!userIdOf(user) && !user.isBlocked && !memberIds.has(userIdOf(user)),
     )
+    const candidateIds = new Set(candidateUsers.value.map(userIdOf))
+    selectedCandidateIds.value = selectedCandidateIds.value.filter((id) => candidateIds.has(id))
   } catch {
     if (requestSequence !== candidateRequestSequence) return
     candidateUsers.value = []
+    candidateLoadFailed.value = true
   } finally {
     if (requestSequence === candidateRequestSequence) candidateLoading.value = false
   }
@@ -280,9 +302,7 @@ function resetDialog(): void {
   form.remark = props.remark
   form.managerId = props.managerId
   memberSearch.value = ''
-  candidateSearch.value = ''
-  selectedCandidateIds.value = []
-  addDialogVisible.value = false
+  resetMemberAddPage()
 
   environments.value = []
   environmentLoadFailed.value = false
@@ -291,7 +311,8 @@ function resetDialog(): void {
 }
 
 function switchTab(tab: ResourceEditTab): void {
-  if (tagBusy.value) return
+  if (props.submitting || tagBusy.value || memberBusy.value) return
+  if (tab !== 'users') backToMembers()
   activeTab.value = tab
   if (tab === 'users') void loadMembers()
   if (tab === 'environments') void loadEnvironments()
@@ -414,14 +435,32 @@ async function submit(): Promise<void> {
   })
 }
 
-async function openAddDialog(): Promise<void> {
-  addDialogVisible.value = true
+function resetMemberAddPage(): void {
+  candidateRequestSequence += 1
+  memberAdding.value = false
+  candidateLoading.value = false
+  candidateLoadFailed.value = false
+  candidateUsers.value = []
   candidateSearch.value = ''
   selectedCandidateIds.value = []
+}
+
+// 返回只切换当前管理弹框的内容，同一次打开期间保留搜索和选择
+function backToMembers(): void {
+  if (allocating.value) return
+  memberAdding.value = false
+  candidateRequestSequence += 1
+  candidateLoading.value = false
+}
+
+async function openAddMembers(): Promise<void> {
+  if (memberLoading.value || memberLoadFailed.value || memberBusy.value) return
+  memberAdding.value = true
   await loadCandidates()
 }
 
 function toggleCandidate(userId: string, checked: CheckboxValueType): void {
+  if (allocating.value || candidateLoading.value || !memberAdding.value) return
   if (Boolean(checked)) {
     if (!selectedCandidateIds.value.includes(userId)) {
       selectedCandidateIds.value = [...selectedCandidateIds.value, userId]
@@ -432,6 +471,7 @@ function toggleCandidate(userId: string, checked: CheckboxValueType): void {
 }
 
 function toggleAllVisibleCandidates(checked: CheckboxValueType): void {
+  if (allocating.value || candidateLoading.value || !memberAdding.value) return
   const visibleIds = filteredCandidates.value.map(userIdOf).filter(Boolean)
   if (Boolean(checked)) {
     selectedCandidateIds.value = [...new Set([...selectedCandidateIds.value, ...visibleIds])]
@@ -442,19 +482,28 @@ function toggleAllVisibleCandidates(checked: CheckboxValueType): void {
 }
 
 async function addSelectedUsers(): Promise<void> {
-  if (!selectedCandidateIds.value.length || allocating.value) return
+  if (
+    !memberAdding.value ||
+    !selectedCandidateIds.value.length ||
+    allocating.value ||
+    candidateLoading.value ||
+    candidateLoadFailed.value
+  )
+    return
+  const requestSequence = dialogSequence
   allocating.value = true
   try {
     const result = await allocateUsers({
       type: allocationType.value,
       operate: 'add',
       resourceId: props.resourceId,
-      userIdList: selectedCandidateIds.value,
+      userIdList: [...selectedCandidateIds.value],
     })
+    if (requestSequence !== dialogSequence) return
     ElMessage.success(`已添加 ${result.affectedCount} 名成员`)
-    addDialogVisible.value = false
+    resetMemberAddPage()
     await loadMembers()
-    emit('members-changed')
+    if (requestSequence === dialogSequence) emit('members-changed')
   } catch (error) {
     if (!(error instanceof ApiError)) ElMessage.error('成员添加失败')
   } finally {
@@ -506,15 +555,35 @@ async function removeUser(user: UserListItem): Promise<void> {
 }
 
 watch(
-  () => [props.modelValue, props.resourceId, props.name, props.remark, props.managerId] as const,
+  () =>
+    [
+      props.modelValue,
+      props.resourceType,
+      props.resourceId,
+      props.name,
+      props.remark,
+      props.managerId,
+      props.tenantId,
+      props.orgId,
+    ] as const,
   ([visible]) => {
+    dialogSequence += 1
     memberRequestSequence += 1
+    candidateRequestSequence += 1
     environmentRequestSequence += 1
     members.value = []
     if (visible) resetDialog()
+    else resetMemberAddPage()
   },
   { flush: 'post', immediate: true },
 )
+
+onBeforeUnmount(() => {
+  dialogSequence += 1
+  memberRequestSequence += 1
+  candidateRequestSequence += 1
+  environmentRequestSequence += 1
+})
 </script>
 
 <template>
@@ -523,8 +592,8 @@ watch(
     width="860px"
     class="vault-card-edit-dialog tenant-edit-dialog resource-edit-dialog"
     :close-on-click-modal="false"
-    :close-on-press-escape="!submitting && !tagBusy"
-    :show-close="!submitting && !tagBusy"
+    :close-on-press-escape="!submitting && !tagBusy && !memberBusy"
+    :show-close="!submitting && !tagBusy && !memberBusy"
     align-center
     destroy-on-close
     @closed="resetDialog"
@@ -535,6 +604,7 @@ watch(
           type="button"
           class="tenant-edit-tabs__item"
           :class="{ 'is-active': activeTab === 'basic' }"
+          :disabled="submitting || tagBusy || memberBusy"
           :aria-current="activeTab === 'basic' ? 'page' : undefined"
           @click="switchTab('basic')"
         >
@@ -545,16 +615,18 @@ watch(
           type="button"
           class="tenant-edit-tabs__item"
           :class="{ 'is-active': activeTab === 'tags' }"
+          :disabled="submitting || tagBusy || memberBusy"
           :aria-current="activeTab === 'tags' ? 'page' : undefined"
           @click="switchTab('tags')"
         >
-          tag管理
+          标签管理
         </button>
         <button
           v-if="resourceType === 'project'"
           type="button"
           class="tenant-edit-tabs__item"
           :class="{ 'is-active': activeTab === 'environments' }"
+          :disabled="submitting || tagBusy || memberBusy"
           :aria-current="activeTab === 'environments' ? 'page' : undefined"
           @click="switchTab('environments')"
         >
@@ -564,6 +636,7 @@ watch(
           type="button"
           class="tenant-edit-tabs__item"
           :class="{ 'is-active': activeTab === 'users' }"
+          :disabled="submitting || tagBusy || memberBusy"
           :aria-current="activeTab === 'users' ? 'page' : undefined"
           @click="switchTab('users')"
         >
@@ -573,6 +646,7 @@ watch(
           type="button"
           class="tenant-edit-tabs__item"
           :class="{ 'is-active': activeTab === 'audit' }"
+          :disabled="submitting || tagBusy || memberBusy"
           :aria-current="activeTab === 'audit' ? 'page' : undefined"
           @click="switchTab('audit')"
         >
@@ -581,7 +655,13 @@ watch(
       </nav>
     </template>
 
-    <div class="tenant-edit-dialog__content resource-edit-dialog__content">
+    <div
+      class="tenant-edit-dialog__content resource-edit-dialog__content"
+      :class="{
+        'resource-edit-dialog__content--tags': activeTab === 'tags',
+        'resource-edit-dialog__content--members': activeTab === 'users',
+      }"
+    >
       <el-form
         v-show="activeTab === 'basic'"
         ref="formRef"
@@ -817,15 +897,36 @@ watch(
       <section v-show="activeTab === 'users'" class="resource-members">
         <header class="resource-members__toolbar">
           <div class="resource-members__heading">
-            <strong>用户列表</strong>
-            <span>{{ members.length }} 人</span>
+            <el-button
+              v-if="memberAdding"
+              circle
+              size="small"
+              :icon="ArrowLeft"
+              aria-label="返回成员列表"
+              :disabled="allocating"
+              @click="backToMembers"
+            />
+            <strong>{{ memberAdding ? '添加成员' : '用户列表' }}</strong>
+            <span>{{ memberAdding ? filteredCandidates.length : members.length }} 人</span>
           </div>
           <div class="resource-members__actions">
             <el-input
+              v-if="memberAdding"
+              v-model="candidateSearch"
+              clearable
+              class="resource-members__search"
+              placeholder="搜索姓名或工号"
+              aria-label="搜索可添加成员"
+              :disabled="allocating"
+              :prefix-icon="Search"
+            />
+            <el-input
+              v-else
               v-model="memberSearch"
               clearable
               class="resource-members__search"
               placeholder="搜索姓名或工号"
+              :disabled="memberBusy"
             >
               <template #prefix>
                 <el-icon><Search /></el-icon>
@@ -833,17 +934,76 @@ watch(
             </el-input>
 
             <button
+              v-if="!memberAdding"
               type="button"
               class="resource-members__add"
               aria-label="添加成员"
-              @click="openAddDialog"
+              :disabled="memberLoading || memberLoadFailed || memberBusy"
+              @click="openAddMembers"
             >
               <el-icon><Plus /></el-icon>
             </button>
           </div>
         </header>
 
-        <div v-loading="memberLoading" class="resource-members__table-wrap">
+        <div v-if="memberAdding" v-loading="candidateLoading" class="resource-members__table-wrap">
+          <table
+            v-if="filteredCandidates.length && !candidateLoadFailed"
+            class="resource-members__table resource-members__candidate-table"
+          >
+            <thead>
+              <tr>
+                <th scope="col">
+                  <el-checkbox
+                    aria-label="选择当前结果"
+                    :model-value="allVisibleCandidatesSelected"
+                    :indeterminate="someVisibleCandidatesSelected"
+                    :disabled="allocating || candidateLoading"
+                    @change="toggleAllVisibleCandidates"
+                  />
+                </th>
+                <th scope="col">用户</th>
+                <th scope="col">工号</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="user in filteredCandidates" :key="userIdOf(user)">
+                <td>
+                  <el-checkbox
+                    :aria-label="`选择${userNameOf(user)}`"
+                    :model-value="selectedCandidateIds.includes(userIdOf(user))"
+                    :disabled="allocating || candidateLoading"
+                    @change="(checked) => toggleCandidate(userIdOf(user), checked)"
+                  />
+                </td>
+                <td>
+                  <span class="resource-member-user">
+                    <span class="resource-member-user__avatar">{{
+                      userNameOf(user).slice(0, 1)
+                    }}</span>
+                    <strong>{{ userNameOf(user) }}</strong>
+                  </span>
+                </td>
+                <td class="resource-members__muted">{{ userIdOf(user) }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else-if="!candidateLoading" class="resource-members__empty">
+            <el-icon><UserFilled /></el-icon>
+            <strong>{{
+              candidateLoadFailed
+                ? '候选成员加载失败'
+                : candidateSearch.trim()
+                  ? '没有匹配的成员'
+                  : '暂无可添加用户'
+            }}</strong>
+            <el-button v-if="candidateLoadFailed" type="primary" link @click="loadCandidates"
+              >重新加载</el-button
+            >
+          </div>
+        </div>
+
+        <div v-else v-loading="memberLoading" class="resource-members__table-wrap">
           <table v-if="filteredMembers.length" class="resource-members__table">
             <thead>
               <tr>
@@ -920,6 +1080,20 @@ watch(
             </el-button>
           </div>
         </div>
+
+        <div v-if="memberAdding" class="resource-members__add-footer">
+          <span>已选择 {{ selectedCandidateIds.length }} 人</span>
+          <el-button
+            class="vault-dialog-confirm-button"
+            type="primary"
+            :loading="allocating"
+            :disabled="candidateLoading || candidateLoadFailed || !selectedCandidateIds.length"
+            @click="addSelectedUsers"
+            >添加{{
+              selectedCandidateIds.length ? ` (${selectedCandidateIds.length})` : ''
+            }}</el-button
+          >
+        </div>
       </section>
 
       <TenantTagPanel
@@ -941,7 +1115,7 @@ watch(
     </div>
 
     <template #footer>
-      <el-button :disabled="submitting || tagBusy" @click="dialogVisible = false">
+      <el-button :disabled="submitting || tagBusy || memberBusy" @click="dialogVisible = false">
         {{ activeTab === 'basic' ? '取消' : '关闭' }}
       </el-button>
       <el-button
@@ -954,75 +1128,5 @@ watch(
         保存
       </el-button>
     </template>
-
-    <el-dialog
-      v-model="addDialogVisible"
-      width="600px"
-      class="vault-card-edit-dialog resource-member-add-dialog"
-      title="添加成员"
-      append-to-body
-      align-center
-      destroy-on-close
-      :close-on-click-modal="false"
-    >
-      <div class="resource-member-add-dialog__body">
-        <el-input
-          v-model="candidateSearch"
-          clearable
-          class="resource-member-add-dialog__search"
-          placeholder="搜索姓名或工号"
-        >
-          <template #prefix>
-            <el-icon><Search /></el-icon>
-          </template>
-        </el-input>
-
-        <div v-loading="candidateLoading" class="resource-member-add-dialog__list">
-          <label v-if="filteredCandidates.length" class="resource-member-candidate is-all">
-            <el-checkbox
-              :model-value="allVisibleCandidatesSelected"
-              :indeterminate="someVisibleCandidatesSelected"
-              @change="toggleAllVisibleCandidates"
-            />
-            <strong>选择当前结果</strong>
-            <span>{{ filteredCandidates.length }} 人</span>
-          </label>
-          <label
-            v-for="user in filteredCandidates"
-            :key="userIdOf(user)"
-            class="resource-member-candidate"
-          >
-            <el-checkbox
-              :model-value="selectedCandidateIds.includes(userIdOf(user))"
-              @change="(checked) => toggleCandidate(userIdOf(user), checked)"
-            />
-            <span class="resource-member-user__avatar">{{ userNameOf(user).slice(0, 1) }}</span>
-            <span class="resource-member-candidate__identity">
-              <strong>{{ userNameOf(user) }}</strong>
-              <small>{{ userIdOf(user) }}</small>
-            </span>
-          </label>
-          <div
-            v-if="!candidateLoading && !filteredCandidates.length"
-            class="resource-members__empty"
-          >
-            <el-icon><UserFilled /></el-icon>
-            <strong>暂无可添加用户</strong>
-          </div>
-        </div>
-      </div>
-
-      <template #footer>
-        <el-button :disabled="allocating" @click="addDialogVisible = false">取消</el-button>
-        <el-button
-          type="primary"
-          :loading="allocating"
-          :disabled="!selectedCandidateIds.length"
-          @click="addSelectedUsers"
-        >
-          添加{{ selectedCandidateIds.length ? ` (${selectedCandidateIds.length})` : '' }}
-        </el-button>
-      </template>
-    </el-dialog>
   </el-dialog>
 </template>

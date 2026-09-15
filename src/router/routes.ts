@@ -66,6 +66,12 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: '秘钥中心', requiresAuth: true },
       },
       {
+        path: 'secretSearch',
+        name: 'SecretSearch',
+        component: () => import('@/views/secret/SecretSearchView.vue'),
+        meta: { title: '秘钥检索', requiresAuth: true },
+      },
+      {
         path: 'settings/profile',
         name: 'UserProfile',
         component: () => import('@/views/settings/UserProfileView.vue'),

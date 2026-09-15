@@ -2,8 +2,9 @@
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { Edit, Delete, Plus, Search } from '@element-plus/icons-vue'
-import { createTag, updateTag, deleteTag, listTags, type Tag, type TagForm } from '@/api/tag'
+import { updateTag, deleteTag, listTags, type Tag, type TagForm } from '@/api/tag'
 import { ApiError } from '@/types/api'
+import TenantTagCreatePanel from './TenantTagCreatePanel.vue'
 
 const props = defineProps<{ tenantId: string; active: boolean }>()
 const emit = defineEmits<{ busy: [value: boolean] }>()
@@ -19,7 +20,12 @@ const editingId = ref('')
 const submitting = ref(false)
 const deletingId = ref('')
 const confirming = ref(false)
-const busy = computed(() => submitting.value || !!deletingId.value || confirming.value)
+const creating = ref(false)
+const createBusy = ref(false)
+const createPanel = ref<InstanceType<typeof TenantTagCreatePanel>>()
+const busy = computed(
+  () => submitting.value || createBusy.value || !!deletingId.value || confirming.value,
+)
 const formRef = ref<FormInstance>()
 const form = reactive<TagForm>({ code: '', name: '', remark: '', allowValueSearch: true })
 const rules: FormRules<TagForm> = {
@@ -79,9 +85,20 @@ function search(): void {
   timer = setTimeout(() => void load(), 300)
 }
 
-function openEditor(tag?: Tag): void {
+function openCreate(): void {
   if (busy.value) return
-  editingId.value = tag?.id ?? ''
+  creating.value = true
+  createPanel.value?.open()
+}
+
+function onCreated(): void {
+  page.value = 1
+  void load()
+}
+
+function openEditor(tag?: Tag): void {
+  if (!tag || busy.value) return
+  editingId.value = tag.id
   Object.assign(form, {
     code: tag?.code ?? '',
     name: tag?.name ?? '',
@@ -103,11 +120,9 @@ async function save(): Promise<void> {
       remark: form.remark.trim(),
       allowValueSearch: form.allowValueSearch,
     }
-    if (editingId.value) await updateTag({ ...values, id: editingId.value })
-    else await createTag({ ...values, code: form.code.trim() })
-    ElMessage.success(editingId.value ? 'Tag 已更新' : 'Tag 已创建')
+    await updateTag({ ...values, id: editingId.value })
+    ElMessage.success('Tag 已更新')
     dialogVisible.value = false
-    if (!editingId.value) page.value = 1
     await load()
   } catch (error) {
     if (!(error instanceof ApiError)) ElMessage.error('保存 Tag 失败')
@@ -120,13 +135,17 @@ async function remove(tag?: Tag): Promise<void> {
   if (!tag || busy.value) return
   confirming.value = true
   try {
-    await ElMessageBox.confirm(`确认删除“${tag.name}”么？`, '删除 Tag', {
-      customClass: 'vault-confirm-message-box',
-      confirmButtonClass: 'vault-delete-confirm-button',
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
+    await ElMessageBox.confirm(
+      `确认删除“${tag.name}”么？所有密钥上的该标签也会被移除，密钥内容不受影响`,
+      '删除 Tag',
+      {
+        customClass: 'vault-confirm-message-box',
+        confirmButtonClass: 'vault-delete-confirm-button',
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
   } catch {
     return
   } finally {
@@ -169,91 +188,104 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="tenant-tags">
-    <div class="resource-members__toolbar">
-      <div class="resource-members__heading">
-        <strong>Tag</strong><span>{{ total }} 个</span>
-      </div>
-      <div class="resource-members__actions">
-        <el-input
-          v-model="keyword"
-          class="resource-members__search"
-          placeholder="搜索名称或 Code"
-          :prefix-icon="Search"
-          clearable
-          :disabled="busy"
-          @input="search"
-        />
-        <button
-          class="resource-members__add"
-          type="button"
-          aria-label="新建 Tag"
-          :disabled="busy"
-          @click="openEditor()"
-        >
-          <el-icon><Plus /></el-icon>
-        </button>
-      </div>
-    </div>
-    <div v-loading="loading" class="resource-members__table-wrap">
-      <el-table
-        v-if="items.length && !failed"
-        :data="items"
-        height="318"
-        class="tenant-tags__table"
-      >
-        <el-table-column prop="code" label="Code" min-width="135" show-overflow-tooltip />
-        <el-table-column prop="name" label="名称" min-width="120" show-overflow-tooltip />
-        <el-table-column prop="remark" label="备注" min-width="150" show-overflow-tooltip />
-        <el-table-column label="允许值检索" width="130"
-          ><template #default="{ row }"
-            ><el-tag :type="row.allowValueSearch ? 'success' : 'info'" size="small">{{
-              row.allowValueSearch ? '允许' : '禁止'
-            }}</el-tag></template
-          ></el-table-column
-        >
-        <el-table-column label="操作" width="110" fixed="right"
-          ><template #default="{ row, $index }">
-            <div class="tenant-tags__actions">
-              <el-button
-                circle
-                size="small"
-                :icon="Edit"
-                aria-label="编辑 Tag"
-                :disabled="busy"
-                @click="openEditor(items[$index])"
-              />
-              <el-button
-                circle
-                size="small"
-                type="danger"
-                plain
-                :icon="Delete"
-                aria-label="删除 Tag"
-                :disabled="busy"
-                :loading="deletingId === row.id"
-                @click="remove(items[$index])"
-              />
-            </div> </template
-        ></el-table-column>
-      </el-table>
-      <div v-else-if="!loading" class="resource-members__empty">
-        <span>{{ failed ? 'Tag 加载失败' : keyword.trim() ? '没有匹配的 Tag' : '暂无 Tag' }}</span>
-        <el-button v-if="failed" link type="primary" @click="load">重新加载</el-button>
-      </div>
-    </div>
-    <el-pagination
-      class="tenant-tags__pagination"
-      v-model:current-page="page"
-      :page-size="pageSize"
-      :total="total"
-      layout="total, prev, pager, next"
-      :disabled="loading || busy"
-      @current-change="load"
+  <section class="tenant-tags" :class="{ 'tenant-tags--list': !creating }">
+    <TenantTagCreatePanel
+      ref="createPanel"
+      v-show="creating"
+      :tenant-id="tenantId"
+      @back="creating = false"
+      @restored="creating = $event"
+      @created="onCreated"
+      @busy="createBusy = $event"
     />
+    <template v-if="!creating">
+      <div class="resource-members__toolbar">
+        <div class="resource-members__heading">
+          <strong>Tag</strong><span>{{ total }} 个</span>
+        </div>
+        <div class="resource-members__actions">
+          <el-input
+            v-model="keyword"
+            class="resource-members__search"
+            placeholder="搜索名称或 Code"
+            :prefix-icon="Search"
+            clearable
+            :disabled="busy"
+            @input="search"
+          />
+          <button
+            class="resource-members__add"
+            type="button"
+            aria-label="新建 Tag"
+            :disabled="busy"
+            @click="openCreate"
+          >
+            <el-icon><Plus /></el-icon>
+          </button>
+        </div>
+      </div>
+      <div v-loading="loading" class="resource-members__table-wrap tenant-tags__table-wrap">
+        <el-table
+          v-if="items.length && !failed"
+          :data="items"
+          height="100%"
+          class="tenant-tags__table"
+        >
+          <el-table-column prop="code" label="Code" min-width="135" show-overflow-tooltip />
+          <el-table-column prop="name" label="名称" min-width="120" show-overflow-tooltip />
+          <el-table-column prop="remark" label="备注" min-width="150" show-overflow-tooltip />
+          <el-table-column label="允许值检索" width="130"
+            ><template #default="{ row }"
+              ><el-tag :type="row.allowValueSearch ? 'success' : 'info'" size="small">{{
+                row.allowValueSearch ? '允许' : '禁止'
+              }}</el-tag></template
+            ></el-table-column
+          >
+          <el-table-column label="操作" width="110" fixed="right"
+            ><template #default="{ row, $index }">
+              <div class="tenant-tags__actions">
+                <el-button
+                  circle
+                  size="small"
+                  :icon="Edit"
+                  aria-label="编辑 Tag"
+                  :disabled="busy"
+                  @click="openEditor(items[$index])"
+                />
+                <el-button
+                  circle
+                  size="small"
+                  type="danger"
+                  plain
+                  :icon="Delete"
+                  aria-label="删除 Tag"
+                  :disabled="busy"
+                  :loading="deletingId === row.id"
+                  @click="remove(items[$index])"
+                />
+              </div> </template
+          ></el-table-column>
+        </el-table>
+        <div v-else-if="!loading" class="resource-members__empty">
+          <span>{{
+            failed ? 'Tag 加载失败' : keyword.trim() ? '没有匹配的 Tag' : '暂无 Tag'
+          }}</span>
+          <el-button v-if="failed" link type="primary" @click="load">重新加载</el-button>
+        </div>
+      </div>
+      <el-pagination
+        class="tenant-tags__pagination"
+        v-model:current-page="page"
+        :page-size="pageSize"
+        :total="total"
+        layout="total, prev, pager, next"
+        :disabled="loading || busy"
+        @current-change="load"
+      />
+    </template>
     <el-dialog
       v-model="dialogVisible"
-      :title="editingId ? '编辑 Tag' : '新建 Tag'"
+      title="编辑 Tag"
       width="600px"
       class="vault-card-edit-dialog"
       append-to-body
@@ -300,9 +332,7 @@ onBeforeUnmount(() => {
       </div>
       <template #footer>
         <el-button :disabled="submitting" @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="save">{{
-          editingId ? '保存' : '创建'
-        }}</el-button>
+        <el-button type="primary" :loading="submitting" @click="save">保存</el-button>
       </template>
     </el-dialog>
   </section>
@@ -311,6 +341,22 @@ onBeforeUnmount(() => {
 <style scoped lang="scss">
 .tenant-tags {
   min-width: 0;
+  &--list {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+
+    > .resource-members__toolbar {
+      flex-shrink: 0;
+    }
+  }
+  &__table-wrap {
+    flex: 1;
+    height: auto;
+    min-height: 0;
+    overflow: hidden;
+  }
   &__actions {
     display: flex;
     align-items: center;
@@ -320,7 +366,8 @@ onBeforeUnmount(() => {
     }
   }
   &__pagination {
-    margin-top: 16px;
+    flex-shrink: 0;
+    margin-top: 12px;
     justify-content: flex-end;
     max-width: 100%;
     overflow-x: auto;

@@ -2,6 +2,29 @@ import type { SecretEntry, SecretGroup } from '@/types/secret'
 import type { PageRequest, PageResp, Uuid } from '@/types/api'
 import { http } from './http'
 
+export interface SecretTag {
+  id: Uuid
+  code: string
+  name: string
+  allowValueSearch: boolean
+}
+
+export interface SecretGroupTags {
+  groupId: Uuid
+  tenantId: Uuid
+  tagList: SecretTag[]
+}
+
+/** 查询标签编辑信息，不读取密钥值 */
+export function getSecretTags(groupId: Uuid): Promise<SecretGroupTags> {
+  return http.post('/secret/tag/info', { groupId })
+}
+
+/** 整组替换标签，空数组解绑全部 */
+export function updateSecretTags(groupId: Uuid, tagIdList: Uuid[]): Promise<SecretGroupTags> {
+  return http.post('/secret/tag/update', { groupId, tagIdList })
+}
+
 /**
  * POST /api/v1/secret/list
  * environmentId 与 folderId 二选一:
@@ -35,6 +58,7 @@ export interface FolderGroupSecret {
   key: string
   remark?: string
   values: Record<string, FolderGroupSecretValue>
+  tagList?: SecretTag[]
 }
 
 export interface ListFolderGroupSecretsResponse {
@@ -43,6 +67,7 @@ export interface ListFolderGroupSecretsResponse {
 
 export function listSecretsByFolderGroup(req: {
   folderGroupId: Uuid
+  tagIdList?: Uuid[]
 }): Promise<ListFolderGroupSecretsResponse> {
   return http.post('/secret/list', req)
 }

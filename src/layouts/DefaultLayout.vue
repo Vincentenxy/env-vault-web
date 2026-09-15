@@ -8,6 +8,7 @@ import {
   KeyRound,
   LogOut,
   Moon,
+  Search,
   Settings,
   Sun,
   UserRound,
@@ -35,6 +36,7 @@ const canManageUsers = computed(() => has(Permission.UserManage))
 const navItems: NavItem[] = [
   { path: '/app/organizations', label: '组织管理', icon: OfficeBuilding },
   { path: '/app/secrets', label: '秘钥管理', icon: KeyRound },
+  { path: '/app/secretSearch', label: '秘钥检索', icon: Search },
 ]
 const userName = computed(() => {
   const user = auth.currentUser
@@ -339,7 +341,7 @@ async function onLogout(): Promise<void> {
 
     &.is-active {
       color: #fff;
-      background: #2563eb;
+      background: var(--v-brand-primary);
       box-shadow: 0 2px 5px rgba(37, 99, 235, 0.22);
     }
 
@@ -509,7 +511,7 @@ async function onLogout(): Promise<void> {
 
     &.is-active {
       color: #fff;
-      background: #2563eb;
+      background: var(--v-brand-primary);
       box-shadow: 0 5px 14px rgba(37, 99, 235, 0.2);
     }
 

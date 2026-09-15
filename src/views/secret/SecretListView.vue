@@ -2,6 +2,8 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, type Component, watch } from 'vue'
 import { useNavigationMemory } from '@/composables/use-navigation-memory'
 import PageRefreshButton from '@/components/PageRefreshButton.vue'
+import SecretTagDetailDialog from '@/components/SecretTagDetailDialog.vue'
+import TagCreateDialog from '@/components/TagCreateDialog.vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { ClipboardList, FolderOpen, Globe, History, KeyRound, Maximize2 } from '@lucide/vue'
@@ -40,16 +42,20 @@ import {
   deleteFolderGroupSecret,
   getSecretBatchDetail,
   getSecretHistory,
+  getSecretTags,
   listSecretsByFolderGroup,
   updateFolderGroupSecrets,
+  updateSecretTags,
   type BatchCreateSecretValue,
   type BatchCreateSecretsRequest,
   type FolderGroupSecret,
+  type SecretTag,
   type SecretBatchDetailItem,
   type SecretHistoryItem,
   type SecretHistoryResponse,
   type UpdateFolderGroupSecretItemRequest,
 } from '@/api/secret'
+import { listTags, type Tag } from '@/api/tag'
 import { ApiError } from '@/types/api'
 import type { AuditRecord } from '@/types/audit'
 import type { Folder } from '@/types/folder'
@@ -103,6 +109,7 @@ interface SecretRow {
 
 interface SecretRowMeta {
   groupId: string
+  tagList: SecretTag[]
   values: Record<string, { secretId: string; folderId: string }>
 }
 
@@ -146,6 +153,16 @@ interface SecretAuditSelection {
   groupId: string
 }
 
+interface SecretTagDetailSelection {
+  groupId: string
+  key: string
+  tag: SecretTag
+}
+
+interface SecretTagOption extends SecretTag {
+  remark?: string
+}
+
 interface BatchVersionEntry {
   environment: VaultEnvironment
   item: SecretHistoryItem
@@ -171,6 +188,24 @@ const projects = ref<ProjectOption[]>([])
 const folders = ref<VaultFolder[]>([])
 const secretRows = reactive<Record<string, SecretRow[]>>({})
 const secretRowMeta = reactive<Record<string, Record<string, SecretRowMeta>>>({})
+const tagFilterIds = ref<string[]>([])
+const tagFilterOptions = ref<SecretTag[]>([])
+const tagDetailVisible = ref(false)
+const tagDetailSelection = ref<SecretTagDetailSelection | null>(null)
+const tagCreateVisible = ref(false)
+const editingTagIds = ref<string[]>([])
+const editingTagBaselineIds = ref<string[]>([])
+const editingTagOptions = ref<SecretTagOption[]>([])
+const editingKnownTags = ref<SecretTagOption[]>([])
+const editingTagTenantId = ref('')
+const editingTagLoading = ref(false)
+const editingTagLoadFailed = ref(false)
+const editingTagOptionsLoading = ref(false)
+const editingTagOptionsFailed = ref(false)
+const editingTagKeyword = ref('')
+const editingTagPage = ref(1)
+const editingTagTotal = ref(0)
+let tagFilterFolderId = ''
 const serviceGroups = ref<VaultFolder[]>([])
 
 const selectedOrgId = ref('')
@@ -268,12 +303,16 @@ const favoriteFolderStorageKey = 'env-vault:secret:favorite-folders'
 const keyDialogDraftStoragePrefix = 'env-vault:secret:key-dialog-draft'
 const createFolderDraftStoragePrefix = 'env-vault:secret:create-folder-draft'
 let secretRequestSequence = 0
+let editingTagRequestSequence = 0
+let editingTagOptionRequestSequence = 0
+let editingTagSearchTimer: number | undefined
 let historyRequestSequence = 0
 let historyBatchRequestSequence = 0
 let auditRequestSequence = 0
 const historyWindowDuration = 5 * 60 * 1000
 const historyPageSize = 10
 const auditPageSize = 20
+const editingTagPageSize = 50
 
 const historyHasMore = computed(() =>
   Object.values(historyData.value).some(
@@ -528,9 +567,25 @@ const activeRows = computed(() => {
 })
 const operationColumnWidth = computed(() => (editingKey.value ? 420 : 190))
 const secretTableMinWidth = computed(
-  () => 230 + environments.value.length * 220 + 220 + operationColumnWidth.value,
+  () => 230 + environments.value.length * 220 + 250 + 220 + operationColumnWidth.value,
 )
-const secretTableColumnCount = computed(() => environments.value.length + 3)
+const secretTableColumnCount = computed(() => environments.value.length + 4)
+const editingTagSelectOptions = computed(() => [
+  ...new Map(
+    [
+      ...editingKnownTags.value.filter((tag) => editingTagIds.value.includes(tag.id)),
+      ...editingTagOptions.value,
+    ].map((tag) => [tag.id, tag]),
+  ).values(),
+])
+const inlineSecretContentChanged = computed(
+  () =>
+    !!editingKey.value &&
+    (keyForm.remark.trim() !== keyFormBaseline.remark.trim() ||
+      Object.keys(keyForm.values).some(
+        (envCode) => keyFormValue(envCode) !== (keyFormBaseline.values[envCode] ?? ''),
+      )),
+)
 const cascadeItems = computed(() => {
   const keyword = cascadeSearch.value.trim().toLowerCase()
   const items =
@@ -722,7 +777,7 @@ function mapSecretRows(items: FolderGroupSecret[], folderId: string): SecretRow[
         }
       }
     })
-    metadata[row.key] = { groupId: item.groupId, values }
+    metadata[row.key] = { groupId: item.groupId, values, tagList: item.tagList ?? [] }
     return row
   })
   secretRowMeta[folderId] = metadata
@@ -730,6 +785,11 @@ function mapSecretRows(items: FolderGroupSecret[], folderId: string): SecretRow[
 }
 
 async function loadSecretsForFolder(folder: VaultFolder): Promise<void> {
+  if (tagFilterFolderId !== folder.id) {
+    tagFilterFolderId = folder.id
+    tagFilterIds.value = []
+    tagFilterOptions.value = []
+  }
   closeKeyHistory()
   const requestSequence = ++secretRequestSequence
   secretLoadFailed.value = false
@@ -743,11 +803,21 @@ async function loadSecretsForFolder(folder: VaultFolder): Promise<void> {
   try {
     const response = await listSecretsByFolderGroup({
       folderGroupId: folder.folderGroupId,
+      tagIdList: tagFilterIds.value,
     })
     if (requestSequence !== secretRequestSequence) return
     const rows = mapSecretRows(response?.secretList ?? [], folder.id)
     secretRows[folder.id] = rows
-    folder.count = rows.length
+    if (!tagFilterIds.value.length) {
+      folder.count = rows.length
+      tagFilterOptions.value = [
+        ...new Map(
+          (response?.secretList ?? [])
+            .flatMap((item) => item.tagList ?? [])
+            .map((tag) => [tag.id, tag]),
+        ).values(),
+      ]
+    }
   } catch {
     if (requestSequence !== secretRequestSequence) return
     secretRows[folder.id] = []
@@ -759,6 +829,138 @@ async function loadSecretsForFolder(folder: VaultFolder): Promise<void> {
 
 function reloadActiveSecrets(): void {
   if (activeSecretFolder.value) void loadSecretsForFolder(activeSecretFolder.value)
+}
+
+function tagsOf(row: SecretRow): SecretTag[] {
+  const folder = activeSecretFolder.value
+  return folder ? (secretRowMeta[folder.id]?.[row.key]?.tagList ?? []) : []
+}
+
+function sameTagIds(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false
+  const rightIds = new Set(right)
+  return left.every((id) => rightIds.has(id))
+}
+
+function mergeTags(...groups: SecretTag[][]): SecretTag[] {
+  return [...new Map(groups.flat().map((tag) => [tag.id, tag])).values()]
+}
+
+function resetEditingTags(): void {
+  editingTagRequestSequence += 1
+  editingTagOptionRequestSequence += 1
+  window.clearTimeout(editingTagSearchTimer)
+  editingTagIds.value = []
+  editingTagBaselineIds.value = []
+  editingTagOptions.value = []
+  editingKnownTags.value = []
+  editingTagTenantId.value = ''
+  editingTagLoading.value = false
+  editingTagLoadFailed.value = false
+  editingTagOptionsLoading.value = false
+  editingTagOptionsFailed.value = false
+  editingTagKeyword.value = ''
+  editingTagPage.value = 1
+  editingTagTotal.value = 0
+  tagCreateVisible.value = false
+}
+
+async function loadEditingTagOptions(reset = true): Promise<void> {
+  if (!editingTagTenantId.value || !editingKey.value) return
+  const request = ++editingTagOptionRequestSequence
+  const rowKey = editingKey.value
+  const nextPage = reset ? 1 : editingTagPage.value + 1
+  editingTagOptionsLoading.value = true
+  editingTagOptionsFailed.value = false
+  try {
+    const result = await listTags({
+      tenantId: editingTagTenantId.value,
+      keyword: editingTagKeyword.value,
+      pageNum: nextPage,
+      pageSize: editingTagPageSize,
+    })
+    if (request !== editingTagOptionRequestSequence || rowKey !== editingKey.value) return
+    editingTagOptions.value = reset ? result.list : mergeTags(editingTagOptions.value, result.list)
+    editingKnownTags.value = mergeTags(editingKnownTags.value, result.list)
+    editingTagTotal.value = result.total
+    editingTagPage.value = nextPage
+  } catch {
+    if (request === editingTagOptionRequestSequence) editingTagOptionsFailed.value = true
+  } finally {
+    if (request === editingTagOptionRequestSequence) editingTagOptionsLoading.value = false
+  }
+}
+
+function searchEditingTags(value: string): void {
+  editingTagKeyword.value = value
+  window.clearTimeout(editingTagSearchTimer)
+  // 输入变化后立即作废旧请求，避免旧结果覆盖当前关键字
+  editingTagOptionRequestSequence += 1
+  editingTagSearchTimer = window.setTimeout(() => void loadEditingTagOptions(), 250)
+}
+
+async function loadEditingTags(groupId: string, fallbackTags: SecretTag[]): Promise<void> {
+  const request = ++editingTagRequestSequence
+  editingTagOptionRequestSequence += 1
+  window.clearTimeout(editingTagSearchTimer)
+  editingTagIds.value = fallbackTags.map((tag) => tag.id)
+  editingTagBaselineIds.value = [...editingTagIds.value]
+  editingKnownTags.value = fallbackTags
+  editingTagOptions.value = []
+  editingTagTenantId.value = ''
+  editingTagKeyword.value = ''
+  editingTagPage.value = 1
+  editingTagTotal.value = 0
+  editingTagLoading.value = true
+  editingTagLoadFailed.value = false
+  editingTagOptionsFailed.value = false
+  try {
+    const result = await getSecretTags(groupId)
+    if (request !== editingTagRequestSequence || !editingKey.value) return
+    // 密钥分组归属于当前 folder，接口返回的 tenantId 用于限定可选和新建标签
+    editingTagTenantId.value = result.tenantId
+    editingTagIds.value = result.tagList.map((tag) => tag.id)
+    editingTagBaselineIds.value = [...editingTagIds.value]
+    editingKnownTags.value = result.tagList
+    await loadEditingTagOptions()
+  } catch {
+    if (request === editingTagRequestSequence) editingTagLoadFailed.value = true
+  } finally {
+    if (request === editingTagRequestSequence) editingTagLoading.value = false
+  }
+}
+
+function retryEditingTags(): void {
+  const folder = activeSecretFolder.value
+  const rowKey = editingKey.value
+  const metadata = folder ? secretRowMeta[folder.id]?.[rowKey] : undefined
+  if (metadata?.groupId) void loadEditingTags(metadata.groupId, metadata.tagList)
+}
+
+function tagOptionLabel(tag: SecretTag): string {
+  return `${tag.name}(${tag.code})`
+}
+
+function openTagCreateDialog(): void {
+  if (!editingTagTenantId.value || editingTagLoading.value || keySubmitting.value) return
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+  tagCreateVisible.value = true
+}
+
+function selectCreatedTag(tag: Tag): void {
+  // 标签已创建到租户，先加入当前行草稿，密钥绑定关系在保存该行时统一提交
+  editingKnownTags.value = mergeTags(editingKnownTags.value, [tag])
+  editingTagOptions.value = mergeTags(editingTagOptions.value, [tag])
+  if (!editingTagIds.value.includes(tag.id)) editingTagIds.value.push(tag.id)
+  editingTagTotal.value += 1
+}
+
+function openTagDetail(row: SecretRow, tag: SecretTag): void {
+  const folder = activeSecretFolder.value
+  const metadata = folder ? secretRowMeta[folder.id]?.[row.key] : undefined
+  if (!metadata?.groupId) return
+  tagDetailSelection.value = { groupId: metadata.groupId, key: row.key, tag }
+  tagDetailVisible.value = true
 }
 
 // 刷新当前层级的数据，不重置项目、目录、分页或浏览器页面
@@ -1795,16 +1997,24 @@ async function updateKey(): Promise<void> {
   }
 
   const remarkChanged = nextRemark !== keyFormBaseline.remark.trim()
-  if (!remarkChanged && values.length === 0) {
+  const secretChanged = remarkChanged || values.length > 0
+  const tagsChanged = !sameTagIds(editingTagIds.value, editingTagBaselineIds.value)
+  if (!secretChanged && !tagsChanged) {
     finishInlineEdit(true)
     ElMessage.info('内容没有变化')
     return
   }
 
   const commitMsg = keyForm.commitMsg.trim()
-  if (!commitMsg) {
+  // 标签关系不产生密钥历史版本，只有密钥内容变化时才要求版本说明
+  if (secretChanged && !commitMsg) {
     commitMsgInvalid.value = true
     ElMessage.error('请填写版本修改信息')
+    return
+  }
+
+  if (tagsChanged && (!editingTagTenantId.value || editingTagLoadFailed.value)) {
+    ElMessage.error('标签尚未加载完成，请重试')
     return
   }
 
@@ -1816,16 +2026,44 @@ async function updateKey(): Promise<void> {
   if (values.length) secret.values = values
 
   keySubmitting.value = true
+  let secretSaved = false
   try {
-    await updateFolderGroupSecrets({
-      commitMsg,
-      secrets: [secret],
-    })
-    ElMessage.success('密钥更新成功')
+    if (secretChanged) {
+      await updateFolderGroupSecrets({
+        commitMsg,
+        secrets: [secret],
+      })
+      secretSaved = true
+      // 后续标签保存失败时保留编辑态，重试不会再次提交密钥版本
+      keyFormBaseline.remark = nextRemark
+      keyFormBaseline.values = { ...keyForm.values }
+    }
+
+    if (tagsChanged) {
+      const result = await updateSecretTags(metadata.groupId, editingTagIds.value)
+      metadata.tagList = result.tagList
+      editingKnownTags.value = mergeTags(editingKnownTags.value, result.tagList)
+      editingTagBaselineIds.value = result.tagList.map((tag) => tag.id)
+      tagFilterOptions.value = mergeTags(tagFilterOptions.value, result.tagList)
+    }
+
+    ElMessage.success(
+      secretChanged && tagsChanged
+        ? '密钥和标签更新成功'
+        : secretChanged
+          ? '密钥更新成功'
+          : '标签更新成功',
+    )
     finishInlineEdit(true)
     await loadSecretsForFolder(folder)
   } catch (error) {
-    const message = error instanceof ApiError ? error.message : '密钥更新失败'
+    const message = secretSaved
+      ? '密钥内容已保存，标签更新失败，请重试'
+      : error instanceof ApiError
+        ? error.message
+        : tagsChanged && !secretChanged
+          ? '标签更新失败'
+          : '密钥更新失败'
     ElMessage.error(message)
   } finally {
     keySubmitting.value = false
@@ -1835,6 +2073,7 @@ async function updateKey(): Promise<void> {
 function finishInlineEdit(clearDraft: boolean): void {
   expandedKeyEditVisible.value = false
   const rowKey = editingKey.value
+  resetEditingTags()
   if (!rowKey) return
   if (clearDraft) clearKeyDialogDraft('edit')
   else persistKeyDialogDraft()
@@ -2044,6 +2283,7 @@ function auditActionLabel(actionCode: string): string {
   const labels: Record<string, string> = {
     'secret.create': '创建密钥',
     'secret.update': '更新密钥',
+    'secret.tag.update': '更新密钥标签',
     'secret.delete': '删除密钥',
     'secret.read': '查看密钥详情',
     'secret.history.read': '查看历史版本',
@@ -2052,6 +2292,7 @@ function auditActionLabel(actionCode: string): string {
 }
 
 function auditFieldLabel(field: string): string {
+  if (field === 'tagIdList') return '标签'
   if (field === 'key') return '密钥名称'
   if (field === 'remark') return '说明'
   if (field === 'isDeleted') return '删除状态'
@@ -2228,6 +2469,7 @@ function editKey(row: SecretRow): void {
   keyFormBaseline.values = { ...keyForm.values }
   restoreKeyDialogDraft('edit')
   keySubmitting.value = false
+  void loadEditingTags(metadata.groupId, metadata.tagList)
 }
 
 function onCreateFolderClosed(): void {
@@ -2243,6 +2485,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.clearTimeout(folderSearchTimer)
+  resetEditingTags()
   persistKeyDialogDraft()
   window.removeEventListener('beforeunload', persistKeyDialogDraft)
 })
@@ -2602,6 +2845,26 @@ watch(
           <PageRefreshButton :action="refreshCurrentView" :loading="pageRefreshing" />
         </div>
         <div v-else class="vault-page__toolbar-actions">
+          <el-select
+            v-model="tagFilterIds"
+            multiple
+            clearable
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            class="vault-tag-filter"
+            placeholder="筛选标签"
+            aria-label="筛选标签"
+            :disabled="secretLoading || !!editingKey || keySubmitting || !!deletingKey"
+            @change="reloadActiveSecrets"
+          >
+            <el-option
+              v-for="tag in tagFilterOptions"
+              :key="tag.id"
+              :label="tag.name"
+              :value="tag.id"
+            />
+          </el-select>
           <el-input
             v-model="folderSearch"
             :prefix-icon="Search"
@@ -2704,6 +2967,7 @@ watch(
               :key="environment.id || environment.code"
               class="vault-table__column vault-table__column--environment"
             />
+            <col class="vault-table__column vault-table__column--tags" />
             <col class="vault-table__column vault-table__column--comment" />
             <col
               class="vault-table__column vault-table__column--operations"
@@ -2732,6 +2996,7 @@ watch(
                   </button>
                 </span>
               </th>
+              <th>标签</th>
               <th>说明</th>
               <th>操作</th>
             </tr>
@@ -2820,6 +3085,101 @@ watch(
                     </span>
                   </span>
                 </td>
+                <td class="vault-table__tags">
+                  <div v-if="editingKey === row.key" class="vault-table__tag-editor">
+                    <el-select
+                      v-model="editingTagIds"
+                      multiple
+                      filterable
+                      remote
+                      clearable
+                      collapse-tags
+                      collapse-tags-tooltip
+                      :max-collapse-tags="1"
+                      :remote-method="searchEditingTags"
+                      :loading="editingTagLoading || editingTagOptionsLoading"
+                      :disabled="keySubmitting || editingTagLoading || editingTagLoadFailed"
+                      popper-class="vault-secret-tag-select-popper"
+                      placeholder="选择标签"
+                      aria-label="编辑密钥标签"
+                    >
+                      <el-option
+                        v-for="tag in editingTagSelectOptions"
+                        :key="tag.id"
+                        :value="tag.id"
+                        :label="tagOptionLabel(tag)"
+                      >
+                        <span class="vault-table__tag-option">
+                          <span class="vault-table__tag-option-title">
+                            <span>{{ tag.name }}</span
+                            ><code>({{ tag.code }})</code>
+                          </span>
+                          <span class="vault-table__tag-option-description">
+                            {{ tag.remark || '暂无描述' }}
+                          </span>
+                        </span>
+                      </el-option>
+                      <template #footer>
+                        <div class="vault-table__tag-select-footer">
+                          <div class="vault-table__tag-select-status">
+                            <el-button
+                              v-if="editingTagOptionsFailed"
+                              link
+                              type="primary"
+                              @click.stop="loadEditingTagOptions()"
+                            >
+                              加载失败，重试
+                            </el-button>
+                            <el-button
+                              v-else-if="editingTagPage * editingTagPageSize < editingTagTotal"
+                              link
+                              type="primary"
+                              :loading="editingTagOptionsLoading"
+                              @click.stop="loadEditingTagOptions(false)"
+                            >
+                              加载更多
+                            </el-button>
+                            <span v-else class="vault-table__tag-option-count">
+                              {{ editingTagTotal }} 个标签
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            class="vault-table__tag-create"
+                            aria-label="新增标签"
+                            @mousedown.prevent
+                            @click.stop="openTagCreateDialog"
+                          >
+                            <el-icon><Plus /></el-icon>
+                            <span>新增标签</span>
+                          </button>
+                        </div>
+                      </template>
+                    </el-select>
+                    <button
+                      v-if="editingTagLoadFailed"
+                      type="button"
+                      class="vault-table__tag-retry"
+                      :disabled="keySubmitting"
+                      @click="retryEditingTags"
+                    >
+                      重试
+                    </button>
+                  </div>
+                  <div v-else-if="tagsOf(row).length" class="vault-secret-tags">
+                    <button
+                      v-for="tag in tagsOf(row)"
+                      :key="tag.id"
+                      type="button"
+                      class="vault-secret-tag"
+                      :aria-label="`查看标签${tag.name}详情`"
+                      @click="openTagDetail(row, tag)"
+                    >
+                      <el-tag size="small" type="info">{{ tag.name }}</el-tag>
+                    </button>
+                  </div>
+                  <span v-else class="vault-table__empty-value">—</span>
+                </td>
                 <td class="vault-table__comment">
                   <el-input
                     v-if="editingKey === row.key"
@@ -2837,17 +3197,24 @@ watch(
                       v-model="keyForm.commitMsg"
                       class="vault-table__commit-input"
                       :class="{ 'is-error': commitMsgInvalid }"
-                      placeholder="请填写版本修改信息"
+                      :placeholder="
+                        inlineSecretContentChanged ? '请填写版本修改信息' : '仅修改标签时无需填写'
+                      "
                       clearable
-                      required
+                      :required="inlineSecretContentChanged"
                       :disabled="keySubmitting"
                       aria-label="版本修改信息"
-                      aria-required="true"
+                      :aria-required="inlineSecretContentChanged"
                       @input="commitMsgInvalid = false"
                       @keyup.enter="updateKey"
                     >
                       <template #prefix>
-                        <span class="vault-table__commit-required" aria-hidden="true">*</span>
+                        <span
+                          v-if="inlineSecretContentChanged"
+                          class="vault-table__commit-required"
+                          aria-hidden="true"
+                          >*</span
+                        >
                       </template>
                     </el-input>
 
@@ -3018,6 +3385,7 @@ watch(
                     </button>
                   </td>
                   <td aria-hidden="true"></td>
+                  <td aria-hidden="true"></td>
                   <td class="vault-table__history-load-more-cell">
                     <el-tooltip
                       v-if="historyRowIndex === historyRows.length - 1 && historyHasMore"
@@ -3068,6 +3436,21 @@ watch(
       :audit-resource-name="editingFolder?.name ?? ''"
       :submitting="folderEditSubmitting"
       @submit="submitFolderEdit"
+    />
+
+    <SecretTagDetailDialog
+      v-if="tagDetailSelection"
+      v-model="tagDetailVisible"
+      :group-id="tagDetailSelection.groupId"
+      :secret-key="tagDetailSelection.key"
+      :tag="tagDetailSelection.tag"
+    />
+
+    <TagCreateDialog
+      v-if="editingTagTenantId"
+      v-model="tagCreateVisible"
+      :tenant-id="editingTagTenantId"
+      @created="selectCreatedTag"
     />
 
     <el-dialog
@@ -3802,6 +4185,55 @@ watch(
 </template>
 
 <style lang="scss" scoped>
+.vault-tag-filter {
+  width: 200px;
+  max-width: 100%;
+}
+
+.vault-secret-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.vault-secret-tag {
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+
+  &:focus-visible {
+    outline: 2px solid var(--el-color-primary-light-5);
+    outline-offset: 2px;
+  }
+
+  .el-tag {
+    max-width: 100%;
+    height: auto;
+    min-height: 20px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+:global(.vault-secret-tag-select-popper) {
+  min-width: min(420px, calc(100vw - 32px));
+}
+
+:global(.vault-secret-tag-select-popper .el-select-dropdown__item) {
+  height: auto;
+  min-height: 48px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  line-height: 18px;
+}
+
+:global(.vault-secret-tag-select-popper .vault-table__tag-option) {
+  width: 100%;
+}
+
 .vault-page {
   display: flex;
   flex-direction: column;
@@ -4852,6 +5284,10 @@ watch(
     width: 220px;
   }
 
+  &__column--tags {
+    width: 250px;
+  }
+
   &__column--comment {
     width: 220px;
   }
@@ -5129,6 +5565,121 @@ watch(
   &__comment {
     color: var(--v-text-secondary);
     font-size: 12px;
+  }
+
+  &__tags {
+    color: var(--v-text-secondary);
+  }
+
+  &__empty-value {
+    color: var(--v-text-tertiary);
+  }
+
+  &__tag-editor {
+    display: flex;
+    width: 100%;
+    min-width: 0;
+    align-items: center;
+    gap: 8px;
+
+    .el-select {
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+
+    :deep(.el-select__wrapper) {
+      min-height: 34px;
+      border-radius: 7px;
+      background: #f8fafc;
+      box-shadow:
+        0 0 0 1px #d7dce3 inset,
+        0 1px 2px rgba(0, 0, 0, 0.12);
+    }
+
+    :deep(.el-select__selected-item),
+    :deep(.el-select__placeholder) {
+      color: #111827;
+    }
+  }
+
+  &__tag-retry {
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: #60a5fa;
+    cursor: pointer;
+
+    &:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+  }
+
+  &__tag-option {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+
+    &-title {
+      display: flex;
+      min-width: 0;
+      align-items: baseline;
+      gap: 0;
+      color: var(--v-text-primary);
+      font-size: var(--v-font-sm);
+
+      code {
+        color: var(--v-text-secondary);
+        font-size: var(--v-font-xs);
+      }
+    }
+
+    &-description {
+      overflow: hidden;
+      color: var(--v-text-tertiary);
+      font-size: var(--v-font-xs);
+      line-height: 16px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+
+  &__tag-option-count {
+    color: var(--v-text-secondary);
+  }
+
+  &__tag-select-footer {
+    display: flex;
+    flex-direction: column;
+  }
+
+  &__tag-select-status {
+    min-height: 28px;
+    display: flex;
+    align-items: center;
+  }
+
+  &__tag-create {
+    display: flex;
+    width: 100%;
+    height: 34px;
+    align-items: center;
+    gap: 7px;
+    padding: 0;
+    border: 0;
+    border-top: 1px solid var(--v-divider);
+    background: transparent;
+    color: var(--el-color-primary);
+    font: inherit;
+    cursor: pointer;
+
+    &:focus-visible {
+      outline: 2px solid var(--el-color-primary-light-5);
+      outline-offset: -2px;
+    }
   }
 
   &__edit-input {
