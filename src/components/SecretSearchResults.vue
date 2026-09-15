@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { FolderOpen, History, KeyRound } from '@lucide/vue'
+import { History, KeyRound } from '@lucide/vue'
 import type { SecretSearchGroup } from '@/types/secret-search'
 import { buildSecretSearchRows, secretSearchSpan } from '@/utils/secret-search'
 import { formatDateTime } from '@/utils/format'
@@ -9,8 +9,13 @@ import SecretValuePreview from './SecretValuePreview.vue'
 const props = defineProps<{ groups: SecretSearchGroup[] }>()
 const emit = defineEmits<{ history: [secret: SecretSearchGroup] }>()
 const rows = computed(() => buildSecretSearchRows(props.groups))
-function folderPath(secret: SecretSearchGroup, field: 'name' | 'code'): string {
-  return secret.scope.folders.map((folder) => folder[field]).join(' / ')
+function scopePath(secret: SecretSearchGroup): string {
+  return [
+    secret.scope.tenant.name,
+    secret.scope.organization.name,
+    secret.scope.project.name,
+    ...secret.scope.folders.map((folder) => folder.name),
+  ].join('/')
 }
 </script>
 <template>
@@ -19,31 +24,24 @@ function folderPath(secret: SecretSearchGroup, field: 'name' | 'code'): string {
     :data="rows"
     height="100%"
     row-key="id"
+    border
     :span-method="secretSearchSpan"
     :row-class-name="
       ({ row }) => (row.scopeSpan ? 'is-scope-start' : row.secretSpan ? 'is-secret-start' : '')
     "
   >
-    <el-table-column label="范围" width="240">
+    <el-table-column label="范围" width="480" show-overflow-tooltip>
       <template #default="{ row }">
-        <div class="secret-search-results__scope">
-          <span class="secret-search-results__path">{{
-            [
-              row.secret.scope.tenant.name,
-              row.secret.scope.organization.name,
-              row.secret.scope.project.name,
-            ].join('/')
-          }}</span>
-          <div class="secret-search-results__folder">
-            <FolderOpen :size="15" /><span
-              >{{ folderPath(row.secret, 'name')
-              }}<code>{{ folderPath(row.secret, 'code') }}</code></span
-            >
-          </div>
-        </div>
+        <span class="secret-search-results__scope"
+          >{{ scopePath(row.secret)
+          }}<span v-if="row.secret.scope.folders.at(-1)?.code"
+            >(<code>{{ row.secret.scope.folders.at(-1).code }}</code
+            >)</span
+          ></span
+        >
       </template>
     </el-table-column>
-    <el-table-column label="秘钥 Key" width="160">
+    <el-table-column label="秘钥 Key" width="260">
       <template #default="{ row }"
         ><div class="secret-search-results__key">
           <KeyRound :size="14" /><code>{{ row.secret.key }}</code>
@@ -103,6 +101,7 @@ function folderPath(secret: SecretSearchGroup, field: 'name' | 'code'): string {
   }
   :deep(th.el-table__cell) {
     padding: 0 8px;
+    border-right: 1px solid var(--v-divider);
   }
   :deep(th .cell) {
     padding: 0 6px;
@@ -124,31 +123,13 @@ function folderPath(secret: SecretSearchGroup, field: 'name' | 'code'): string {
     white-space: nowrap;
   }
   &__scope {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
     font-size: 12px;
-    overflow-wrap: anywhere;
-    padding-bottom: 12px;
-  }
-  &__path {
     color: var(--v-text-secondary);
     line-height: 1.6;
-  }
-  &__folder {
-    display: flex;
-    align-items: flex-start;
-    gap: 7px;
-    color: var(--v-brand-primary);
-    svg {
-      flex-shrink: 0;
-      margin-top: 3px;
-    }
+    white-space: nowrap;
     code {
-      display: block;
-      color: var(--v-text-tertiary);
-      font-size: 11px;
-      margin-top: 2px;
+      color: var(--v-brand-primary);
+      font-size: inherit;
     }
   }
   &__key {
