@@ -675,17 +675,77 @@ total.value = resp.total
 
 ```dotenv
 VITE_API_BASE=/api/v1
+VITE_API_PROXY_TARGET=http://localhost:8090
 VITE_APP_TITLE=EnvVault Dev
 ```
 
 `.env.production`:
 
 ```dotenv
-VITE_API_BASE=/api/v1
+VITE_BASE_PATH=/envvault/
+VITE_API_BASE=/envvault/api/v1
 VITE_APP_TITLE=EnvVault
 ```
 
-> 真上线时 `VITE_API_BASE` 需要根据反代/网关决定,本期固定 `/api/v1`,与后端统一前缀一致。
+生产环境由 Ingress 去除 `/envvault` 前缀后转发到 Web Nginx。Vite 路由基础路径和浏览器请求的 API 地址必须保留 `/envvault` 前缀,与 `deploy/k8s/env-vault-web-deployment.yaml` 中的 Ingress 规则保持一致。
+
+### 14.3 Docker 镜像构建与部署
+
+前端 Dockerfile 使用两阶段构建:
+
+- `NODE_IMAGE`:构建 Vue 静态资源,默认使用 `node:20-alpine`
+- `NGINX_IMAGE`:运行静态资源并代理后端 API,默认使用 `harbor.gtjaqh.net/infra/nginx:mainline`
+
+前端不使用 Go 工具链,因此后端构建命令中的 `BASE_IMAGE_REGISTRY` 和 `GOPROXY` 对本项目无效。国内网络环境下需要通过 Dockerfile 已声明的 `NODE_IMAGE` 参数替换 Node 基础镜像。
+
+在 `env-vault-web` 项目根目录执行以下命令。该示例构建 `linux/amd64` 镜像并直接推送到 Harbor:
+
+```bash
+docker login harbor.gtjaqh.net
+
+export IMAGE=harbor.gtjaqh.net/lucy-dev/env-vault-web:0.0.1-alpha.5
+
+docker buildx build \
+  --platform linux/amd64 \
+  --build-arg NODE_IMAGE=m.daocloud.io/docker.io/library/node:20-alpine \
+  --build-arg NGINX_IMAGE=harbor.gtjaqh.net/infra/nginx:mainline \
+  -t "$IMAGE" \
+  --push \
+  .
+```
+
+注意事项:
+
+- 镜像名是 `env-vault-web`,不要使用后端的 `env-vault`
+- `.env.production` 会在构建阶段写入前端产物,当前配置的访问前缀是 `/envvault/`,API 前缀是 `/envvault/api/v1`
+- `API_UPSTREAM` 和 `API_BOOTSTRAP_UPSTREAM` 是 Web Nginx 的运行时环境变量,由 Kubernetes Deployment 注入,不需要作为 Docker build 参数传入
+- `--push` 会直接推送镜像,不会把最终镜像载入本机 Docker。需要先在本机运行镜像时,将 `--push` 改为 `--load`
+
+推送完成后可以检查远端镜像及架构:
+
+```bash
+docker buildx imagetools inspect "$IMAGE"
+```
+
+部署前将 `deploy/k8s/env-vault-web-deployment.yaml` 中的 `image` 更新为本次镜像版本,然后执行:
+
+```bash
+kubectl apply -f deploy/k8s/env-vault-web-deployment.yaml
+kubectl -n env-vault rollout status deployment/env-vault-web
+kubectl -n env-vault get pods -l app.kubernetes.io/name=env-vault-web -o wide
+```
+
+临时验证新镜像且暂时不修改清单时,可以直接更新 Deployment:
+
+```bash
+kubectl -n env-vault set image \
+  deployment/env-vault-web \
+  env-vault-web="$IMAGE"
+
+kubectl -n env-vault rollout status deployment/env-vault-web
+```
+
+使用 `kubectl set image` 后再次应用旧版本 YAML 会将镜像回退到清单中的版本,正式部署仍应同步更新清单。
 
 ## 15. 测试策略
 
@@ -759,6 +819,19 @@ pnpm preview
 ```
 
 本期不实现任何业务页面,`pnpm dev` 启动后默认落在 `/app/dashboard` 占位页。`/login` 提供 dev token 签发入口,便于联调后端。
+
+
+
+### 20. 打包
+```sh
+docker buildx build \
+  --platform linux/amd64 \
+  --build-arg NODE_IMAGE=m.daocloud.io/docker.io/library/node:20-alpine \
+  --build-arg NGINX_IMAGE=harbor.gtjaqh.net/infra/nginx:mainline \
+  -t harbor.gtjaqh.net/lucy-dev/env-vault-web:0.0.1-alpha.3 \
+  --push \
+  .
+```
 
 ---
 

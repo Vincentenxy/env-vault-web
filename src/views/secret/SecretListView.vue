@@ -71,6 +71,7 @@ type FolderType = 'customer' | 'global' | 'groups' | 'common' | 'unknown'
 type CreateFolderType = 'common' | 'customer'
 type CascadeLevel = 'organization' | 'project'
 type HistoryDetailTab = 'version' | 'batch'
+type SecretTableColumnKey = 'key' | 'tags' | 'comment' | 'operations' | `environment:${string}`
 interface ProjectOption {
   id: string
   orgId: string
@@ -309,6 +310,7 @@ let editingTagSearchTimer: number | undefined
 let historyRequestSequence = 0
 let historyBatchRequestSequence = 0
 let auditRequestSequence = 0
+let secretTableResizeCleanup: (() => void) | undefined
 const historyWindowDuration = 5 * 60 * 1000
 const historyPageSize = 10
 const auditPageSize = 20
@@ -565,9 +567,95 @@ const activeRows = computed(() => {
   const keyword = folderSearch.value.trim().toLowerCase()
   return keyword ? rows.filter((row) => row.key.toLowerCase().includes(keyword)) : rows
 })
-const operationColumnWidth = computed(() => (editingKey.value ? 420 : 190))
+const secretTableColumnWidths = reactive<Record<string, number>>({})
+
+function environmentColumnKey(environmentCode: string): SecretTableColumnKey {
+  return `environment:${environmentCode}`
+}
+
+function secretTableDefaultColumnWidth(column: SecretTableColumnKey): number {
+  if (column === 'key') return 230
+  if (column === 'tags') return 250
+  if (column === 'comment') return 220
+  if (column === 'operations') return editingKey.value ? 420 : 190
+  return 220
+}
+
+function secretTableColumnMinWidth(column: SecretTableColumnKey): number {
+  if (column === 'operations') return 120
+  return 140
+}
+
+function secretTableColumnWidth(column: SecretTableColumnKey): number {
+  return secretTableColumnWidths[column] ?? secretTableDefaultColumnWidth(column)
+}
+
+function setSecretTableColumnWidth(column: SecretTableColumnKey, width: number): void {
+  secretTableColumnWidths[column] = Math.min(
+    720,
+    Math.max(secretTableColumnMinWidth(column), Math.round(width)),
+  )
+}
+
+function stopSecretTableColumnResize(): void {
+  const cleanup = secretTableResizeCleanup
+  secretTableResizeCleanup = undefined
+  cleanup?.()
+}
+
+// 原生表格没有内置列宽拖动，统一在表头分隔线上维护当前页面的列宽
+function startSecretTableColumnResize(event: MouseEvent, column: SecretTableColumnKey): void {
+  if (event.button !== 0) return
+  event.preventDefault()
+  event.stopPropagation()
+  stopSecretTableColumnResize()
+
+  const startX = event.clientX
+  const startWidth = secretTableColumnWidth(column)
+  const previousCursor = document.body.style.cursor
+  const previousUserSelect = document.body.style.userSelect
+  const resize = (moveEvent: MouseEvent) => {
+    setSecretTableColumnWidth(column, startWidth + moveEvent.clientX - startX)
+  }
+  const stop = () => stopSecretTableColumnResize()
+
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+  window.addEventListener('mousemove', resize)
+  window.addEventListener('mouseup', stop)
+  secretTableResizeCleanup = () => {
+    window.removeEventListener('mousemove', resize)
+    window.removeEventListener('mouseup', stop)
+    document.body.style.cursor = previousCursor
+    document.body.style.userSelect = previousUserSelect
+  }
+}
+
+function resizeSecretTableColumnByKeyboard(
+  event: KeyboardEvent,
+  column: SecretTableColumnKey,
+): void {
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+  event.preventDefault()
+  const step = event.shiftKey ? 40 : 10
+  setSecretTableColumnWidth(
+    column,
+    secretTableColumnWidth(column) + (event.key === 'ArrowRight' ? step : -step),
+  )
+}
+
+const operationColumnWidth = computed(() => secretTableColumnWidth('operations'))
 const secretTableMinWidth = computed(
-  () => 230 + environments.value.length * 220 + 250 + 220 + operationColumnWidth.value,
+  () =>
+    secretTableColumnWidth('key') +
+    environments.value.reduce(
+      (width, environment) =>
+        width + secretTableColumnWidth(environmentColumnKey(environment.code)),
+      0,
+    ) +
+    secretTableColumnWidth('tags') +
+    secretTableColumnWidth('comment') +
+    operationColumnWidth.value,
 )
 const secretTableColumnCount = computed(() => environments.value.length + 4)
 const editingTagSelectOptions = computed(() => [
@@ -2485,6 +2573,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.clearTimeout(folderSearchTimer)
+  stopSecretTableColumnResize()
   resetEditingTags()
   persistKeyDialogDraft()
   window.removeEventListener('beforeunload', persistKeyDialogDraft)
@@ -2961,14 +3050,26 @@ watch(
           :style="{ minWidth: `${secretTableMinWidth}px` }"
         >
           <colgroup>
-            <col class="vault-table__column vault-table__column--key" />
+            <col
+              class="vault-table__column vault-table__column--key"
+              :style="{ width: `${secretTableColumnWidth('key')}px` }"
+            />
             <col
               v-for="environment in environments"
               :key="environment.id || environment.code"
               class="vault-table__column vault-table__column--environment"
+              :style="{
+                width: `${secretTableColumnWidth(environmentColumnKey(environment.code))}px`,
+              }"
             />
-            <col class="vault-table__column vault-table__column--tags" />
-            <col class="vault-table__column vault-table__column--comment" />
+            <col
+              class="vault-table__column vault-table__column--tags"
+              :style="{ width: `${secretTableColumnWidth('tags')}px` }"
+            />
+            <col
+              class="vault-table__column vault-table__column--comment"
+              :style="{ width: `${secretTableColumnWidth('comment')}px` }"
+            />
             <col
               class="vault-table__column vault-table__column--operations"
               :style="{ width: `${operationColumnWidth}px` }"
@@ -2976,7 +3077,21 @@ watch(
           </colgroup>
           <thead>
             <tr>
-              <th>密钥名称</th>
+              <th>
+                <span>密钥名称</span>
+                <span
+                  class="vault-table__resize-handle"
+                  role="separator"
+                  tabindex="0"
+                  aria-orientation="vertical"
+                  aria-label="调整密钥名称列宽"
+                  :aria-valuemin="secretTableColumnMinWidth('key')"
+                  :aria-valuemax="720"
+                  :aria-valuenow="secretTableColumnWidth('key')"
+                  @mousedown="startSecretTableColumnResize($event, 'key')"
+                  @keydown="resizeSecretTableColumnByKeyboard($event, 'key')"
+                ></span>
+              </th>
               <th v-for="environment in environments" :key="environment.code">
                 <span class="vault-table__env-heading">
                   <span class="vault-env" :class="`is-${environment.code}`">
@@ -2995,10 +3110,71 @@ watch(
                     </el-icon>
                   </button>
                 </span>
+                <span
+                  class="vault-table__resize-handle"
+                  role="separator"
+                  tabindex="0"
+                  aria-orientation="vertical"
+                  :aria-label="`调整${environment.name}环境列宽`"
+                  :aria-valuemin="secretTableColumnMinWidth(environmentColumnKey(environment.code))"
+                  :aria-valuemax="720"
+                  :aria-valuenow="secretTableColumnWidth(environmentColumnKey(environment.code))"
+                  @mousedown="
+                    startSecretTableColumnResize($event, environmentColumnKey(environment.code))
+                  "
+                  @keydown="
+                    resizeSecretTableColumnByKeyboard(
+                      $event,
+                      environmentColumnKey(environment.code),
+                    )
+                  "
+                ></span>
               </th>
-              <th>标签</th>
-              <th>说明</th>
-              <th>操作</th>
+              <th>
+                <span>标签</span>
+                <span
+                  class="vault-table__resize-handle"
+                  role="separator"
+                  tabindex="0"
+                  aria-orientation="vertical"
+                  aria-label="调整标签列宽"
+                  :aria-valuemin="secretTableColumnMinWidth('tags')"
+                  :aria-valuemax="720"
+                  :aria-valuenow="secretTableColumnWidth('tags')"
+                  @mousedown="startSecretTableColumnResize($event, 'tags')"
+                  @keydown="resizeSecretTableColumnByKeyboard($event, 'tags')"
+                ></span>
+              </th>
+              <th>
+                <span>说明</span>
+                <span
+                  class="vault-table__resize-handle"
+                  role="separator"
+                  tabindex="0"
+                  aria-orientation="vertical"
+                  aria-label="调整说明列宽"
+                  :aria-valuemin="secretTableColumnMinWidth('comment')"
+                  :aria-valuemax="720"
+                  :aria-valuenow="secretTableColumnWidth('comment')"
+                  @mousedown="startSecretTableColumnResize($event, 'comment')"
+                  @keydown="resizeSecretTableColumnByKeyboard($event, 'comment')"
+                ></span>
+              </th>
+              <th>
+                <span>操作</span>
+                <span
+                  class="vault-table__resize-handle"
+                  role="separator"
+                  tabindex="0"
+                  aria-orientation="vertical"
+                  aria-label="调整操作列宽"
+                  :aria-valuemin="secretTableColumnMinWidth('operations')"
+                  :aria-valuemax="720"
+                  :aria-valuenow="operationColumnWidth"
+                  @mousedown="startSecretTableColumnResize($event, 'operations')"
+                  @keydown="resizeSecretTableColumnByKeyboard($event, 'operations')"
+                ></span>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -5306,11 +5482,43 @@ watch(
   }
 
   th {
+    position: relative;
     height: 39px;
+    border-right: 1px solid var(--v-divider);
     background: var(--v-surface-bg-subtle);
     color: var(--v-text-secondary);
     font-size: 12px;
     font-weight: 600;
+  }
+
+  &__resize-handle {
+    position: absolute;
+    z-index: 2;
+    top: 0;
+    right: -5px;
+    width: 10px;
+    height: 100%;
+    cursor: col-resize;
+    touch-action: none;
+
+    &::after {
+      position: absolute;
+      top: 8px;
+      right: 4px;
+      width: 1px;
+      height: calc(100% - 16px);
+      background: transparent;
+      content: '';
+    }
+
+    &:hover::after,
+    &:focus-visible::after {
+      background: var(--v-brand-primary);
+    }
+
+    &:focus-visible {
+      outline: none;
+    }
   }
 
   td {

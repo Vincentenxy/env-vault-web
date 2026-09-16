@@ -176,6 +176,40 @@ afterEach(() => {
 })
 
 describe('SecretListView tag column', () => {
+  it('supports dragging and keyboard resizing from every table header', async () => {
+    const wrapper = mount(SecretListView, {
+      global: { plugins: [ElementPlus, createPinia()] },
+      attachTo: document.body,
+    })
+    await flushPromises()
+    await wrapper.get('article.vault-folder').trigger('click')
+    await flushPromises()
+
+    const labels = wrapper
+      .findAll('.vault-table__resize-handle')
+      .map((handle) => handle.attributes('aria-label'))
+    expect(labels).toEqual([
+      '调整密钥名称列宽',
+      '调整开发环境列宽',
+      '调整标签列宽',
+      '调整说明列宽',
+      '调整操作列宽',
+    ])
+
+    const handle = wrapper.get('[aria-label="调整密钥名称列宽"]')
+    handle.element.dispatchEvent(
+      new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 200 }),
+    )
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 280 }))
+    window.dispatchEvent(new MouseEvent('mouseup'))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('col.vault-table__column--key').attributes('style')).toContain('310px')
+
+    await handle.trigger('keydown', { key: 'ArrowLeft' })
+    expect(wrapper.get('col.vault-table__column--key').attributes('style')).toContain('300px')
+    wrapper.unmount()
+  })
+
   it('updates tags inline without creating a secret version when no secret content changed', async () => {
     const wrapper = mount(SecretListView, {
       global: { plugins: [ElementPlus, createPinia()] },

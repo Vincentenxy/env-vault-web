@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { CascaderOption, CascaderProps } from 'element-plus'
 import { Search as SearchIcon } from '@element-plus/icons-vue'
-import { Search } from '@lucide/vue'
+import { CircleHelp, Search } from '@lucide/vue'
 import PageRefreshButton from '@/components/PageRefreshButton.vue'
 import SecretSearchResults from '@/components/SecretSearchResults.vue'
 import SecretSearchHistoryDialog from '@/components/SecretSearchHistoryDialog.vue'
@@ -412,6 +412,28 @@ async function refresh(): Promise<void> {
               <SearchIcon />
             </button>
           </template>
+          <template #suffix>
+            <el-popover
+              placement="bottom-end"
+              :width="340"
+              trigger="click"
+              popper-class="secret-search-help-popper"
+            >
+              <template #reference>
+                <button type="button" class="secret-search__help-button" aria-label="搜索说明">
+                  <CircleHelp :size="16" :stroke-width="1.8" />
+                </button>
+              </template>
+              <div class="secret-search-help">
+                <strong>搜索说明</strong>
+                <ul>
+                  <li>同时匹配秘钥 Key 和备注，按完整输入进行包含搜索</li>
+                  <li>搜索全部范围、租户或组织时，关键词需包含至少 3 个连续的中文、字母或数字</li>
+                  <li>选择项目或文件夹后，可搜索 1 至 2 个字符的短关键词</li>
+                </ul>
+              </div>
+            </el-popover>
+          </template>
         </el-input>
         <PageRefreshButton
           aria-label="刷新范围"
@@ -570,7 +592,7 @@ async function refresh(): Promise<void> {
   }
 
   &__input {
-    width: 176px;
+    width: 240px;
     min-width: 0;
 
     :deep(.el-input__wrapper) {
@@ -604,6 +626,26 @@ async function refresh(): Promise<void> {
     &:disabled {
       opacity: 0.48;
       cursor: not-allowed;
+    }
+  }
+
+  &__help-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 24px;
+    flex: 0 0 18px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    color: var(--el-input-icon-color, var(--el-text-color-placeholder));
+    background: transparent;
+    cursor: pointer;
+
+    &:hover,
+    &:focus-visible {
+      color: var(--v-brand-primary);
     }
   }
 
@@ -657,6 +699,27 @@ async function refresh(): Promise<void> {
 }
 :global(.secret-search-scope-popper .el-cascader-panel) {
   overflow-x: auto;
+}
+:global(.secret-search-help-popper) {
+  padding: 14px 16px;
+}
+:global(.secret-search-help) {
+  color: var(--v-text-primary);
+}
+:global(.secret-search-help strong) {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+:global(.secret-search-help ul) {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--v-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
 }
 @media (max-width: 900px) {
   .secret-search__toolbar {

@@ -75,6 +75,17 @@ afterEach(() => {
 })
 
 describe('秘钥检索范围与分页', () => {
+  it('在搜索框内部展示 Key、备注和短关键词规则说明', async () => {
+    const wrapper = await setup()
+    const helpButton = wrapper.get('.secret-search__input [aria-label="搜索说明"]')
+    await helpButton.trigger('click')
+    await flushPromises()
+
+    expect(document.body.textContent).toContain('同时匹配秘钥 Key 和备注')
+    expect(document.body.textContent).toContain('至少 3 个连续的中文、字母或数字')
+    expect(document.body.textContent).toContain('选择项目或文件夹后，可搜索 1 至 2 个字符')
+  })
+
   it('租户和组织查询全部环境，仅选择项目时按排序默认选第一个环境', async () => {
     const wrapper = await setup()
     await select(wrapper, ['tenant-1'])
