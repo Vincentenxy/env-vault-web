@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNavigationMemory } from '@/composables/use-navigation-memory'
 import PageRefreshButton from '@/components/PageRefreshButton.vue'
@@ -38,10 +38,19 @@ import ResourceCreateDialog, {
 import type { Organization } from '@/types/organization'
 import type { Project } from '@/types/project'
 import { ApiError } from '@/types/api'
+import {
+  calculateCardPageSize,
+  measureContentHeight,
+  measureContentWidth,
+} from '@/utils/responsive-card-grid'
 
 type CascadeLevel = 'tenant' | 'organization' | 'project'
 type ResourceLevel = 'tenant' | 'organization' | 'project'
 type CascadeItem = TenantHierarchyOption | TenantOrganizationOption | TenantProjectOption
+interface ResourceLoadOptions {
+  targetPage?: number
+  append?: boolean
+}
 type ResourceItem = Tenant | Organization | Project
 type CardTone = 'blue' | 'violet' | 'teal' | 'rose'
 type DeleteResourceHandler = (id: string) => Promise<unknown>
@@ -68,6 +77,11 @@ const currentPage = ref(navigation.saved.page)
 const pageSize = ref(10)
 const total = ref(0)
 const searchKeyword = ref(navigation.saved.search)
+const organizationPageRef = ref<HTMLElement | null>(null)
+const organizationContentRef = ref<HTMLElement | null>(null)
+const organizationToolbarRef = ref<HTMLElement | null>(null)
+const resourceCardMinWidth = 230
+const resourceCardHeight = 183
 const favoriteOnly = ref(false)
 const managementMode = ref(false)
 const favoriteIds = reactive(new Set<string>())
@@ -88,6 +102,8 @@ const cascadeSearch = ref('')
 
 let contentRequestId = 0
 let searchTimer: number | undefined
+let responsivePageSizeTimer: number | undefined
+let responsiveResizeObserver: ResizeObserver | undefined
 let skipNextSearchReload = false
 
 const resourceLevel = computed<ResourceLevel>(() => {
@@ -170,6 +186,14 @@ const visibleResources = computed<ResourceItem[]>(() =>
 )
 
 const hasVisibleResources = computed(() => visibleResources.value.length > 0)
+const loadedResourceCount = computed(() => {
+  if (resourceLevel.value === 'tenant') return tenants.value.length
+  if (resourceLevel.value === 'organization') return organizations.value.length
+  return projects.value.length
+})
+const resourceHasMore = computed(
+  () => !selectedProjectId.value && currentPage.value * pageSize.value < total.value,
+)
 
 const searchPlaceholder = computed(() => `搜索${resourceLabel(resourceLevel.value)}...`)
 
@@ -310,6 +334,12 @@ function projectOptionToCard(item: TenantProjectOption): Project {
   }
 }
 
+function appendResources<T extends { id: string }>(current: T[], incoming: T[]): T[] {
+  const merged = new Map(current.map((item) => [item.id, item]))
+  incoming.forEach((item) => merged.set(item.id, item))
+  return [...merged.values()]
+}
+
 function resetResourceSearch(): void {
   window.clearTimeout(searchTimer)
   if (searchKeyword.value) {
@@ -352,91 +382,206 @@ async function loadHierarchy(): Promise<void> {
   }
 }
 
-async function loadTenants(): Promise<void> {
+async function loadTenants(options: ResourceLoadOptions = {}): Promise<void> {
+  const append = options.append === true
+  const requestedPage = Math.max(1, (options.targetPage ?? currentPage.value) || 1)
+  const startPage = append ? currentPage.value + 1 : 1
+  const endPage = append ? startPage : requestedPage
   const requestId = ++contentRequestId
   contentLoading.value = true
   loadFailed.value = false
-  organizations.value = []
-  projects.value = []
-
-  try {
-    const data = await listTenants({
-      pageNum: currentPage.value,
-      pageSize: pageSize.value,
-      name: searchKeyword.value.trim(),
-      code: '',
-    })
-    if (requestId !== contentRequestId) return
-    tenants.value = Array.isArray(data.list) ? data.list : []
-    total.value = data.total ?? tenants.value.length
-  } catch {
-    if (requestId !== contentRequestId) return
+  if (!append) {
     tenants.value = []
-    total.value = 0
-    loadFailed.value = true
-  } finally {
-    if (requestId === contentRequestId) contentLoading.value = false
-  }
-}
-
-async function loadOrganizations(): Promise<void> {
-  const requestId = ++contentRequestId
-  contentLoading.value = true
-  loadFailed.value = false
-  projects.value = []
-
-  try {
-    const data = await listOrganizations({
-      pageNum: currentPage.value,
-      pageSize: pageSize.value,
-      tenantId: selectedTenantId.value || null,
-      name: searchKeyword.value.trim(),
-      code: '',
-    })
-    if (requestId !== contentRequestId) return
-    organizations.value = Array.isArray(data.list) ? data.list : []
-    total.value = data.total ?? organizations.value.length
-  } catch {
-    if (requestId !== contentRequestId) return
     organizations.value = []
-    total.value = 0
+    projects.value = []
+  }
+
+  try {
+    for (let page = startPage; page <= endPage; page += 1) {
+      const data = await listTenants({
+        pageNum: page,
+        pageSize: pageSize.value,
+        name: searchKeyword.value.trim(),
+        code: '',
+      })
+      if (requestId !== contentRequestId) return
+      const list = Array.isArray(data.list) ? data.list : []
+      tenants.value = page === 1 ? list : appendResources(tenants.value, list)
+      total.value = data.total ?? tenants.value.length
+      currentPage.value = page
+      if (list.length < pageSize.value || page * pageSize.value >= total.value) break
+    }
+  } catch {
+    if (requestId !== contentRequestId) return
+    if (!append) {
+      tenants.value = []
+      total.value = 0
+      currentPage.value = 1
+    }
     loadFailed.value = true
   } finally {
     if (requestId === contentRequestId) contentLoading.value = false
   }
 }
 
-async function loadProjects(): Promise<void> {
-  if (!selectedOrganizationId.value) return
-
+async function loadOrganizations(options: ResourceLoadOptions = {}): Promise<void> {
+  const append = options.append === true
+  const requestedPage = Math.max(1, (options.targetPage ?? currentPage.value) || 1)
+  const startPage = append ? currentPage.value + 1 : 1
+  const endPage = append ? startPage : requestedPage
   const requestId = ++contentRequestId
   contentLoading.value = true
   loadFailed.value = false
+  if (!append) {
+    organizations.value = []
+    projects.value = []
+  }
 
   try {
-    const data = await listProjects({
-      pageNum: currentPage.value,
-      pageSize: pageSize.value,
-      orgId: selectedOrganizationId.value,
-      name: searchKeyword.value.trim(),
-      code: '',
-    })
-    if (requestId !== contentRequestId) return
-    projects.value = Array.isArray(data.list) ? data.list : []
-    total.value = data.total ?? projects.value.length
+    for (let page = startPage; page <= endPage; page += 1) {
+      const data = await listOrganizations({
+        pageNum: page,
+        pageSize: pageSize.value,
+        tenantId: selectedTenantId.value || null,
+        name: searchKeyword.value.trim(),
+        code: '',
+      })
+      if (requestId !== contentRequestId) return
+      const list = Array.isArray(data.list) ? data.list : []
+      organizations.value = page === 1 ? list : appendResources(organizations.value, list)
+      total.value = data.total ?? organizations.value.length
+      currentPage.value = page
+      if (list.length < pageSize.value || page * pageSize.value >= total.value) break
+    }
   } catch {
     if (requestId !== contentRequestId) return
-    projects.value = []
-    total.value = 0
+    if (!append) {
+      organizations.value = []
+      total.value = 0
+      currentPage.value = 1
+    }
     loadFailed.value = true
   } finally {
     if (requestId === contentRequestId) contentLoading.value = false
   }
 }
 
-function loadCurrentLevel(): Promise<void> {
-  if (resourceLevel.value === 'tenant') return loadTenants()
-  return resourceLevel.value === 'organization' ? loadOrganizations() : loadProjects()
+async function loadProjects(options: ResourceLoadOptions = {}): Promise<void> {
+  if (!selectedOrganizationId.value) {
+    if (options.append !== true) {
+      projects.value = []
+      total.value = 0
+      currentPage.value = 1
+    }
+    return
+  }
+
+  const append = options.append === true
+  const requestedPage = Math.max(1, (options.targetPage ?? currentPage.value) || 1)
+  const startPage = append ? currentPage.value + 1 : 1
+  const endPage = append ? startPage : requestedPage
+  const requestId = ++contentRequestId
+  contentLoading.value = true
+  loadFailed.value = false
+  if (!append) {
+    projects.value = []
+  }
+
+  try {
+    for (let page = startPage; page <= endPage; page += 1) {
+      const data = await listProjects({
+        pageNum: page,
+        pageSize: pageSize.value,
+        orgId: selectedOrganizationId.value,
+        name: searchKeyword.value.trim(),
+        code: '',
+      })
+      if (requestId !== contentRequestId) return
+      const list = Array.isArray(data.list) ? data.list : []
+      projects.value = page === 1 ? list : appendResources(projects.value, list)
+      total.value = data.total ?? projects.value.length
+      currentPage.value = page
+      if (list.length < pageSize.value || page * pageSize.value >= total.value) break
+    }
+  } catch {
+    if (requestId !== contentRequestId) return
+    if (!append) {
+      projects.value = []
+      total.value = 0
+      currentPage.value = 1
+    }
+    loadFailed.value = true
+  } finally {
+    if (requestId === contentRequestId) contentLoading.value = false
+  }
+}
+
+function loadCurrentLevel(options: ResourceLoadOptions = {}): Promise<void> {
+  if (resourceLevel.value === 'tenant') return loadTenants(options)
+  return resourceLevel.value === 'organization' ? loadOrganizations(options) : loadProjects(options)
+}
+
+function loadMoreCurrentLevel(): void {
+  if (contentLoading.value || !resourceHasMore.value) return
+  void loadCurrentLevel({ append: true })
+}
+
+function handleOrganizationScroll(event: Event): void {
+  const target = event.currentTarget as HTMLElement | null
+  if (!target || target.scrollHeight - target.scrollTop - target.clientHeight > 180) return
+  loadMoreCurrentLevel()
+}
+
+// 获取扣除工具栏后的固定可视区域高度，避免卡片数量变化反过来影响测量结果
+function measureResourceAreaHeight(): number {
+  const page = organizationPageRef.value
+  const toolbar = organizationToolbarRef.value
+  const content = organizationContentRef.value
+  if (!page || !toolbar || !content) return measureContentHeight(content)
+
+  const pageHeight = page.clientHeight || page.getBoundingClientRect().height
+  const toolbarHeight = toolbar.offsetHeight || toolbar.getBoundingClientRect().height
+  if (!pageHeight || !toolbarHeight) return measureContentHeight(content)
+
+  const styles = window.getComputedStyle(content)
+  const paddingTop = Number.parseFloat(styles.paddingTop) || 0
+  const paddingBottom = Number.parseFloat(styles.paddingBottom) || 0
+  return Math.max(0, pageHeight - toolbarHeight - paddingTop - paddingBottom)
+}
+
+// 计算组织管理区域在当前宽高下可以展示的资源卡片数量
+function updateResourcePageSize(): boolean {
+  const calculatedPageSize = calculateCardPageSize(
+    measureContentWidth(organizationContentRef.value),
+    measureResourceAreaHeight(),
+    resourceCardMinWidth,
+    resourceCardHeight,
+  )
+  if (!calculatedPageSize || calculatedPageSize === pageSize.value) return false
+  pageSize.value = calculatedPageSize
+  return true
+}
+
+// 分页大小变化后重新请求第一页，避免旧分页边界造成漏数据或重复数据
+function reloadAfterPageSizeChange(): void {
+  if (!updateResourcePageSize() || selectedProjectId.value) return
+  currentPage.value = 1
+  void loadCurrentLevel({ targetPage: 1 })
+}
+
+function handleViewportResize(): void {
+  window.clearTimeout(responsivePageSizeTimer)
+  responsivePageSizeTimer = window.setTimeout(reloadAfterPageSizeChange, 150)
+}
+
+// 监听内容区域尺寸，覆盖侧边栏或布局变化但窗口未变化的情况
+function observeResponsiveContainer(): void {
+  responsiveResizeObserver?.disconnect()
+  responsiveResizeObserver = undefined
+  if (typeof ResizeObserver === 'undefined' || !organizationPageRef.value) return
+
+  responsiveResizeObserver = new ResizeObserver(handleViewportResize)
+  responsiveResizeObserver.observe(organizationPageRef.value)
 }
 
 async function refreshPage(): Promise<void> {
@@ -544,11 +689,6 @@ function enterProject(item: Project): void {
 
 function openProjectSecrets(item: Project): void {
   void router.push({ name: 'SecretList', query: { projectId: item.id } })
-}
-
-function onPageChange(page: number): void {
-  currentPage.value = page
-  void loadCurrentLevel()
 }
 
 function toggleFavorite(item: ResourceItem): void {
@@ -673,17 +813,30 @@ watch(searchKeyword, () => {
 })
 
 onMounted(() => {
-  void refreshPage()
+  window.addEventListener('resize', handleViewportResize)
+  void nextTick().then(() => {
+    updateResourcePageSize()
+    observeResponsiveContainer()
+    void refreshPage()
+  })
 })
 
 onBeforeUnmount(() => {
   window.clearTimeout(searchTimer)
+  window.clearTimeout(responsivePageSizeTimer)
+  window.removeEventListener('resize', handleViewportResize)
+  responsiveResizeObserver?.disconnect()
+  responsiveResizeObserver = undefined
 })
 </script>
 
 <template>
-  <section class="organization-page">
-    <header class="organization-toolbar">
+  <section
+    ref="organizationPageRef"
+    class="organization-page"
+    @scroll.passive="handleOrganizationScroll"
+  >
+    <header ref="organizationToolbarRef" class="organization-toolbar">
       <el-popover
         v-model:visible="cascadeOpen"
         placement="bottom-start"
@@ -886,7 +1039,11 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <main v-loading="contentLoading" class="organization-content">
+    <main
+      ref="organizationContentRef"
+      v-loading="contentLoading"
+      class="organization-content"
+    >
       <div v-if="hasVisibleResources" class="resource-grid">
         <article
           v-for="item in visibleResources"
@@ -990,23 +1147,29 @@ onBeforeUnmount(() => {
         </span>
         <strong>{{ emptyTitle }}</strong>
         <span>{{ loadFailed ? '请稍后重试' : '当前筛选条件下没有数据' }}</span>
-        <el-button v-if="loadFailed" type="primary" plain @click="loadCurrentLevel">
+        <el-button v-if="loadFailed" type="primary" plain @click="loadCurrentLevel()">
           重新加载
         </el-button>
       </div>
 
       <div
-        v-if="total > pageSize && !selectedProjectId && !favoriteOnly"
-        class="resource-pagination"
+        v-if="!selectedProjectId && (resourceHasMore || loadedResourceCount)"
+        class="resource-load-more"
       >
-        <el-pagination
-          background
-          layout="prev, pager, next"
-          :current-page="currentPage"
-          :page-size="pageSize"
-          :total="total"
-          @current-change="onPageChange"
-        />
+        <span>{{
+          resourceHasMore
+            ? `已加载 ${loadedResourceCount} / ${total} 个${resourceLabel(resourceLevel)}`
+            : `已全部加载 ${loadedResourceCount} 个${resourceLabel(resourceLevel)}`
+        }}</span>
+        <el-button
+          v-if="resourceHasMore"
+          size="small"
+          plain
+          :loading="contentLoading"
+          @click="loadMoreCurrentLevel"
+        >
+          加载更多
+        </el-button>
       </div>
     </main>
 
@@ -1187,7 +1350,8 @@ onBeforeUnmount(() => {
 
 .resource-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 252px));
+  grid-template-columns: repeat(auto-fill, minmax(min(230px, 100%), 1fr));
+  width: 100%;
   align-items: start;
   gap: 14px;
 }
@@ -1450,10 +1614,24 @@ onBeforeUnmount(() => {
   }
 }
 
-.resource-pagination {
+.resource-load-more {
   display: flex;
+  align-items: center;
   justify-content: center;
-  padding-top: 24px;
+  gap: 16px;
+  min-height: 45px;
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--v-divider);
+
+  > span {
+    color: var(--v-text-secondary);
+    font-size: 12px;
+  }
+
+  .el-button {
+    min-width: 88px;
+  }
 }
 
 :global(.organization-cascade-popper.el-popper) {
@@ -1629,8 +1807,5 @@ onBeforeUnmount(() => {
     padding: 14px 16px 22px;
   }
 
-  .resource-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 </style>

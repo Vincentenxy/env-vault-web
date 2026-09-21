@@ -1,5 +1,14 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, type Component, watch } from 'vue'
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  reactive,
+  ref,
+  type Component,
+  watch,
+} from 'vue'
 import { useNavigationMemory } from '@/composables/use-navigation-memory'
 import PageRefreshButton from '@/components/PageRefreshButton.vue'
 import SecretTagDetailDialog from '@/components/SecretTagDetailDialog.vue'
@@ -66,6 +75,11 @@ import {
   resolveCreateKeyPattern,
   type CreateKeyPatternMode,
 } from '@/utils/secret-key-pattern'
+import {
+  calculateCardPageSize,
+  measureContentHeight,
+  measureContentWidth,
+} from '@/utils/responsive-card-grid'
 
 type FolderType = 'customer' | 'global' | 'groups' | 'common' | 'unknown'
 type CreateFolderType = 'common' | 'customer'
@@ -219,8 +233,17 @@ const folderSearch = ref('')
 const favoriteOnly = ref(false)
 const managementMode = ref(false)
 const folderPage = ref(1)
-const folderPageSize = 6
+const folderPageSize = ref(6)
 const folderTotal = ref(0)
+const groupPage = ref(1)
+const groupPageSize = ref(6)
+const groupTotal = ref(0)
+const folderContentRef = ref<HTMLElement | null>(null)
+const groupContentRef = ref<HTMLElement | null>(null)
+const folderCardMinWidth = 230
+const folderCardHeight = 183
+const groupCardMinWidth = 280
+const groupCardHeight = 100
 const scopeLoading = ref(false)
 const folderLoading = ref(false)
 const folderLoadFailed = ref(false)
@@ -300,6 +323,8 @@ let folderRequestSequence = 0
 let groupRequestSequence = 0
 let environmentRequestSequence = 0
 let folderSearchTimer: number | undefined
+let responsivePageSizeTimer: number | undefined
+let responsiveResizeObserver: ResizeObserver | undefined
 const favoriteFolderStorageKey = 'env-vault:secret:favorite-folders'
 const keyDialogDraftStoragePrefix = 'env-vault:secret:key-dialog-draft'
 const createFolderDraftStoragePrefix = 'env-vault:secret:create-folder-draft'
@@ -562,6 +587,8 @@ navigation.track(() => {
 const visibleFolders = computed(() =>
   favoriteOnly.value ? folders.value.filter((folder) => folder.favorite) : folders.value,
 )
+const folderHasMore = computed(() => folderPage.value * folderPageSize.value < folderTotal.value)
+const groupHasMore = computed(() => groupPage.value * groupPageSize.value < groupTotal.value)
 const activeRows = computed(() => {
   const rows = activeSecretFolder.value ? (secretRows[activeSecretFolder.value.id] ?? []) : []
   const keyword = folderSearch.value.trim().toLowerCase()
@@ -775,6 +802,27 @@ function mergeMappedFolders(items: Folder[], projectId: string): VaultFolder[] {
     }
     previous.count = previous.count ?? mapped.count
     previous.groups = previous.groups ?? mapped.groups
+  })
+  return [...merged.values()]
+}
+
+function folderLogicalKey(folder: VaultFolder): string {
+  return folder.folderGroupId || folder.code || folder.id
+}
+
+function appendMappedFolders(current: VaultFolder[], incoming: VaultFolder[]): VaultFolder[] {
+  const merged = new Map(current.map((folder) => [folderLogicalKey(folder), folder]))
+  incoming.forEach((folder) => {
+    const key = folderLogicalKey(folder)
+    const previous = merged.get(key)
+    if (!previous) {
+      merged.set(key, folder)
+      return
+    }
+    if (!previous.managerId && folder.managerId) previous.managerId = folder.managerId
+    if (previous.owner === '待补充' && folder.owner !== '待补充') previous.owner = folder.owner
+    previous.count = previous.count ?? folder.count
+    previous.groups = previous.groups ?? folder.groups
   })
   return [...merged.values()]
 }
@@ -1056,9 +1104,9 @@ async function refreshCurrentView(): Promise<void> {
   if (!navigationReady.value) {
     await loadScopeOptions()
   } else if (!activeFolder.value) {
-    await loadFolders()
+    await loadFolders({ targetPage: folderPage.value })
   } else if (activeFolder.value.type === 'groups' && !activeGroupId.value) {
-    await loadGroupFolders(activeFolder.value)
+    await loadGroupFolders(activeFolder.value, { targetPage: groupPage.value })
   } else if (activeSecretFolder.value) {
     await Promise.all([
       loadProjectEnvironments(selectedProjectId.value),
@@ -1076,21 +1124,27 @@ const pageRefreshing = computed(
     environmentLoading.value,
 )
 
-async function loadFolders(): Promise<void> {
+async function loadFolders(options: { targetPage?: number } = {}): Promise<void> {
   finishInlineEdit(false)
   closeKeyHistory()
   const projectId = selectedProjectId.value
+  const requestedPage = options.targetPage ?? folderPage.value
+  const targetPage = Math.max(1, requestedPage || 1)
   const requestSequence = ++folderRequestSequence
   groupRequestSequence += 1
   activeFolderId.value = ''
   activeGroupId.value = ''
   serviceGroups.value = []
+  groupPage.value = 1
+  groupTotal.value = 0
   groupLoading.value = false
   groupLoadFailed.value = false
   folderLoadFailed.value = false
+  folders.value = []
+  folderPage.value = 0
 
   if (!projectId) {
-    folders.value = []
+    folderPage.value = 1
     folderTotal.value = 0
     return
   }
@@ -1098,23 +1152,31 @@ async function loadFolders(): Promise<void> {
   folderLoading.value = true
   try {
     const name = folderListSearch.value.trim()
-    const response = await listFolders({
-      pageNum: folderPage.value,
-      pageSize: folderPageSize,
-      projectId,
-      ...(name ? { name } : {}),
-    })
-    if (requestSequence !== folderRequestSequence) return
-    folders.value = mergeMappedFolders(response.list, projectId)
-    folderTotal.value = Number(response.total) || 0
-    const lastPage = Math.max(1, Math.ceil(folderTotal.value / folderPageSize))
-    if (folderPage.value > lastPage) {
-      folderPage.value = lastPage
-      await loadFolders()
+    for (let page = 1; page <= targetPage; page += 1) {
+      const response = await listFolders({
+        pageNum: page,
+        pageSize: folderPageSize.value,
+        projectId,
+        ...(name ? { name } : {}),
+      })
+      if (requestSequence !== folderRequestSequence) return
+      folders.value = appendMappedFolders(
+        folders.value,
+        mergeMappedFolders(response.list, projectId),
+      )
+      folderTotal.value = Number(response.total) || 0
+      folderPage.value = page
+      if (
+        response.list.length < folderPageSize.value ||
+        page * folderPageSize.value >= folderTotal.value
+      ) {
+        break
+      }
     }
   } catch {
     if (requestSequence !== folderRequestSequence) return
     folders.value = []
+    folderPage.value = 1
     folderTotal.value = 0
     folderLoadFailed.value = true
   } finally {
@@ -1122,32 +1184,194 @@ async function loadFolders(): Promise<void> {
   }
 }
 
-async function loadGroupFolders(parentFolder: VaultFolder): Promise<void> {
+async function loadMoreFolders(): Promise<void> {
+  if (!selectedProjectId.value || folderLoading.value || !folderHasMore.value) return
+
+  const projectId = selectedProjectId.value
+  const requestSequence = folderRequestSequence
+  const nextPage = folderPage.value + 1
+  folderLoading.value = true
+  folderLoadFailed.value = false
+  try {
+    const name = folderListSearch.value.trim()
+    const response = await listFolders({
+      pageNum: nextPage,
+      pageSize: folderPageSize.value,
+      projectId,
+      ...(name ? { name } : {}),
+    })
+    if (requestSequence !== folderRequestSequence) return
+    folders.value = appendMappedFolders(folders.value, mergeMappedFolders(response.list, projectId))
+    folderTotal.value = Number(response.total) || folderTotal.value
+    folderPage.value = nextPage
+  } catch {
+    if (requestSequence === folderRequestSequence) folderLoadFailed.value = true
+  } finally {
+    if (requestSequence === folderRequestSequence) folderLoading.value = false
+  }
+}
+
+async function loadGroupFolders(
+  parentFolder: VaultFolder,
+  options: { targetPage?: number } = {},
+): Promise<void> {
+  const requestedPage = options.targetPage ?? 1
+  const targetPage = Math.max(1, requestedPage || 1)
   const requestSequence = ++groupRequestSequence
   groupLoading.value = true
   groupLoadFailed.value = false
   serviceGroups.value = []
+  groupPage.value = 0
+  groupTotal.value = 0
 
   try {
-    const response = await listFolders({
-      pageNum: 1,
-      pageSize: 200,
-      parentFolderId: parentFolder.id,
-    })
-    if (requestSequence !== groupRequestSequence) return
-    serviceGroups.value = mergeMappedFolders(response.list, parentFolder.projectId)
-    parentFolder.groups = Number(response.total) || 0
+    for (let page = 1; page <= targetPage; page += 1) {
+      const response = await listFolders({
+        pageNum: page,
+        pageSize: groupPageSize.value,
+        parentFolderId: parentFolder.id,
+      })
+      if (requestSequence !== groupRequestSequence) return
+      serviceGroups.value = appendMappedFolders(
+        serviceGroups.value,
+        mergeMappedFolders(response.list, parentFolder.projectId),
+      )
+      groupTotal.value = Number(response.total) || 0
+      groupPage.value = page
+      parentFolder.groups = groupTotal.value
+      if (
+        response.list.length < groupPageSize.value ||
+        page * groupPageSize.value >= groupTotal.value
+      ) {
+        break
+      }
+    }
   } catch {
     if (requestSequence !== groupRequestSequence) return
     serviceGroups.value = []
+    groupPage.value = 1
+    groupTotal.value = 0
     groupLoadFailed.value = true
   } finally {
     if (requestSequence === groupRequestSequence) groupLoading.value = false
   }
 }
 
+async function loadMoreGroupFolders(): Promise<void> {
+  const parentFolder = activeFolder.value
+  if (
+    !parentFolder ||
+    parentFolder.type !== 'groups' ||
+    groupLoading.value ||
+    !groupHasMore.value
+  ) {
+    return
+  }
+
+  const requestSequence = groupRequestSequence
+  const nextPage = groupPage.value + 1
+  groupLoading.value = true
+  groupLoadFailed.value = false
+  try {
+    const response = await listFolders({
+      pageNum: nextPage,
+      pageSize: groupPageSize.value,
+      parentFolderId: parentFolder.id,
+    })
+    if (requestSequence !== groupRequestSequence) return
+    serviceGroups.value = appendMappedFolders(
+      serviceGroups.value,
+      mergeMappedFolders(response.list, parentFolder.projectId),
+    )
+    groupTotal.value = Number(response.total) || groupTotal.value
+    groupPage.value = nextPage
+    parentFolder.groups = groupTotal.value
+  } catch {
+    if (requestSequence === groupRequestSequence) groupLoadFailed.value = true
+  } finally {
+    if (requestSequence === groupRequestSequence) groupLoading.value = false
+  }
+}
+
+function handleFolderContentScroll(event: Event): void {
+  const target = event.currentTarget as HTMLElement | null
+  if (!target || target.scrollHeight - target.scrollTop - target.clientHeight > 160) return
+  void loadMoreFolders()
+}
+
+function handleGroupContentScroll(event: Event): void {
+  const target = event.currentTarget as HTMLElement | null
+  if (!target || target.scrollHeight - target.scrollTop - target.clientHeight > 160) return
+  void loadMoreGroupFolders()
+}
+
+// 根据当前内容区域计算首屏可展示的一级目录数量，作为接口分页大小
+function updateFolderPageSize(): boolean {
+  const pageSize = calculateCardPageSize(
+    measureContentWidth(folderContentRef.value),
+    measureContentHeight(folderContentRef.value),
+    folderCardMinWidth,
+    folderCardHeight,
+  )
+  if (!pageSize || pageSize === folderPageSize.value) return false
+  folderPageSize.value = pageSize
+  return true
+}
+
+// 分组卡片尺寸更小，使用独立的首屏容量计算
+function updateGroupPageSize(): boolean {
+  const pageSize = calculateCardPageSize(
+    measureContentWidth(groupContentRef.value),
+    measureContentHeight(groupContentRef.value),
+    groupCardMinWidth,
+    groupCardHeight,
+  )
+  if (!pageSize || pageSize === groupPageSize.value) return false
+  groupPageSize.value = pageSize
+  return true
+}
+
+// 宽度变化后重新从第一页加载，避免旧分页大小与新分页边界错位
+function reloadAfterPageSizeChange(): void {
+  const folderPageSizeChanged = updateFolderPageSize()
+  const groupPageSizeChanged = updateGroupPageSize()
+  if (!navigationReady.value || (!folderPageSizeChanged && !groupPageSizeChanged)) return
+
+  if (!activeFolder.value) {
+    folderPage.value = 1
+    void loadFolders({ targetPage: 1 })
+  } else if (activeFolder.value.type === 'groups' && !activeGroupId.value) {
+    groupPage.value = 1
+    void loadGroupFolders(activeFolder.value, { targetPage: 1 })
+  }
+}
+
+function handleViewportResize(): void {
+  window.clearTimeout(responsivePageSizeTimer)
+  responsivePageSizeTimer = window.setTimeout(reloadAfterPageSizeChange, 150)
+}
+
+// 监听当前卡片列表容器，覆盖侧边栏收起等非窗口尺寸变化
+function observeResponsiveContainer(): void {
+  responsiveResizeObserver?.disconnect()
+  responsiveResizeObserver = undefined
+  if (typeof ResizeObserver === 'undefined') return
+
+  const element = !activeFolder.value
+    ? folderContentRef.value
+    : activeFolder.value.type === 'groups' && !activeGroupId.value
+      ? groupContentRef.value
+      : null
+  if (!element) return
+
+  responsiveResizeObserver = new ResizeObserver(handleViewportResize)
+  responsiveResizeObserver.observe(element)
+}
+
 function reloadGroupFolders(): void {
-  if (activeFolder.value?.type === 'groups') void loadGroupFolders(activeFolder.value)
+  if (activeFolder.value?.type === 'groups') {
+    void loadGroupFolders(activeFolder.value, { targetPage: groupPage.value })
+  }
 }
 
 async function loadScopeOptions(): Promise<void> {
@@ -1196,7 +1420,7 @@ async function loadScopeOptions(): Promise<void> {
     folderPage.value = restoreFolder ? navigation.saved.page : 1
     folderListSearch.value = restoreFolder ? navigation.saved.folderSearch : ''
     await loadProjectEnvironments(selectedProjectId.value)
-    await loadFolders()
+    await loadFolders({ targetPage: restoreFolder ? folderPage.value : 1 })
     // 先恢复项目目录，再恢复 groups 下的子目录，使用最新接口数据校验当前位置
     if (restoreFolder && !folderLoadFailed.value) {
       const folder = folders.value.find(
@@ -1261,7 +1485,7 @@ function ownerColor(owner: string): string {
 
 async function reloadProjectData(): Promise<void> {
   await loadProjectEnvironments(selectedProjectId.value)
-  await loadFolders()
+  await loadFolders({ targetPage: 1 })
 }
 
 function selectOrganization(id: string): void {
@@ -1283,10 +1507,6 @@ function selectProject(id: string): void {
   cascadeSearch.value = ''
   syncSelectedProjectToRoute(id)
   void reloadProjectData()
-}
-
-function changeFolderPage(): void {
-  void loadFolders()
 }
 
 function onCreateFolderOrganizationChange(): void {
@@ -1424,15 +1644,20 @@ async function openFolder(folder: VaultFolder): Promise<void> {
   folderSearch.value = ''
   serviceGroups.value = []
   if (folder.type === 'groups') {
+    await nextTick()
+    updateGroupPageSize()
+    observeResponsiveContainer()
     await loadGroupFolders(folder)
     return
   }
+  observeResponsiveContainer()
   await loadSecretsForFolder(folder)
 }
 
 function openServiceGroup(group: VaultFolder): void {
   finishInlineEdit(false)
   activeGroupId.value = group.id
+  observeResponsiveContainer()
   folderSearch.value = ''
   void loadSecretsForFolder(group)
 }
@@ -1443,11 +1668,19 @@ function goBack(): void {
   if (activeGroupId.value) {
     activeGroupId.value = ''
     folderSearch.value = ''
+    void nextTick().then(() => {
+      observeResponsiveContainer()
+      reloadAfterPageSizeChange()
+    })
     return
   }
   activeFolderId.value = ''
   serviceGroups.value = []
   folderSearch.value = ''
+  void nextTick().then(() => {
+    observeResponsiveContainer()
+    reloadAfterPageSizeChange()
+  })
 }
 
 function closeDetail(): void {
@@ -1456,6 +1689,10 @@ function closeDetail(): void {
   activeFolderId.value = ''
   activeGroupId.value = ''
   serviceGroups.value = []
+  void nextTick().then(() => {
+    observeResponsiveContainer()
+    reloadAfterPageSizeChange()
+  })
 }
 
 function toggleFavorite(folder: VaultFolder): void {
@@ -2568,15 +2805,24 @@ function onCreateFolderClosed(): void {
 onMounted(() => {
   restoreFavoriteFolders()
   window.addEventListener('beforeunload', persistKeyDialogDraft)
-  void loadScopeOptions()
+  window.addEventListener('resize', handleViewportResize)
+  void nextTick().then(() => {
+    updateFolderPageSize()
+    observeResponsiveContainer()
+    void loadScopeOptions()
+  })
 })
 
 onBeforeUnmount(() => {
   window.clearTimeout(folderSearchTimer)
+  window.clearTimeout(responsivePageSizeTimer)
   stopSecretTableColumnResize()
   resetEditingTags()
   persistKeyDialogDraft()
   window.removeEventListener('beforeunload', persistKeyDialogDraft)
+  window.removeEventListener('resize', handleViewportResize)
+  responsiveResizeObserver?.disconnect()
+  responsiveResizeObserver = undefined
 })
 
 watch(folderListSearch, () => {
@@ -2740,9 +2986,14 @@ watch(
         </div>
       </div>
 
-      <div v-loading="folderLoading || scopeLoading" class="vault-page__content is-folder-list">
-        <div v-if="visibleFolders.length" class="vault-folder-list">
-          <div class="vault-folder-scroll">
+      <div
+        ref="folderContentRef"
+        v-loading="folderLoading || scopeLoading"
+        class="vault-page__content is-folder-list"
+        @scroll.passive="handleFolderContentScroll"
+      >
+        <div v-if="folders.length" class="vault-folder-list">
+          <div v-if="visibleFolders.length" class="vault-folder-scroll">
             <div class="vault-folders">
               <article
                 v-for="folder in visibleFolders"
@@ -2828,22 +3079,28 @@ watch(
               </article>
             </div>
           </div>
+          <div v-else-if="favoriteOnly" class="vault-empty">
+            <el-icon><Star /></el-icon>
+            <strong>暂无收藏的配置目录</strong>
+          </div>
 
-          <div class="vault-pagination">
+          <div v-if="folderHasMore || folders.length" class="vault-load-more">
             <span>{{
               favoriteOnly
-                ? `已收藏 ${visibleFolders.length} 个配置目录`
-                : `共 ${folderTotal} 个配置目录`
+                ? `已加载 ${visibleFolders.length} 个收藏配置目录`
+                : folderHasMore
+                  ? `已加载 ${folders.length} / ${folderTotal} 个配置目录`
+                  : `已全部加载 ${folderTotal} 个配置目录`
             }}</span>
-            <el-pagination
-              v-model:current-page="folderPage"
-              background
-              layout="prev, pager, next"
-              :page-size="folderPageSize"
-              :total="favoriteOnly ? visibleFolders.length : folderTotal"
-              :hide-on-single-page="favoriteOnly"
-              @current-change="changeFolderPage"
-            />
+            <el-button
+              v-if="folderHasMore"
+              size="small"
+              plain
+              :loading="folderLoading"
+              @click="loadMoreFolders"
+            >
+              加载更多
+            </el-button>
           </div>
         </div>
 
@@ -2853,7 +3110,7 @@ watch(
           <strong v-else-if="favoriteOnly">暂无收藏的配置目录</strong>
           <strong v-else-if="!selectedProjectId">暂无可用项目</strong>
           <strong v-else>当前项目暂无配置目录</strong>
-          <el-button v-if="folderLoadFailed" type="primary" link @click="loadFolders">
+          <el-button v-if="folderLoadFailed" type="primary" link @click="loadFolders()">
             重新加载
           </el-button>
         </div>
@@ -2982,56 +3239,78 @@ watch(
 
       <div
         v-if="activeFolder.type === 'groups' && !activeGroupId"
+        ref="groupContentRef"
         v-loading="groupLoading"
         class="vault-page__content"
+        @scroll.passive="handleGroupContentScroll"
       >
-        <div v-if="serviceGroups.length" class="vault-groups">
-          <article
-            v-for="group in serviceGroups"
-            :key="group.id"
-            tabindex="0"
-            role="button"
-            @click="openServiceGroup(group)"
-            @keydown.enter.self="openServiceGroup(group)"
-          >
-            <span class="vault-folder__icon is-groups"
-              ><el-icon><FolderOpened /></el-icon
-            ></span>
-            <div>
-              <h2>{{ group.name }}</h2>
-              <p>{{ group.description }}</p>
-            </div>
-            <span>{{ group.count ?? '--' }} 个密钥</span>
-            <span class="vault-groups__actions">
-              <template v-if="managementMode">
-                <button
-                  type="button"
-                  class="vault-groups__edit vault-edit-action"
-                  :disabled="!!deletingFolderGroupId"
-                  :aria-label="`编辑${group.name}`"
-                  @click.stop="openFolderEdit(group)"
-                  @keydown.enter.stop
-                >
-                  <el-icon><Edit /></el-icon>
-                </button>
+        <div v-if="serviceGroups.length" class="vault-group-list">
+          <div class="vault-groups">
+            <article
+              v-for="group in serviceGroups"
+              :key="group.id"
+              tabindex="0"
+              role="button"
+              @click="openServiceGroup(group)"
+              @keydown.enter.self="openServiceGroup(group)"
+            >
+              <span class="vault-folder__icon is-groups"
+                ><el-icon><FolderOpened /></el-icon
+              ></span>
+              <div>
+                <h2>{{ group.name }}</h2>
+                <p>{{ group.description }}</p>
+              </div>
+              <span>{{ group.count ?? '--' }} 个密钥</span>
+              <span class="vault-groups__actions">
+                <template v-if="managementMode">
+                  <button
+                    type="button"
+                    class="vault-groups__edit vault-edit-action"
+                    :disabled="!!deletingFolderGroupId"
+                    :aria-label="`编辑${group.name}`"
+                    @click.stop="openFolderEdit(group)"
+                    @keydown.enter.stop
+                  >
+                    <el-icon><Edit /></el-icon>
+                  </button>
 
-                <button
-                  type="button"
-                  class="vault-groups__delete vault-delete-action"
-                  :disabled="!!deletingFolderGroupId"
-                  :aria-label="`删除${group.name}`"
-                  @click.stop="confirmFolderDelete(group)"
-                  @keydown.enter.stop
-                >
-                  <el-icon :class="{ 'is-loading': deletingFolderGroupId === group.folderGroupId }">
-                    <Loading v-if="deletingFolderGroupId === group.folderGroupId" />
-                    <Delete v-else />
-                  </el-icon>
-                </button>
-              </template>
-              <el-icon><ArrowRight /></el-icon>
-            </span>
-          </article>
+                  <button
+                    type="button"
+                    class="vault-groups__delete vault-delete-action"
+                    :disabled="!!deletingFolderGroupId"
+                    :aria-label="`删除${group.name}`"
+                    @click.stop="confirmFolderDelete(group)"
+                    @keydown.enter.stop
+                  >
+                    <el-icon
+                      :class="{ 'is-loading': deletingFolderGroupId === group.folderGroupId }"
+                    >
+                      <Loading v-if="deletingFolderGroupId === group.folderGroupId" />
+                      <Delete v-else />
+                    </el-icon>
+                  </button>
+                </template>
+                <el-icon><ArrowRight /></el-icon>
+              </span>
+            </article>
+          </div>
+          <div class="vault-load-more">
+            <span>{{
+              groupHasMore
+                ? `已加载 ${serviceGroups.length} / ${groupTotal} 个配置集`
+                : `已全部加载 ${groupTotal} 个配置集`
+            }}</span>
+            <el-button
+              v-if="groupHasMore"
+              size="small"
+              plain
+              :loading="groupLoading"
+              @click="loadMoreGroupFolders"
+            >
+              加载更多
+            </el-button>
+          </div>
         </div>
         <div v-else-if="!groupLoading" class="vault-empty">
           <el-icon><FolderOpened /></el-icon>
@@ -5145,18 +5424,18 @@ watch(
 .vault-folder-scroll {
   width: 100%;
   padding-bottom: 4px;
-  overflow-x: auto;
+  overflow: visible;
 }
 
 .vault-folders {
-  display: flex;
+  display: grid;
   align-items: stretch;
-  width: max-content;
-  min-width: 100%;
+  grid-template-columns: repeat(auto-fill, minmax(min(230px, 100%), 1fr));
+  width: 100%;
   gap: 14px;
 }
 
-.vault-pagination {
+.vault-load-more {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -5169,15 +5448,18 @@ watch(
     color: var(--v-text-secondary);
     font-size: 12px;
   }
+
+  .el-button {
+    min-width: 88px;
+  }
 }
 
 .vault-folder {
   display: flex;
-  width: 252px;
-  min-width: 252px;
+  width: 100%;
+  min-width: 0;
   height: 183px;
   min-height: 183px;
-  flex: 0 0 252px;
   flex-direction: column;
   padding: 16px 16px 0;
   border: 1px solid var(--v-surface-border);
@@ -6538,8 +6820,8 @@ watch(
 
 .vault-groups {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 320px));
-  justify-content: start;
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
+  width: 100%;
   gap: 14px;
 
   article {
@@ -6775,12 +7057,6 @@ watch(
   }
 }
 
-@media (max-width: 600px) {
-  .vault-groups {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
 @media (max-width: 820px) {
   .vault-create-folder-dialog__scroll {
     padding: 16px;
@@ -6827,12 +7103,6 @@ watch(
     &__content {
       padding: 14px 16px 22px;
     }
-  }
-
-  .vault-folders {
-    width: 100%;
-    min-width: 0;
-    flex-direction: column;
   }
 
   .vault-folder-scroll {

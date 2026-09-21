@@ -15,6 +15,7 @@ import {
 } from '@/api/secret'
 import { createTag, listTags, type Tag } from '@/api/tag'
 import TagCreateDialog from '@/components/TagCreateDialog.vue'
+import type { Folder } from '@/types/folder'
 
 vi.mock('vue-router', () => ({
   useRoute: () => ({ query: {} }),
@@ -276,6 +277,92 @@ describe('SecretListView tag column', () => {
       allowValueSearch: false,
     })
     expect(editor.props('modelValue')).toContain('tag-new')
+    wrapper.unmount()
+  })
+})
+
+describe('SecretListView card pagination', () => {
+  it('appends the next folder page through the load-more action', async () => {
+    const firstPageFolder: Folder = {
+      id: 'folder-1',
+      groupId: 'folder-group-1',
+      environmentId: 'env-1',
+      parentId: null,
+      level: 1,
+      code: 'application',
+      name: '应用配置',
+      comment: '',
+      type: 'common',
+      createdBy: '',
+      createdByLabel: '',
+      updatedBy: '',
+      updatedByLabel: '',
+      createdAt: '',
+      updatedAt: '',
+    }
+    const secondPageFolder = {
+      ...firstPageFolder,
+      id: 'folder-7',
+      groupId: 'folder-group-7',
+      code: 'release',
+      name: '发布配置',
+    }
+    const thirdPageFolder = {
+      ...firstPageFolder,
+      id: 'folder-13',
+      groupId: 'folder-group-13',
+      code: 'archive',
+      name: '归档配置',
+    }
+    vi.mocked(listFolders).mockImplementation(async (request) => ({
+      list:
+        request.pageNum === 1
+          ? Array.from({ length: 6 }, (_, index) => ({
+              ...firstPageFolder,
+              id: `folder-${index + 1}`,
+              groupId: `folder-group-${index + 1}`,
+              code: `application-${index + 1}`,
+              name: `应用配置${index + 1}`,
+            }))
+          : request.pageNum === 2
+            ? Array.from({ length: 6 }, (_, index) => ({
+                ...secondPageFolder,
+                id: `folder-${index + 7}`,
+                groupId: `folder-group-${index + 7}`,
+                code: `release-${index + 7}`,
+                name: `发布配置${index + 7}`,
+              }))
+            : [thirdPageFolder],
+      total: 13,
+      pageNum: request.pageNum ?? 1,
+      pageSize: 6,
+    }))
+
+    const wrapper = mount(SecretListView, {
+      global: { plugins: [ElementPlus, createPinia()] },
+      attachTo: document.body,
+    })
+    await flushPromises()
+
+    expect(wrapper.findAll('article.vault-folder')).toHaveLength(6)
+    expect(wrapper.get('.vault-load-more').text()).toContain('已加载 6 / 13')
+    const scrollContainer = wrapper.get('.vault-page__content.is-folder-list').element
+    Object.defineProperties(scrollContainer, {
+      scrollHeight: { configurable: true, value: 1000 },
+      scrollTop: { configurable: true, value: 850 },
+      clientHeight: { configurable: true, value: 100 },
+    })
+    await wrapper.get('.vault-page__content.is-folder-list').trigger('scroll')
+    await flushPromises()
+
+    expect(wrapper.findAll('article.vault-folder')).toHaveLength(12)
+    expect(wrapper.get('.vault-load-more').text()).toContain('已加载 12 / 13')
+    await wrapper.get('.vault-load-more .el-button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('article.vault-folder')).toHaveLength(13)
+    expect(wrapper.get('.vault-load-more').text()).toContain('已全部加载 13')
+    expect(vi.mocked(listFolders).mock.calls.map(([request]) => request.pageNum)).toEqual([1, 2, 3])
     wrapper.unmount()
   })
 })
