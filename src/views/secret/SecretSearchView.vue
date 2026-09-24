@@ -11,7 +11,13 @@ import { secretScopePath } from '@/utils/secret-search'
 import { getTenantWithOrgProject, type TenantHierarchyOption } from '@/api/tenant'
 import { listEnvironments } from '@/api/env'
 import { listFolders, type ListFoldersRequest } from '@/api/folder'
-import { searchSecrets, type SearchSecretsRequest } from '@/api/secret-search'
+import {
+  listSecretSearchTags,
+  searchSecrets,
+  type SearchSecretsRequest,
+  type SecretSearchScopeRequest,
+  type SecretSearchTagOption,
+} from '@/api/secret-search'
 import { useNavigationMemory } from '@/composables/use-navigation-memory'
 import type { Environment } from '@/types/env'
 
@@ -30,6 +36,14 @@ const envError = ref(false)
 const environments = ref<Environment[]>([])
 const envCodes = ref<string[]>([])
 const keyword = ref('')
+const tagIds = ref<string[]>([])
+const tagOptions = ref<SecretSearchTagOption[]>([])
+const tagLoading = ref(false)
+const tagOptionsFailed = ref(false)
+const tagKeyword = ref('')
+const tagPage = ref(0)
+const tagTotal = ref(0)
+const tagFetched = ref(0)
 const submitted = ref(false)
 const appliedKeyword = ref('')
 const resultGroups = ref<SecretSearchGroup[]>([])
@@ -44,6 +58,10 @@ const historySecret = ref<SecretSearchGroup | null>(null)
 const historyVisible = ref(false)
 let envRequest = 0
 let restoreEnvironments = true
+let tagSequence = 0
+let tagAbort: AbortController | undefined
+let tagSearchTimer: ReturnType<typeof setTimeout> | undefined
+const tagPageSize = 50
 
 // 只有全部选中范围都落在同一个项目内，才允许共用一组环境条件
 const project = computed(() => {
@@ -93,6 +111,7 @@ const searchDisabled = computed(
     envLoading.value ||
     (Boolean(project.value) && (envError.value || !envCodes.value.length)),
 )
+const tagHasMore = computed(() => tagFetched.value < tagTotal.value)
 
 // 独立预览使用虚构数据，正常路由只使用后端当前页的搜索结果
 const previewResults = computed(() =>
@@ -103,7 +122,8 @@ const previewResults = computed(() =>
         (!scopePaths.value.length ||
           scopePaths.value.some((scope) => scope.every((id, index) => path[index] === id))) &&
         (!appliedKeyword.value ||
-          `${secret.key} ${secret.remark}`.toLowerCase().includes(appliedKeyword.value))
+          `${secret.key} ${secret.remark}`.toLowerCase().includes(appliedKeyword.value)) &&
+        (!tagIds.value.length || secret.tagList.some((tag) => tagIds.value.includes(tag.id)))
       )
     })
     .map((secret) => ({
@@ -172,6 +192,137 @@ const cascaderProps: CascaderProps = {
       reject()
     }
   },
+}
+
+function selectedScopes(): SecretSearchScopeRequest[] {
+  return scopePaths.value.map((path) => ({
+    scopeType:
+      path.length === 1
+        ? 'tenant'
+        : path.length === 2
+          ? 'org'
+          : path.length === 3
+            ? 'project'
+            : 'folder',
+    scopeId: path.at(-1)!,
+  }))
+}
+
+function resetTagOptions(clearSelection: boolean): void {
+  clearTimeout(tagSearchTimer)
+  tagAbort?.abort()
+  tagSequence += 1
+  tagLoading.value = false
+  tagOptionsFailed.value = false
+  tagKeyword.value = ''
+  tagOptions.value = []
+  tagPage.value = 0
+  tagTotal.value = 0
+  tagFetched.value = 0
+  if (clearSelection) tagIds.value = []
+}
+
+function previewTagOptions(query: string): SecretSearchTagOption[] {
+  const normalized = query.trim().toLowerCase()
+  const selected = scopePaths.value
+  const options = new Map<string, SecretSearchTagOption>()
+  for (const secret of props.previewData?.groups ?? []) {
+    const path = secretScopePath(secret.scope)
+    if (
+      selected.length &&
+      !selected.some((scope) => scope.every((id, index) => path[index] === id))
+    )
+      continue
+    for (const tag of secret.tagList) {
+      const option = {
+        id: tag.id,
+        tenantId: secret.scope.tenant.id,
+        tenantName: secret.scope.tenant.name,
+        code: tag.code,
+        name: tag.name,
+        remark: '',
+      }
+      if (
+        !normalized ||
+        `${option.name} ${option.code} ${option.remark}`.toLowerCase().includes(normalized)
+      )
+        options.set(option.id, option)
+    }
+  }
+  return [...options.values()].sort((a, b) =>
+    `${a.tenantName}\u0000${a.name}\u0000${a.code}`.localeCompare(
+      `${b.tenantName}\u0000${b.name}\u0000${b.code}`,
+    ),
+  )
+}
+
+// 标签下拉按范围远程分页，选中项在重新搜索候选时继续保留展示文本
+async function loadTagOptions(reset = true): Promise<void> {
+  if (
+    scopeLoading.value ||
+    scopeError.value ||
+    !scopeReady.value ||
+    envLoading.value ||
+    (project.value && (envError.value || !envCodes.value.length))
+  )
+    return
+  if (props.previewData) {
+    const list = previewTagOptions(tagKeyword.value)
+    tagOptions.value = list
+    tagTotal.value = list.length
+    tagFetched.value = list.length
+    tagPage.value = 1
+    return
+  }
+  tagAbort?.abort()
+  const controller = new AbortController()
+  tagAbort = controller
+  const sequence = ++tagSequence
+  const targetPage = reset ? 1 : tagPage.value + 1
+  tagLoading.value = true
+  tagOptionsFailed.value = false
+  try {
+    const response = await listSecretSearchTags(
+      {
+        scopes: selectedScopes(),
+        envList: project.value ? [...envCodes.value] : [],
+        keyword: tagKeyword.value,
+        pageNum: targetPage,
+        pageSize: tagPageSize,
+      },
+      controller.signal,
+    )
+    if (sequence !== tagSequence) return
+    const selected = tagOptions.value.filter((tag) => tagIds.value.includes(tag.id))
+    const existing = reset ? selected : tagOptions.value
+    tagOptions.value = [
+      ...new Map([...existing, ...response.list].map((tag) => [tag.id, tag])).values(),
+    ]
+    tagPage.value = targetPage
+    tagTotal.value = response.total
+    tagFetched.value = reset
+      ? response.list.length
+      : Math.min(response.total, tagFetched.value + response.list.length)
+  } catch {
+    if (sequence !== tagSequence || controller.signal.aborted) return
+    tagOptionsFailed.value = true
+  } finally {
+    if (sequence === tagSequence) tagLoading.value = false
+  }
+}
+
+function searchTagOptions(query: string): void {
+  clearTimeout(tagSearchTimer)
+  tagKeyword.value = query.trim()
+  tagSearchTimer = setTimeout(() => void loadTagOptions(true), 250)
+}
+
+function handleTagDropdown(visible: boolean): void {
+  if (visible && !tagOptions.value.length && !tagLoading.value) void loadTagOptions(true)
+}
+
+function tagOptionLabel(tag: SecretSearchTagOption): string {
+  return `${tag.tenantName} / ${tag.name} (${tag.code})`
 }
 
 async function loadScope(): Promise<void> {
@@ -244,7 +395,21 @@ watch(
   },
 )
 watch(
-  [scopePaths, envCodes, keyword],
+  scopePaths,
+  (current, previous) => {
+    if (JSON.stringify(current) !== JSON.stringify(previous)) resetTagOptions(true)
+  },
+  { deep: true },
+)
+watch(
+  envCodes,
+  (current, previous) => {
+    if (JSON.stringify(current) !== JSON.stringify(previous)) resetTagOptions(false)
+  },
+  { deep: true },
+)
+watch(
+  [scopePaths, envCodes, keyword, tagIds],
   () => {
     searchAbort?.abort()
     searchSequence += 1
@@ -269,7 +434,10 @@ onMounted(loadScope)
 onBeforeUnmount(() => {
   envRequest += 1
   searchAbort?.abort()
+  clearTimeout(tagSearchTimer)
+  tagAbort?.abort()
   searchSequence += 1
+  tagSequence += 1
 })
 
 async function search(): Promise<void> {
@@ -292,18 +460,9 @@ async function loadResults(targetPage = pageNum.value): Promise<void> {
   searchLoading.value = true
   searchError.value = ''
   const request: SearchSecretsRequest = {
-    scopes: scopePaths.value.map((path) => ({
-      scopeType:
-        path.length === 1
-          ? 'tenant'
-          : path.length === 2
-            ? 'org'
-            : path.length === 3
-              ? 'project'
-              : 'folder',
-      scopeId: path.at(-1)!,
-    })),
+    scopes: selectedScopes(),
     envList: project.value ? [...envCodes.value] : [],
+    tagIdList: [...tagIds.value],
     keyword: keyword.value.trim(),
     pageNum: targetPage,
     pageSize: pageSize.value,
@@ -349,10 +508,12 @@ function normalizeScopePaths(value: unknown): string[][] {
 
 async function refresh(): Promise<void> {
   const reloadResults = submitted.value
+  const reloadTags = tagOptions.value.length > 0 || tagIds.value.length > 0
   await loadScope()
   if (project.value && !envLoading.value && !scopeError.value) {
     await loadEnvironments(project.value.id, envCodes.value)
   }
+  if (reloadTags) await loadTagOptions(true)
   if (reloadResults && !searchDisabled.value) await search()
 }
 </script>
@@ -378,6 +539,66 @@ async function refresh(): Promise<void> {
             @update:model-value="updateScope"
           />
         </div>
+        <el-select
+          v-model="tagIds"
+          class="secret-search__tags"
+          multiple
+          filterable
+          remote
+          clearable
+          collapse-tags
+          collapse-tags-tooltip
+          :max-collapse-tags="1"
+          :remote-method="searchTagOptions"
+          :loading="tagLoading"
+          :disabled="scopeLoading || scopeError || envLoading"
+          popper-class="secret-search-tag-popper"
+          placeholder="全部标签"
+          aria-label="标签筛选"
+          @visible-change="handleTagDropdown"
+        >
+          <el-option
+            v-for="tag in tagOptions"
+            :key="tag.id"
+            :value="tag.id"
+            :label="tagOptionLabel(tag)"
+          >
+            <span class="secret-search-tag-option">
+              <span class="secret-search-tag-option__title">
+                <span class="secret-search-tag-option__tenant">{{ tag.tenantName }}</span>
+                <span>/</span>
+                <strong>{{ tag.name }}</strong>
+                <code>({{ tag.code }})</code>
+              </span>
+              <span class="secret-search-tag-option__description">
+                {{ tag.remark || '暂无描述' }}
+              </span>
+            </span>
+          </el-option>
+          <template #footer>
+            <div class="secret-search-tag-footer">
+              <el-button
+                v-if="tagOptionsFailed"
+                link
+                type="primary"
+                :disabled="tagLoading"
+                @click.stop="loadTagOptions(true)"
+              >
+                加载失败，重试
+              </el-button>
+              <el-button
+                v-else-if="tagHasMore"
+                link
+                type="primary"
+                :loading="tagLoading"
+                @click.stop="loadTagOptions(false)"
+              >
+                加载更多
+              </el-button>
+              <span v-else>{{ tagTotal }} 个标签</span>
+            </div>
+          </template>
+        </el-select>
         <div v-if="project" v-loading="envLoading" class="secret-search__environments">
           <span class="secret-search__label">环境</span>
           <el-checkbox-group v-model="envCodes" aria-label="检索环境">
@@ -428,6 +649,8 @@ async function refresh(): Promise<void> {
                 <strong>搜索说明</strong>
                 <ul>
                   <li>同时匹配秘钥 Key 和备注，按完整输入进行包含搜索</li>
+                  <li>可单独按标签搜索；选择多个标签时匹配任意一个</li>
+                  <li>标签与范围、环境、Key 或备注条件之间取交集</li>
                   <li>搜索全部范围、租户或组织时，关键词需包含至少 3 个连续的中文、字母或数字</li>
                   <li>选择项目或文件夹后，可搜索 1 至 2 个字符的短关键词</li>
                 </ul>
@@ -437,7 +660,7 @@ async function refresh(): Promise<void> {
         </el-input>
         <PageRefreshButton
           aria-label="刷新范围"
-          :loading="scopeLoading || envLoading || searchLoading"
+          :loading="scopeLoading || envLoading || tagLoading || searchLoading"
           :action="refresh"
         />
       </form>
@@ -502,7 +725,8 @@ async function refresh(): Promise<void> {
 
 <style lang="scss" scoped>
 .secret-search,
-:global(.secret-search-scope-popper) {
+:global(.secret-search-scope-popper),
+:global(.secret-search-tag-popper) {
   --el-color-primary: var(--v-brand-primary);
   --el-color-primary-light-3: color-mix(in srgb, var(--v-brand-primary), white 30%);
   --el-color-primary-light-5: color-mix(in srgb, var(--v-brand-primary), white 50%);
@@ -551,6 +775,11 @@ async function refresh(): Promise<void> {
     :deep(.el-cascader) {
       width: 100%;
     }
+  }
+  &__tags {
+    width: 240px;
+    max-width: 100%;
+    flex: 0 1 240px;
   }
   &__environments {
     flex-wrap: wrap;
@@ -700,6 +929,54 @@ async function refresh(): Promise<void> {
 :global(.secret-search-scope-popper .el-cascader-panel) {
   overflow-x: auto;
 }
+:global(.secret-search-tag-popper) {
+  max-width: calc(100vw - 32px);
+}
+:global(.secret-search-tag-popper .el-select-dropdown__item) {
+  height: auto;
+  min-height: 54px;
+  padding-block: 7px;
+  line-height: normal;
+}
+:global(.secret-search-tag-option) {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+:global(.secret-search-tag-option__title) {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 5px;
+  color: var(--v-text-primary);
+  font-size: 13px;
+}
+:global(.secret-search-tag-option__title strong) {
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+:global(.secret-search-tag-option__title code) {
+  color: var(--v-brand-primary);
+  font-size: 11px;
+}
+:global(.secret-search-tag-option__tenant),
+:global(.secret-search-tag-option__description) {
+  overflow: hidden;
+  color: var(--v-text-tertiary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+:global(.secret-search-tag-footer) {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  color: var(--v-text-tertiary);
+  font-size: 12px;
+}
 :global(.secret-search-help-popper) {
   padding: 14px 16px;
 }
@@ -737,6 +1014,10 @@ async function refresh(): Promise<void> {
   }
   .secret-search__scope {
     width: 100%;
+  }
+  .secret-search__tags {
+    width: 100%;
+    flex-basis: 100%;
   }
 }
 </style>

@@ -1,19 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import ElementPlus, { ElCascader, ElCheckboxGroup, ElPagination } from 'element-plus'
+import ElementPlus, { ElCascader, ElCheckboxGroup, ElPagination, ElSelect } from 'element-plus'
 import SecretSearchView from './SecretSearchView.vue'
 import { getTenantWithOrgProject } from '@/api/tenant'
 import { listEnvironments } from '@/api/env'
 import { listFolders } from '@/api/folder'
 import type { Environment } from '@/types/env'
-import { searchSecrets } from '@/api/secret-search'
+import { listSecretSearchTags, searchSecrets } from '@/api/secret-search'
 import { createSecretSearchPreview } from './secret-search.mock'
 import type { SecretSearchResultPage } from '@/types/secret-search'
 
 vi.mock('@/api/tenant', () => ({ getTenantWithOrgProject: vi.fn() }))
 vi.mock('@/api/env', () => ({ listEnvironments: vi.fn() }))
 vi.mock('@/api/folder', () => ({ listFolders: vi.fn() }))
-vi.mock('@/api/secret-search', () => ({ searchSecrets: vi.fn() }))
+vi.mock('@/api/secret-search', () => ({
+  searchSecrets: vi.fn(),
+  listSecretSearchTags: vi.fn(),
+}))
 
 function env(code: string, orderNo: number): Environment {
   return {
@@ -68,6 +71,7 @@ beforeEach(() => {
   vi.mocked(listEnvironments).mockResolvedValue([env('prod', 40), env('dev', 10)])
   vi.mocked(listFolders).mockResolvedValue({ list: [], total: 0, pageNum: 1, pageSize: 200 })
   vi.mocked(searchSecrets).mockResolvedValue({ list: [], total: 0 })
+  vi.mocked(listSecretSearchTags).mockResolvedValue({ list: [], total: 0 })
 })
 afterEach(() => {
   wrappers.splice(0).forEach((wrapper) => wrapper.unmount())
@@ -127,7 +131,7 @@ describe('秘钥检索范围与分页', () => {
     await wrapper.get('form').trigger('submit')
     await flushPromises()
     expect(searchSecrets).toHaveBeenCalledWith(
-      { scopes: [], envList: [], keyword: '', pageNum: 1, pageSize: 20 },
+      { scopes: [], envList: [], tagIdList: [], keyword: '', pageNum: 1, pageSize: 20 },
       expect.any(AbortSignal),
     )
     expect(wrapper.text()).toContain('未找到匹配的秘钥')
@@ -224,6 +228,7 @@ describe('秘钥检索范围与分页', () => {
       {
         scopes: [{ scopeType: 'folder', scopeId: 'folder-1' }],
         envList: ['dev'],
+        tagIdList: [],
         keyword: 'DOMAIN',
         pageNum: 2,
         pageSize: 20,
@@ -272,5 +277,51 @@ describe('秘钥检索范围与分页', () => {
     expect(searchSecrets).toHaveBeenCalledTimes(2)
     await wrapper.get('input[aria-label="检索关键词"]').setValue('changed')
     expect(wrapper.findComponent(ElPagination).exists()).toBe(false)
+  })
+
+  it('按当前范围加载标签候选并将多选标签加入搜索条件', async () => {
+    vi.mocked(listSecretSearchTags).mockResolvedValue({
+      total: 1,
+      list: [
+        {
+          id: 'tag-1',
+          tenantId: 'tenant-1',
+          tenantName: '租户',
+          code: 'database',
+          name: '数据库',
+          remark: '数据库连接信息',
+        },
+      ],
+    })
+    const wrapper = await setup()
+    await select(wrapper, ['tenant-1', 'org-1', 'project-1'])
+    const tagSelect = wrapper.getComponent(ElSelect)
+    tagSelect.vm.$emit('visible-change', true)
+    await flushPromises()
+    expect(listSecretSearchTags).toHaveBeenCalledWith(
+      {
+        scopes: [{ scopeType: 'project', scopeId: 'project-1' }],
+        envList: ['dev'],
+        keyword: '',
+        pageNum: 1,
+        pageSize: 50,
+      },
+      expect.any(AbortSignal),
+    )
+    tagSelect.vm.$emit('update:modelValue', ['tag-1'])
+    await flushPromises()
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(searchSecrets).toHaveBeenLastCalledWith(
+      {
+        scopes: [{ scopeType: 'project', scopeId: 'project-1' }],
+        envList: ['dev'],
+        tagIdList: ['tag-1'],
+        keyword: '',
+        pageNum: 1,
+        pageSize: 20,
+      },
+      expect.any(AbortSignal),
+    )
   })
 })
