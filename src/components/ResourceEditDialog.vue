@@ -32,6 +32,7 @@ import { ApiError } from '@/types/api'
 import type { Environment } from '@/types/env'
 import { calculateEnvironmentOrderNo } from '@/utils/environment-order'
 import { formatDateTime } from '@/utils/format'
+import { copyToClipboard } from '@/utils/copy'
 
 export type EditableResourceType = 'tenant' | 'organization' | 'project'
 
@@ -190,6 +191,13 @@ function userIdOf(user: UserListItem): string {
 
 function userNameOf(user: UserListItem): string {
   return user.nickname || user.nickName || user.name || user.userName || userIdOf(user)
+}
+
+async function copyResourceId(): Promise<void> {
+  const copied = await copyToClipboard(props.resourceId)
+  ElMessage[copied ? 'success' : 'warning'](
+    copied ? '项目 ID 已复制' : '复制失败，请检查浏览器权限',
+  )
 }
 
 function matchesUser(user: UserListItem, keyword: string): boolean {
@@ -680,6 +688,17 @@ onBeforeUnmount(() => {
             :placeholder="`请输入${resourceLabel}名称`"
             :disabled="submitting"
           />
+        </el-form-item>
+        <el-form-item v-if="resourceType === 'project'" label="项目 ID">
+          <button
+            type="button"
+            class="resource-edit-dialog__resource-id"
+            aria-label="复制项目 ID"
+            :disabled="submitting"
+            @click="copyResourceId"
+          >
+            <code>{{ resourceId }}</code>
+          </button>
         </el-form-item>
         <el-form-item label="管理员" prop="managerId">
           <ManagerSelect

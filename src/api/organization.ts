@@ -24,6 +24,7 @@ export interface OrganizationProjectOption {
 export interface OrganizationWithProjects {
   id: string
   name: string
+  tenantId?: string
   projectList: OrganizationProjectOption[]
 }
 

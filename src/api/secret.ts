@@ -302,6 +302,7 @@ export interface BatchCreateSecretItem {
   folderGroupId: Uuid
   key: string
   remark: string
+  tagIdList?: Uuid[]
   values: BatchCreateSecretValue[]
 }
 export interface BatchCreateSecretsRequest {

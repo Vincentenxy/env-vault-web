@@ -97,6 +97,7 @@ interface ProjectOption {
 interface OrganizationOption {
   id: string
   name: string
+  tenantId?: string
 }
 
 interface VaultFolder {
@@ -139,6 +140,7 @@ interface KeyDraftRow {
   id: string
   key: string
   remark: string
+  tagIds: string[]
   values: Record<string, string>
 }
 
@@ -217,6 +219,15 @@ const editingTagLoading = ref(false)
 const editingTagLoadFailed = ref(false)
 const editingTagOptionsLoading = ref(false)
 const editingTagOptionsFailed = ref(false)
+const createTagOptions = ref<SecretTagOption[]>([])
+const createTagTenantId = ref('')
+const createTagKeyword = ref('')
+const createTagPage = ref(1)
+const createTagTotal = ref(0)
+const createTagOptionsLoading = ref(false)
+const createTagOptionsFailed = ref(false)
+const createTagRowId = ref('')
+const tagCreateTarget = ref<'edit' | 'create'>('edit')
 const editingTagKeyword = ref('')
 const editingTagPage = ref(1)
 const editingTagTotal = ref(0)
@@ -1035,6 +1046,35 @@ function searchEditingTags(value: string): void {
   editingTagSearchTimer = window.setTimeout(() => void loadEditingTagOptions(), 250)
 }
 
+async function loadCreateTagOptions(reset = true): Promise<void> {
+  if (!createTagTenantId.value) return
+  createTagOptionsLoading.value = true
+  createTagOptionsFailed.value = false
+  const nextPage = reset ? 1 : createTagPage.value + 1
+  try {
+    const result = await listTags({
+      tenantId: createTagTenantId.value,
+      keyword: createTagKeyword.value,
+      pageNum: nextPage,
+      pageSize: editingTagPageSize,
+    })
+    createTagOptions.value = reset ? result.list : mergeTags(createTagOptions.value, result.list)
+    createTagTotal.value = result.total
+    createTagPage.value = nextPage
+  } catch {
+    createTagOptionsFailed.value = true
+  } finally {
+    createTagOptionsLoading.value = false
+  }
+}
+
+let createTagSearchTimer: number | undefined
+function searchCreateTags(value: string): void {
+  createTagKeyword.value = value
+  window.clearTimeout(createTagSearchTimer)
+  createTagSearchTimer = window.setTimeout(() => void loadCreateTagOptions(), 250)
+}
+
 async function loadEditingTags(groupId: string, fallbackTags: SecretTag[]): Promise<void> {
   const request = ++editingTagRequestSequence
   editingTagOptionRequestSequence += 1
@@ -1079,11 +1119,27 @@ function tagOptionLabel(tag: SecretTag): string {
 
 function openTagCreateDialog(): void {
   if (!editingTagTenantId.value || editingTagLoading.value || keySubmitting.value) return
+  tagCreateTarget.value = 'edit'
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+  tagCreateVisible.value = true
+}
+
+function openCreateRowTagDialog(rowId: string): void {
+  if (!createTagTenantId.value || keySubmitting.value) return
+  tagCreateTarget.value = 'create'
+  createTagRowId.value = rowId
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
   tagCreateVisible.value = true
 }
 
 function selectCreatedTag(tag: Tag): void {
+  if (tagCreateTarget.value === 'create') {
+    const row = keyDraftRows.value.find((item) => item.id === createTagRowId.value)
+    if (row && !row.tagIds.includes(tag.id)) row.tagIds.push(tag.id)
+    createTagOptions.value = mergeTags(createTagOptions.value, [tag])
+    createTagTotal.value += 1
+    return
+  }
   // 标签已创建到租户，先加入当前行草稿，密钥绑定关系在保存该行时统一提交
   editingKnownTags.value = mergeTags(editingKnownTags.value, [tag])
   editingTagOptions.value = mergeTags(editingTagOptions.value, [tag])
@@ -1385,6 +1441,7 @@ async function loadScopeOptions(): Promise<void> {
     organizations.value = orgList.map((organization) => ({
       id: organization.id,
       name: organization.name || '未命名组织',
+      tenantId: organization.tenantId,
     }))
     if (collaborationProjectList.length > 0) {
       organizations.value.push({ id: collaborationOrganizationId, name: '协作组织' })
@@ -2041,6 +2098,9 @@ function normalizeKeyDraftRows(value: unknown): KeyDraftRow[] {
         id: `key-draft-${keyDraftSequence}`,
         key: typeof raw.key === 'string' ? raw.key : '',
         remark: typeof raw.remark === 'string' ? raw.remark : '',
+        tagIds: Array.isArray(raw.tagIds)
+          ? raw.tagIds.filter((tagId): tagId is string => typeof tagId === 'string')
+          : [],
         values,
       },
     ]
@@ -2052,6 +2112,7 @@ function isKeyDraftEmpty(): boolean {
     (row) =>
       row.key.trim() ||
       row.remark.trim() ||
+      row.tagIds.length ||
       Object.values(row.values).some((value) => value.trim()),
   )
 }
@@ -2144,6 +2205,7 @@ function createKeyDraftRow(): KeyDraftRow {
     id: `key-draft-${keyDraftSequence}`,
     key: '',
     remark: '',
+    tagIds: [],
     values: Object.fromEntries(environments.value.map((environment) => [environment.code, ''])),
   }
 }
@@ -2185,12 +2247,21 @@ async function openKeyDialog(): Promise<void> {
 
   keyDialogMode.value = 'create'
   editingKey.value = ''
+  tagCreateTarget.value = 'create'
+  createTagRowId.value = ''
+  createTagTenantId.value = selectedOrg.value.tenantId ?? ''
+  createTagKeyword.value = ''
+  createTagPage.value = 1
+  createTagTotal.value = 0
+  createTagOptions.value = []
+  createTagOptionsFailed.value = false
   resetKeyForm()
   resetKeyFormBaseline()
   keyDraftRows.value = [createKeyDraftRow()]
   restoreKeyDialogDraft('create')
   keySubmitting.value = false
   keyDialogVisible.value = true
+  if (createTagTenantId.value) void loadCreateTagOptions()
 }
 
 function keyFormValue(environmentCode: string): string {
@@ -2257,6 +2328,7 @@ async function createKeys(): Promise<void> {
       folderGroupId: folder.folderGroupId,
       key: row.key.trim(),
       remark: row.remark.trim(),
+      tagIdList: [...row.tagIds],
       values: environments.value.map(
         (environment): BatchCreateSecretValue => ({
           envId: environment.id,
@@ -2815,6 +2887,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.clearTimeout(folderSearchTimer)
+  window.clearTimeout(createTagSearchTimer)
   window.clearTimeout(responsivePageSizeTimer)
   stopSecretTableColumnResize()
   resetEditingTags()
@@ -3902,9 +3975,9 @@ watch(
     />
 
     <TagCreateDialog
-      v-if="editingTagTenantId"
+      v-if="editingTagTenantId || createTagTenantId"
       v-model="tagCreateVisible"
-      :tenant-id="editingTagTenantId"
+      :tenant-id="tagCreateTarget === 'edit' ? editingTagTenantId : createTagTenantId"
       @created="selectCreatedTag"
     />
 
@@ -4343,6 +4416,7 @@ watch(
                   {{ environment.name }}
                 </span>
               </span>
+              <span>标签</span>
               <span>说明</span>
               <span>操作</span>
             </div>
@@ -4363,6 +4437,75 @@ watch(
                 :placeholder="`请输入${environment.name}值`"
                 :aria-label="`${environment.name}环境值,第 ${index + 1} 行`"
               />
+              <el-select
+                v-model="row.tagIds"
+                multiple
+                filterable
+                remote
+                clearable
+                collapse-tags
+                collapse-tags-tooltip
+                :max-collapse-tags="1"
+                :remote-method="searchCreateTags"
+                :loading="createTagOptionsLoading"
+                :disabled="keySubmitting || !createTagTenantId"
+                popper-class="vault-secret-tag-select-popper"
+                placeholder="选择标签"
+                :aria-label="`第 ${index + 1} 行标签`"
+              >
+                <el-option
+                  v-for="tag in createTagOptions"
+                  :key="tag.id"
+                  :value="tag.id"
+                  :label="tagOptionLabel(tag)"
+                >
+                  <span class="vault-table__tag-option">
+                    <span class="vault-table__tag-option-title">
+                      <span>{{ tag.name }}</span
+                      ><code>({{ tag.code }})</code>
+                    </span>
+                    <span class="vault-table__tag-option-description">
+                      {{ tag.remark || '暂无描述' }}
+                    </span>
+                  </span>
+                </el-option>
+                <template #footer>
+                  <div class="vault-table__tag-select-footer">
+                    <div class="vault-table__tag-select-status">
+                      <el-button
+                        v-if="createTagOptionsFailed"
+                        link
+                        type="primary"
+                        @click.stop="loadCreateTagOptions()"
+                      >
+                        加载失败，重试
+                      </el-button>
+                      <el-button
+                        v-else-if="createTagPage * editingTagPageSize < createTagTotal"
+                        link
+                        type="primary"
+                        :loading="createTagOptionsLoading"
+                        @click.stop="loadCreateTagOptions(false)"
+                      >
+                        加载更多
+                      </el-button>
+                      <span v-else class="vault-table__tag-option-count">
+                        {{ createTagTotal }} 个标签
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      class="vault-table__tag-create"
+                      aria-label="新增标签"
+                      @mousedown.prevent
+                      @click.stop="openCreateRowTagDialog(row.id)"
+                    >
+                      <el-icon><Plus /></el-icon>
+                      <span>新增标签</span>
+                    </button>
+                  </div>
+                </template>
+              </el-select>
               <el-input
                 v-model="row.remark"
                 placeholder="可选说明"
@@ -5259,7 +5402,7 @@ watch(
     display: grid;
     grid-template-columns:
       minmax(190px, 1.1fr) repeat(var(--vault-key-env-count), minmax(180px, 1fr))
-      minmax(240px, 1.2fr) 44px;
+      minmax(220px, 1.1fr) minmax(240px, 1.2fr) 44px;
     align-items: center;
     gap: 8px;
     min-height: 58px;
