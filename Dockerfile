@@ -3,6 +3,10 @@ ARG NGINX_IMAGE=harbor.gtjaqh.net/infra/nginx:mainline
 
 FROM ${NODE_IMAGE} AS builder
 
+ARG VITE_AUTH_MODE=company
+ARG VITE_COMPANY_LOGIN_URL=/tologin.do
+ARG VITE_COMPANY_RETURN_URL_PARAM=url
+
 WORKDIR /app
 
 RUN npm install --global pnpm@10.11.1
@@ -13,6 +17,7 @@ RUN pnpm install --frozen-lockfile
 COPY index.html tsconfig.json tsconfig.app.json tsconfig.node.json vite.config.ts ./
 COPY .env.production ./
 COPY src ./src
+COPY public ./public
 
 # Run Vite first so its plugins generate the declaration files used by vue-tsc.
 RUN pnpm exec vite build \

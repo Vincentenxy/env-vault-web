@@ -11,12 +11,18 @@ import { storage } from '@/utils/storage'
 import { buildMasterKeyLocation, isMasterKeyRoute } from '@/utils/master-key-route'
 import { stripAppBase, withAppBase } from '@/utils/app-base-path'
 import { createRequestId } from '@/utils/request-id'
+import { isCompanyAuth, redirectToCompanyLogin } from '@/config/auth'
+import {
+  isPlatformEmbedded,
+  requestPlatformLogin,
+  redirectPlatformToMasterKey,
+} from '@/utils/platform'
 
 /**
- * 全局唯一的 Axios 实例。
+ * 全局唯一的 Axios 实例
  *
  * 请求拦截:
- *  - 从 tokenStore 注入 Authorization
+ *  - 本地模式从 tokenStore 注入 Authorization，公司模式由网关注入身份
  *  - 自动补 x-request-id(UUID)
  *
  * 响应拦截:
@@ -35,6 +41,8 @@ declare module 'axios' {
   export interface AxiosRequestConfig {
     /** true 时,响应拦截器不再弹错误 toast —— 调用方自己处理 */
     silent?: boolean
+    /** 身份探测期间由调用方处理认证与启动错误 */
+    authProbe?: boolean
   }
 }
 
@@ -48,7 +56,10 @@ export const http: AxiosInstance = axios.create({
 
 http.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const t = tokenStore.get()
-  if (t) {
+  if (isCompanyAuth) {
+    // 浏览器携带 Cookie 后由网关注入身份，避免本地 Token 覆盖公司身份
+    config.headers.delete('Authorization')
+  } else if (t) {
     config.headers.set('Authorization', `Bearer ${t}`)
   }
   if (!config.headers.has('x-request-id')) {
@@ -114,6 +125,7 @@ function isSystemStarting(err: ApiError): boolean {
 
 /** 系统未就绪时保留当前地址并进入受认证的主密钥页面 */
 function redirectToMasterKey(): void {
+  if (redirectPlatformToMasterKey()) return
   const pathname = typeof window === 'undefined' ? '' : stripAppBase(window.location.pathname)
   if (typeof window === 'undefined' || redirectingToMasterKey || isMasterKeyRoute(pathname)) {
     return
@@ -130,6 +142,17 @@ function redirectToLogin(): void {
     return
   }
   redirectingToLogin = true
+  if (isCompanyAuth) {
+    if (!redirectToCompanyLogin(undefined, true)) {
+      const redirect = `${pathname}${window.location.search}${window.location.hash}`
+      window.location.replace(withAppBase(`/login?redirect=${encodeURIComponent(redirect)}`))
+    }
+    return
+  }
+  if (isPlatformEmbedded) {
+    requestPlatformLogin()
+    return
+  }
   tokenStore.clear()
   storage.remove(AUTH_TOKEN_STORAGE_KEY)
   const redirect = `${pathname}${window.location.search}${window.location.hash}`
@@ -161,7 +184,7 @@ http.interceptors.response.use(
         msg: '服务器返回了非预期格式',
         requestId,
       })
-      handleApiError(err, response.config.silent)
+      if (!response.config.authProbe) handleApiError(err, response.config.silent)
       throw err
     }
 
@@ -176,7 +199,7 @@ http.interceptors.response.use(
       msg: data.msg || '请求失败',
       requestId,
     })
-    handleApiError(err, response.config.silent)
+    if (!response.config.authProbe) handleApiError(err, response.config.silent)
     throw err
   },
   (error) => {
@@ -203,7 +226,7 @@ http.interceptors.response.use(
         requestId,
       })
     }
-    handleApiError(err, error?.config?.silent)
+    if (!error?.config?.authProbe) handleApiError(err, error?.config?.silent)
     throw err
   },
 )

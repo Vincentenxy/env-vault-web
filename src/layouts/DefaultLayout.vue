@@ -18,6 +18,8 @@ import { Permission } from '@/constants/permission'
 import { usePermission } from '@/composables/use-permission'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
+import { isPlatformEmbedded } from '@/utils/platform'
+import { redirectToCompanyLogout } from '@/config/auth'
 
 interface NavItem {
   path: string
@@ -75,13 +77,14 @@ function isNavActive(path: string): boolean {
 
 async function onLogout(): Promise<void> {
   auth.logout()
+  if (redirectToCompanyLogout()) return
   await router.replace({ name: 'Login' })
 }
 </script>
 
 <template>
-  <div class="ops-layout">
-    <header class="ops-layout__brand">
+  <div class="ops-layout" :class="{ 'ops-layout--embedded': isPlatformEmbedded }">
+    <header v-if="!isPlatformEmbedded" class="ops-layout__brand">
       <span class="ops-layout__brand-mark">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M13.2 2.8 6.7 12h4.6l-.5 9.2 6.5-10h-4.6l.5-8.4Z" />
@@ -90,7 +93,7 @@ async function onLogout(): Promise<void> {
       <strong>OpsCenter</strong>
     </header>
 
-    <header class="ops-layout__topbar">
+    <header v-if="!isPlatformEmbedded" class="ops-layout__topbar">
       <nav class="ops-layout__modules" aria-label="当前子系统">
         <button
           type="button"
@@ -258,6 +261,10 @@ async function onLogout(): Promise<void> {
   height: 100vh;
   overflow: hidden;
   background: var(--v-app-bg);
+
+  &--embedded {
+    grid-template-rows: minmax(0, 1fr);
+  }
 
   &__brand,
   &__sidebar {

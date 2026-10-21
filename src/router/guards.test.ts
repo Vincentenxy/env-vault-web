@@ -6,10 +6,23 @@ const stores = vi.hoisted(() => ({
   authenticated: true,
   masterKeyStatus: null as { ready: boolean } | null,
   fetchStatus: vi.fn(),
+  company: false,
+  ensureCompanySession: vi.fn(),
+}))
+
+vi.mock('@/config/auth', () => ({
+  get isCompanyAuth() {
+    return stores.company
+  },
 }))
 
 vi.mock('@/stores/auth', () => ({
-  useAuthStore: () => ({ isAuthenticated: stores.authenticated }),
+  useAuthStore: () => ({
+    get isAuthenticated() {
+      return stores.authenticated
+    },
+    ensureCompanySession: stores.ensureCompanySession,
+  }),
 }))
 
 vi.mock('@/stores/master-key', () => ({
@@ -44,6 +57,8 @@ describe('router guards', () => {
     stores.authenticated = true
     stores.masterKeyStatus = null
     stores.fetchStatus.mockReset()
+    stores.company = false
+    stores.ensureCompanySession.mockReset()
   })
 
   it('blocks direct business-route navigation while the master key is not ready', async () => {
@@ -94,5 +109,33 @@ describe('router guards', () => {
 
     expect(router.currentRoute.value.name).toBe('MasterKeySetup')
     expect(router.currentRoute.value.query.redirect).toBe('/app/settings/users')
+  })
+
+  it('verifies company identity before checking local login state on direct navigation', async () => {
+    stores.company = true
+    stores.authenticated = false
+    stores.ensureCompanySession.mockImplementation(async () => {
+      stores.authenticated = true
+    })
+    stores.fetchStatus.mockResolvedValue({ ready: true })
+    const router = createRouter({ history: createMemoryHistory(), routes })
+    installGuards(router)
+
+    await router.push('/app/settings/users')
+
+    expect(router.currentRoute.value.name).toBe('UserManagement')
+    expect(stores.ensureCompanySession).toHaveBeenCalledOnce()
+  })
+
+  it('does not enter business pages when company identity cannot be verified', async () => {
+    stores.company = true
+    stores.authenticated = false
+    const router = createRouter({ history: createMemoryHistory(), routes })
+    installGuards(router)
+
+    await router.push('/app/settings/users')
+
+    expect(router.currentRoute.value.name).toBe('Login')
+    expect(stores.fetchStatus).not.toHaveBeenCalled()
   })
 })

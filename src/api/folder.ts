@@ -10,6 +10,8 @@ import { http } from './http'
  *  - parentFolderId:列出 groups folder 下的二级 folder(只查单层)
  */
 export type ListFoldersRequest = PageRequest & {
+  /** common 通用目录 / customer 业务目录，不传时返回全部类别 */
+  type?: 'common' | 'customer'
   code?: string | null
   name?: string | null
 } & (

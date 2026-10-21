@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { defineComponent, h } from 'vue'
+import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import ElementPlus from 'element-plus'
 import { createPinia } from 'pinia'
 import SecretListView from './SecretListView.vue'
@@ -17,10 +19,18 @@ import { createTag, listTags, type Tag } from '@/api/tag'
 import TagCreateDialog from '@/components/TagCreateDialog.vue'
 import type { Folder } from '@/types/folder'
 
-vi.mock('vue-router', () => ({
-  useRoute: () => ({ query: {} }),
-  useRouter: () => ({ replace: vi.fn() }),
-}))
+const realNavigation = vi.hoisted(() => ({ enabled: false }))
+vi.mock('vue-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('vue-router')>()
+  return {
+    ...actual,
+    useRoute: () => (realNavigation.enabled ? actual.useRoute() : { query: {} }),
+    useRouter: () =>
+      realNavigation.enabled
+        ? actual.useRouter()
+        : { replace: vi.fn(), push: vi.fn(), resolve: () => ({ fullPath: '' }) },
+  }
+})
 vi.mock('@/composables/use-navigation-memory', () => ({
   useNavigationMemory: (_scope: string, defaults: Record<string, unknown>) => ({
     saved: defaults,
@@ -86,6 +96,7 @@ function setDialogInput(selector: string, value: string): void {
 }
 
 beforeEach(() => {
+  realNavigation.enabled = false
   vi.resetAllMocks()
   vi.mocked(getOrganizationsWithProjects).mockResolvedValue({
     orgList: [{ id: 'org-1', name: '研发组织', projectList: [{ id: 'project-1', name: '平台' }] }],
@@ -106,30 +117,33 @@ beforeEach(() => {
       updateAt: '',
     },
   ])
-  vi.mocked(listFolders).mockResolvedValue({
-    list: [
-      {
-        id: 'folder-1',
-        groupId: 'folder-group-1',
-        environmentId: 'env-1',
-        parentId: null,
-        level: 1,
-        code: 'application',
-        name: '应用配置',
-        comment: '',
-        type: 'common',
-        createdBy: '',
-        createdByLabel: '',
-        updatedBy: '',
-        updatedByLabel: '',
-        createdAt: '',
-        updatedAt: '',
-      },
-    ],
-    total: 1,
+  vi.mocked(listFolders).mockImplementation(async (request) => ({
+    list:
+      request.type === 'common'
+        ? []
+        : [
+            {
+              id: 'folder-1',
+              groupId: 'folder-group-1',
+              environmentId: 'env-1',
+              parentId: null,
+              level: 1,
+              code: 'application',
+              name: '应用配置',
+              comment: '',
+              type: 'customer',
+              createdBy: '',
+              createdByLabel: '',
+              updatedBy: '',
+              updatedByLabel: '',
+              createdAt: '',
+              updatedAt: '',
+            },
+          ],
+    total: request.type === 'common' ? 0 : 1,
     pageNum: 1,
     pageSize: 6,
-  })
+  }))
   vi.mocked(listSecretsByFolderGroup).mockResolvedValue({
     secretList: [
       {
@@ -171,9 +185,161 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.restoreAllMocks()
   document.body.innerHTML = ''
   sessionStorage.clear()
   localStorage.clear()
+})
+
+function folderFixture(code: string, type: 'common' | 'customer'): Folder {
+  return {
+    id: `folder-${code}`,
+    groupId: `group-${code}`,
+    environmentId: 'env-1',
+    parentId: null,
+    level: 1,
+    code,
+    name: code,
+    comment: '',
+    type,
+    createdBy: '',
+    createdByLabel: '',
+    updatedBy: '',
+    updatedByLabel: '',
+    createdAt: '',
+    updatedAt: '',
+  }
+}
+
+describe('SecretListView folder sections', () => {
+  it('records each directory step and restores it on browser back and forward', async () => {
+    realNavigation.enabled = true
+    vi.mocked(listFolders).mockImplementation(async (request) => {
+      const list = request.parentFolderId
+        ? [folderFixture('service-a', 'common')]
+        : request.type === 'common'
+          ? [folderFixture('groups', 'common')]
+          : []
+      return { list, total: list.length, pageNum: 1, pageSize: request.pageSize ?? 6 }
+    })
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/profile', component: { render: () => null } },
+        { path: '/app/secrets', name: 'SecretList', component: SecretListView },
+      ],
+    })
+    await router.push('/profile')
+    await router.push('/app/secrets')
+    const wrapper = mount(defineComponent({ render: () => h(RouterView) }), {
+      global: { plugins: [router, ElementPlus, createPinia()] },
+      attachTo: document.body,
+    })
+    await flushPromises()
+    await wrapper.get('article.vault-folder').trigger('click')
+    await flushPromises()
+    await wrapper.get('.vault-groups article').trigger('click')
+    await flushPromises()
+
+    expect(router.currentRoute.value.query.groupId).toBe('group-service-a')
+    router.back()
+    await flushPromises()
+    expect(wrapper.find('.vault-groups article').exists()).toBe(true)
+    expect(router.currentRoute.value.query.folderId).toBe('group-groups')
+    expect(router.currentRoute.value.query.groupId).toBeUndefined()
+    router.back()
+    await flushPromises()
+    expect(wrapper.find('article.vault-folder').exists()).toBe(true)
+    expect(router.currentRoute.value.query.folderId).toBeUndefined()
+    router.forward()
+    await flushPromises()
+    expect(wrapper.find('.vault-groups article').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('loads common folders separately, measures remaining height and keeps groups children scoped to their parent', async () => {
+    const originalRect = HTMLElement.prototype.getBoundingClientRect
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const rect = originalRect.call(this)
+      if (this.matches('.vault-page__content.is-folder-list')) {
+        return { ...rect, width: 1000, height: 650 } as DOMRect
+      }
+      if (this.matches('.vault-folder-section--common')) {
+        return { ...rect, width: 1000, height: 215 } as DOMRect
+      }
+      return rect
+    })
+    vi.mocked(listFolders).mockImplementation(async (request) => {
+      if (request.parentFolderId) {
+        return {
+          list: [folderFixture('service-a', 'common')],
+          total: 1,
+          pageNum: 1,
+          pageSize: request.pageSize ?? 6,
+        }
+      }
+      const list =
+        request.type === 'common'
+          ? [folderFixture('groups', 'common'), folderFixture('global', 'common')]
+          : [folderFixture('application', 'customer')]
+      return { list, total: list.length, pageNum: 1, pageSize: request.pageSize ?? 6 }
+    })
+    const wrapper = mount(SecretListView, {
+      global: { plugins: [ElementPlus, createPinia()] },
+      attachTo: document.body,
+    })
+    await flushPromises()
+
+    expect(wrapper.get('[aria-label="通用目录"]').findAll('article')).toHaveLength(2)
+    expect(wrapper.get('[aria-label="用户目录"]').findAll('article')).toHaveLength(1)
+    expect(wrapper.get('.vault-load-more').text()).toContain('已全部加载 3 个目录')
+    expect(vi.mocked(listFolders).mock.calls.map(([request]) => request)).toEqual([
+      { projectId: 'project-1', type: 'common', pageNum: 1, pageSize: 200 },
+      { projectId: 'project-1', type: 'customer', pageNum: 1, pageSize: 8 },
+    ])
+
+    await wrapper.get('[aria-label="通用目录"] article').trigger('click')
+    await flushPromises()
+    const childRequest = vi.mocked(listFolders).mock.calls.at(-1)![0]
+    expect(childRequest.parentFolderId).toBe('folder-groups')
+    expect(childRequest.type).toBeUndefined()
+    expect(childRequest.projectId).toBeUndefined()
+    expect(wrapper.text()).toContain('service-a')
+    wrapper.unmount()
+  })
+
+  it('counts the actual unique folders when both responses contain overlapping directories', async () => {
+    const list = [
+      folderFixture('groups', 'common'),
+      folderFixture('global', 'common'),
+      folderFixture('application', 'customer'),
+    ]
+    vi.mocked(listFolders).mockResolvedValue({ list, total: 3, pageNum: 1, pageSize: 200 })
+    const wrapper = mount(SecretListView, {
+      global: { plugins: [ElementPlus, createPinia()] },
+      attachTo: document.body,
+    })
+    await flushPromises()
+
+    expect(wrapper.findAll('article.vault-folder')).toHaveLength(3)
+    expect(wrapper.get('.vault-load-more').text()).toContain('已全部加载 3 个目录')
+    wrapper.unmount()
+  })
+
+  it('does not treat a failed common-folder request as an empty section', async () => {
+    vi.mocked(listFolders).mockRejectedValueOnce(new Error('network unavailable'))
+    const wrapper = mount(SecretListView, {
+      global: { plugins: [ElementPlus, createPinia()] },
+      attachTo: document.body,
+    })
+    await flushPromises()
+    expect(listFolders).toHaveBeenCalledTimes(1)
+    expect(wrapper.findAll('article.vault-folder')).toHaveLength(0)
+    expect(wrapper.text()).toContain('加载失败')
+    wrapper.unmount()
+  })
 })
 
 describe('SecretListView tag column', () => {
@@ -292,7 +458,7 @@ describe('SecretListView card pagination', () => {
       code: 'application',
       name: '应用配置',
       comment: '',
-      type: 'common',
+      type: 'customer',
       createdBy: '',
       createdByLabel: '',
       updatedBy: '',
@@ -316,24 +482,26 @@ describe('SecretListView card pagination', () => {
     }
     vi.mocked(listFolders).mockImplementation(async (request) => ({
       list:
-        request.pageNum === 1
-          ? Array.from({ length: 6 }, (_, index) => ({
-              ...firstPageFolder,
-              id: `folder-${index + 1}`,
-              groupId: `folder-group-${index + 1}`,
-              code: `application-${index + 1}`,
-              name: `应用配置${index + 1}`,
-            }))
-          : request.pageNum === 2
+        request.type === 'common'
+          ? []
+          : request.pageNum === 1
             ? Array.from({ length: 6 }, (_, index) => ({
-                ...secondPageFolder,
-                id: `folder-${index + 7}`,
-                groupId: `folder-group-${index + 7}`,
-                code: `release-${index + 7}`,
-                name: `发布配置${index + 7}`,
+                ...firstPageFolder,
+                id: `folder-${index + 1}`,
+                groupId: `folder-group-${index + 1}`,
+                code: `application-${index + 1}`,
+                name: `应用配置${index + 1}`,
               }))
-            : [thirdPageFolder],
-      total: 13,
+            : request.pageNum === 2
+              ? Array.from({ length: 6 }, (_, index) => ({
+                  ...secondPageFolder,
+                  id: `folder-${index + 7}`,
+                  groupId: `folder-group-${index + 7}`,
+                  code: `release-${index + 7}`,
+                  name: `发布配置${index + 7}`,
+                }))
+              : [thirdPageFolder],
+      total: request.type === 'common' ? 0 : 13,
       pageNum: request.pageNum ?? 1,
       pageSize: 6,
     }))
@@ -362,7 +530,14 @@ describe('SecretListView card pagination', () => {
 
     expect(wrapper.findAll('article.vault-folder')).toHaveLength(13)
     expect(wrapper.get('.vault-load-more').text()).toContain('已全部加载 13')
-    expect(vi.mocked(listFolders).mock.calls.map(([request]) => request.pageNum)).toEqual([1, 2, 3])
+    expect(
+      vi.mocked(listFolders).mock.calls.map(([request]) => [request.type, request.pageNum]),
+    ).toEqual([
+      ['common', 1],
+      ['customer', 1],
+      ['customer', 2],
+      ['customer', 3],
+    ])
     wrapper.unmount()
   })
 })

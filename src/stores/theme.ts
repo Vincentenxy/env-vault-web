@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
 import { applyPrimaryColor, DefaultPrimaryColor } from '@/utils/color'
 import { storage } from '@/utils/storage'
+import { isPlatformEmbedded } from '@/utils/platform'
 
 export type ThemeMode = 'light' | 'dark'
 
@@ -52,7 +53,12 @@ export const useThemeStore = defineStore('theme', () => {
   watch(
     [mode, primaryColor],
     () => {
-      storage.set<PersistedTheme>(STORAGE_KEY, { mode: mode.value, primaryColor: primaryColor.value })
+      if (!isPlatformEmbedded) {
+        storage.set<PersistedTheme>(STORAGE_KEY, {
+          mode: mode.value,
+          primaryColor: primaryColor.value,
+        })
+      }
       applyToDom()
     },
     { flush: 'post' },

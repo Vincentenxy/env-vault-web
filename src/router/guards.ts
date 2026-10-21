@@ -1,6 +1,8 @@
 import type { Router } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useMasterKeyStore } from '@/stores/master-key'
+import { isCompanyAuth } from '@/config/auth'
+import { resolveMasterKeyRedirect } from '@/utils/master-key-route'
 
 /**
  * 路由守卫依次校验登录状态和系统主密钥状态
@@ -12,7 +14,15 @@ export function installGuards(router: Router): void {
     const requiresAuth = to.matched.some((r) => r.meta.requiresAuth === true)
     const requiresMasterKey = to.matched.some((r) => r.meta.requiresMasterKey === true)
 
+    if (isCompanyAuth && (requiresAuth || to.name === 'Login')) {
+      await auth.ensureCompanySession()
+    }
+
     if (to.name === 'Login' && auth.isAuthenticated) {
+      if (isCompanyAuth) {
+        const target = resolveMasterKeyRedirect(to.query.redirect)
+        if (!/^\/login(?:[/?#]|$)/.test(target)) return target
+      }
       return { name: 'OrganizationList' }
     }
 

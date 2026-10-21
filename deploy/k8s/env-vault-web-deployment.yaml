@@ -2,6 +2,23 @@
 # Build and push harbor.gtjaqh.net/lucy-dev/env-vault-web:0.1.0 before applying.
 # The env-vault namespace and backend Service are created by the backend manifest.
 
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: env-vault-web-auth
+  namespace: env-vault
+data:
+  # Public settings only; JWT keys and gateway credentials belong on the backend
+  auth-config.json: |
+    {
+      "mode": "company",
+      "loginUrl": "/tologin.do",
+      "returnUrlParam": "url",
+      "loginLabel": "公司认证",
+      "logoutUrl": "",
+      "logoutReturnUrlParam": "url"
+    }
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -73,6 +90,11 @@ spec:
               value: http://env-vault
             - name: API_BOOTSTRAP_UPSTREAM
               value: http://env-vault-bootstrap:8090
+          volumeMounts:
+            - name: auth-config
+              mountPath: /usr/share/nginx/html/auth-config.json
+              subPath: auth-config.json
+              readOnly: true
           resources:
             requests:
               cpu: 20m
@@ -80,6 +102,10 @@ spec:
             limits:
               cpu: 250m
               memory: 128Mi
+      volumes:
+        - name: auth-config
+          configMap:
+            name: env-vault-web-auth
 ---
 apiVersion: v1
 kind: Service

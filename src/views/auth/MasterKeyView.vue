@@ -7,6 +7,7 @@ import { useMasterKeyStore } from '@/stores/master-key'
 import { ApiError } from '@/types/api'
 import { notify } from '@/utils/notify'
 import { resolveMasterKeyRedirect } from '@/utils/master-key-route'
+import { redirectToCompanyLogout } from '@/config/auth'
 
 defineOptions({ name: 'MasterKeyView' })
 
@@ -116,6 +117,7 @@ function closeSubmit(): void {
 async function logout(): Promise<void> {
   clearShare()
   auth.logout()
+  if (redirectToCompanyLogout()) return
   await router.replace({ path: '/login', query: { redirect: route.fullPath } })
 }
 

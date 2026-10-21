@@ -685,9 +685,58 @@ VITE_APP_TITLE=EnvVault Dev
 VITE_BASE_PATH=/envvault/
 VITE_API_BASE=/envvault/api/v1
 VITE_APP_TITLE=EnvVault
+VITE_AUTH_MODE=company
+VITE_COMPANY_LOGIN_URL=/tologin.do
 ```
 
 生产环境由 Ingress 去除 `/envvault` 前缀后转发到 Web Nginx。Vite 路由基础路径和浏览器请求的 API 地址必须保留 `/envvault` 前缀,与 `deploy/k8s/env-vault-web-deployment.yaml` 中的 Ingress 规则保持一致。
+
+#### 公司认证与本地登录
+
+认证方式和 iframe 嵌入方式分别处理，由 `src/config/auth.ts` 集中读取配置：
+
+- `VITE_AUTH_MODE=company`：公司认证，生产默认采用此模式；直接访问 `/envvault/` 和从基座打开都先请求 `/auth/me`，不要求本地保存 Token，也不发送旧的本地 Authorization
+- `VITE_AUTH_MODE=local`：本地账号密码登录，保留原有 Token 存储和 Bearer 请求头；未配置认证方式的普通本地开发默认采用此模式
+- `VITE_COMPANY_LOGIN_URL`：外部认证默认入口，当前平台为 `/tologin.do`，不再在代码里绑定 localhost 的公司认证域名
+- `VITE_COMPANY_RETURN_URL_PARAM`：完整返回地址的默认参数名，当前平台为 `url`，其他网关可改为 `rd`、`redirect` 等，空字符串表示不追加
+
+支持运行时 `auth-config.json`，显式字段优先于上述构建默认值。同一个镜像可通过 ConfigMap 切换认证体系，不必重新打包。当前部署清单已经挂载 `env-vault-web-auth` ConfigMap：
+
+```json
+{
+  "mode": "company",
+  "loginUrl": "/tologin.do",
+  "returnUrlParam": "url",
+  "loginLabel": "公司认证",
+  "logoutUrl": "",
+  "logoutReturnUrlParam": "url"
+}
+```
+
+首次上线此能力需要重建前端镜像；之后调整配置，apply 并滚动重启 `deployment/env-vault-web`，刷新浏览器即可。`subPath` 挂载不会自动热更新。配置是公开 JSON，不包含凭据或 JWT 密钥；同一资源若同时存在于前后端清单，选择一处作为部署来源，避免旧配置覆盖新配置
+
+完整链路、可替换认证入口示例、状态码、连续 401 保护、退出及待确认问题见 [登录认证设计](design/authentication.md)。通用配置适用于“认证网关校验 Cookie 并注入 JWT”的模式，不代表已经实现任意 IdP 的 OIDC 直连
+
+浏览器只负责携带同域 Cookie，认证网关校验后向后端请求注入 `Authorization: Bearer <公司JWT>`。后端必须启用并正确配置 `auth.company` 的 issuer、audience 和验签公钥，当前身份字段为 staffuserid（为空时读取 sub）。前端既不读取这些后端验签配置，也不会把 Cookie 当成 JWT 解析。
+
+```mermaid
+flowchart TD
+  A[打开 Env Vault 页面] --> B{前端认证方式}
+  B -->|local| C[检查本地登录 Token]
+  B -->|company| D[请求 auth/me，浏览器携带 Cookie]
+  D --> E[网关校验 Cookie 并注入公司 JWT]
+  E --> F[后端验签并查询当前用户]
+  F -->|成功| G[检查主密钥状态并进入页面]
+  F -->|401| H[跳转配置的统一登录入口，携带返回地址]
+  F -->|403 或服务异常| I[展示错误并允许重新验证]
+  F -->|code=-2| J[请求受 JWT 保护的 masterKey/status]
+  J -->|认证成功且未就绪| K[进入主密钥等待与分片页]
+  J -->|401| H
+```
+
+身份检查请求会合并并发调用，并显示加载状态。`-2` 本身不代表认证成功，必须由受认证保护的启动状态接口确认身份。403、网络异常和 5xx 不会被误判为登录过期。所有业务接口仍由后端逐次认证；配置 `logoutUrl` 时退出统一会话，否则退出仅清理当前应用状态
+
+`VITE_*` 参数是构建默认值，修改这些默认值需要重建镜像；运行时认证调整应修改前端 `env-vault-web-auth` ConfigMap，不是后端配置中的 `auth.company`
 
 ### 14.3 Docker 镜像构建与部署
 
@@ -695,6 +744,9 @@ VITE_APP_TITLE=EnvVault
 
 - `NODE_IMAGE`:构建 Vue 静态资源,默认使用 `node:20-alpine`
 - `NGINX_IMAGE`:运行静态资源并代理后端 API,默认使用 `harbor.gtjaqh.net/infra/nginx:mainline`
+- `VITE_AUTH_MODE`:默认 `company`；需要独立本地账号登录的部署传入 `local`
+- `VITE_COMPANY_LOGIN_URL`:默认 `/tologin.do`，应与公司平台的登录入口保持一致
+- `VITE_COMPANY_RETURN_URL_PARAM`:默认 `url`，运行时配置可覆盖以上三个构建默认值
 
 前端不使用 Go 工具链,因此后端构建命令中的 `BASE_IMAGE_REGISTRY` 和 `GOPROXY` 对本项目无效。国内网络环境下需要通过 Dockerfile 已声明的 `NODE_IMAGE` 参数替换 Node 基础镜像。
 
@@ -709,6 +761,8 @@ docker buildx build \
   --platform linux/amd64 \
   --build-arg NODE_IMAGE=m.daocloud.io/docker.io/library/node:20-alpine \
   --build-arg NGINX_IMAGE=harbor.gtjaqh.net/infra/nginx:mainline \
+  --build-arg VITE_AUTH_MODE=company \
+  --build-arg VITE_COMPANY_LOGIN_URL=/tologin.do \
   -t "$IMAGE" \
   --push \
   .
@@ -800,6 +854,12 @@ kubectl -n env-vault rollout status deployment/env-vault-web
 - K8s Operator / CLI 的 SDK 文档站点(由 docs 仓独立,本仓不涉及)。
 
 ## 19. 快速开始
+
+### 嵌入效能平台
+
+`micro-frontend-main` 在“智测”后提供“秘钥中心”入口 `/app-envvault/*`，通过同源 iframe 加载本项目 `/envvault/`。本地执行 `pnpm dev:platform`（5174 端口），再启动基座与后端；原 `pnpm dev` 的独立开发方式不变。
+
+嵌入模式隐藏重复的顶部栏，保留侧栏与全部业务页面，通过消息同步路由和主题。浏览器历史由基座维护，避免 iframe 与主页面各记一条历史。独立登录 token 和主题偏好不会被嵌入模式覆盖。认证使用平台网关注入的公司 JWT，后端仍完整校验身份与权限；不会读取或传递基座 token。部署路由及网关配置要求见基座 README 的“EnvVault 秘钥中心”。
 
 ```bash
 # 安装依赖

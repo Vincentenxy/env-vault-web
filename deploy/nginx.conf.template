@@ -44,6 +44,13 @@ server {
         add_header Cache-Control "no-store";
     }
 
+    # Public login settings can be mounted from a ConfigMap without rebuilding
+    location = /auth-config.json {
+        default_type application/json;
+        add_header Cache-Control "no-store" always;
+        try_files $uri =404;
+    }
+
     location / {
         try_files $uri $uri/ /index.html;
     }

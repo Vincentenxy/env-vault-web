@@ -6,6 +6,7 @@
   "description": "EnvVault Web - frontend for the EnvVault secret management platform",
   "scripts": {
     "dev": "vite",
+    "dev:platform": "vite --mode platform --port 5174 --strictPort",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview --port 4173",
     "typecheck": "vue-tsc --noEmit",

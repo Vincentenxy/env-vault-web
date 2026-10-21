@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowRight, Building2, LockKeyhole, UserRound } from '@lucide/vue'
@@ -7,6 +7,8 @@ import { useAuthStore } from '@/stores/auth'
 import { useMasterKeyStore } from '@/stores/master-key'
 import { ApiError } from '@/types/api'
 import { resolveMasterKeyRedirect } from '@/utils/master-key-route'
+import { getAuthConfig, isCompanyAuth, redirectToCompanyLogin } from '@/config/auth'
+import { withAppBase } from '@/utils/app-base-path'
 
 const auth = useAuthStore()
 const masterKey = useMasterKeyStore()
@@ -16,6 +18,8 @@ const route = useRoute()
 const form = reactive({ username: '', password: '' })
 const submitting = ref(false)
 const errorMessage = ref('')
+const loginLabel = getAuthConfig().loginLabel
+const companyLoginError = ref('')
 
 const canSubmit = computed(() => form.username.trim().length > 0 && form.password.length > 0)
 
@@ -69,6 +73,23 @@ function onOidcLogin(): void {
   ElMessage.info('OIDC 登录暂未配置')
 }
 
+async function retryCompanySession(): Promise<void> {
+  await auth.ensureCompanySession(true)
+  if (auth.isAuthenticated) await router.replace(loginRedirect())
+  else if (auth.sessionUnauthorized) companyLogin(true)
+}
+
+function companyLogin(automatic = false): void {
+  companyLoginError.value = ''
+  if (!redirectToCompanyLogin(withAppBase(loginRedirect()), automatic)) {
+    companyLoginError.value = '登录后仍无法确认身份，请重试或联系管理员检查认证配置'
+  }
+}
+
+onMounted(() => {
+  if (isCompanyAuth && auth.sessionUnauthorized) companyLogin(true)
+})
+
 onBeforeUnmount(() => {
   form.password = ''
 })
@@ -107,10 +128,40 @@ onBeforeUnmount(() => {
     <!-- 右侧:表单区 -->
     <main class="login-page__form-wrap">
       <div class="login-page__form-inner">
-        <h2 class="login-page__form-title">登录</h2>
-        <p class="login-page__form-sub">使用 EnvVault 本地账号进入系统</p>
+        <h2 class="login-page__form-title">{{ isCompanyAuth ? loginLabel : '登录' }}</h2>
+        <p class="login-page__form-sub">
+          {{ isCompanyAuth ? '验证身份后进入系统' : '使用 EnvVault 本地账号进入系统' }}
+        </p>
 
-        <form class="login-page__form" @submit.prevent="onSubmit">
+        <div v-if="isCompanyAuth" class="login-page__form">
+          <el-alert
+            v-if="companyLoginError || auth.sessionError"
+            :title="companyLoginError || auth.sessionError"
+            type="error"
+            show-icon
+            :closable="false"
+            class="login-page__alert"
+          />
+          <el-button
+            type="primary"
+            size="large"
+            :disabled="auth.checkingSession"
+            class="login-page__submit"
+            @click="companyLogin()"
+          >
+            前往登录
+            <ArrowRight :size="16" class="login-page__submit-icon" />
+          </el-button>
+          <el-button
+            class="login-page__retry"
+            :loading="auth.checkingSession"
+            @click="retryCompanySession"
+          >
+            重新验证
+          </el-button>
+        </div>
+
+        <form v-else class="login-page__form" @submit.prevent="onSubmit">
           <label class="login-page__field-label" for="username">
             <UserRound :size="15" :stroke-width="1.8" />
             用户名
@@ -162,7 +213,7 @@ onBeforeUnmount(() => {
           </el-button>
         </form>
 
-        <div class="login-page__alternative">
+        <div v-if="!isCompanyAuth" class="login-page__alternative">
           <span class="login-page__alternative-label">其他登录方式</span>
           <button
             type="button"
@@ -305,6 +356,10 @@ onBeforeUnmount(() => {
 
   &__submit-icon {
     margin-left: 6px;
+  }
+
+  &__retry {
+    margin-left: 0;
   }
 
   &__alternative {

@@ -109,6 +109,7 @@ interface VaultFolder {
   code: string
   name: string
   type: FolderType
+  category: 'common' | 'customer'
   remark: string
   description: string
   owner: string
@@ -196,6 +197,8 @@ const navigation = useNavigationMemory('secrets', {
   folderSearch: '',
 })
 const navigationReady = ref(false)
+let scopeInitialized = false
+let routeRestoreSequence = 0
 
 const collaborationOrganizationId = '__collaboration__'
 
@@ -250,9 +253,11 @@ const groupPage = ref(1)
 const groupPageSize = ref(6)
 const groupTotal = ref(0)
 const folderContentRef = ref<HTMLElement | null>(null)
+const commonFolderSectionRef = ref<HTMLElement | null>(null)
 const groupContentRef = ref<HTMLElement | null>(null)
 const folderCardMinWidth = 230
 const folderCardHeight = 183
+const folderSectionHeadingHeight = 32
 const groupCardMinWidth = 280
 const groupCardHeight = 100
 const scopeLoading = ref(false)
@@ -598,6 +603,21 @@ navigation.track(() => {
 const visibleFolders = computed(() =>
   favoriteOnly.value ? folders.value.filter((folder) => folder.favorite) : folders.value,
 )
+const folderSections = computed(() =>
+  [
+    {
+      category: 'common',
+      folders: visibleFolders.value.filter((folder) => folder.category === 'common'),
+    },
+    {
+      category: 'customer',
+      folders: visibleFolders.value.filter((folder) => folder.category === 'customer'),
+    },
+  ].filter((section) => section.folders.length),
+)
+const totalFolderCount = computed(
+  () => folderTotal.value + folders.value.filter((folder) => folder.category === 'common').length,
+)
 const folderHasMore = computed(() => folderPage.value * folderPageSize.value < folderTotal.value)
 const groupHasMore = computed(() => groupPage.value * groupPageSize.value < groupTotal.value)
 const activeRows = computed(() => {
@@ -774,6 +794,7 @@ function mapFolder(folder: Folder, projectId: string, index: number): VaultFolde
     code: firstString(raw.code, raw.name) || id,
     name: firstString(raw.name, raw.code) || '未命名配置目录',
     type: inferFolderType(folder),
+    category: raw.type === 'common' ? 'common' : 'customer',
     remark,
     description: remark || '暂无目录说明',
     owner:
@@ -1208,11 +1229,25 @@ async function loadFolders(options: { targetPage?: number } = {}): Promise<void>
   folderLoading.value = true
   try {
     const name = folderListSearch.value.trim()
+    // 通用目录目前最多 global / groups 两项，先加载并渲染，再测量业务卡片区域
+    const commonResponse = await listFolders({
+      pageNum: 1,
+      pageSize: 200,
+      projectId,
+      type: 'common',
+      ...(name ? { name } : {}),
+    })
+    if (requestSequence !== folderRequestSequence) return
+    folders.value = mergeMappedFolders(commonResponse.list, projectId)
+    await nextTick()
+    if (requestSequence !== folderRequestSequence) return
+    updateFolderPageSize()
     for (let page = 1; page <= targetPage; page += 1) {
       const response = await listFolders({
         pageNum: page,
         pageSize: folderPageSize.value,
         projectId,
+        type: 'customer',
         ...(name ? { name } : {}),
       })
       if (requestSequence !== folderRequestSequence) return
@@ -1254,6 +1289,7 @@ async function loadMoreFolders(): Promise<void> {
       pageNum: nextPage,
       pageSize: folderPageSize.value,
       projectId,
+      type: 'customer',
       ...(name ? { name } : {}),
     })
     if (requestSequence !== folderRequestSequence) return
@@ -1363,14 +1399,25 @@ function handleGroupContentScroll(event: Event): void {
 
 // 根据当前内容区域计算首屏可展示的一级目录数量，作为接口分页大小
 function updateFolderPageSize(): boolean {
+  // 上方通用目录独占区域，按实际高度计入窄屏换行及分区间距
+  const commonElement = commonFolderSectionRef.value
+  const commonHeight = commonElement
+    ? commonElement.getBoundingClientRect().height +
+      (Number.parseFloat(window.getComputedStyle(commonElement).marginBottom) || 0)
+    : 0
   const pageSize = calculateCardPageSize(
     measureContentWidth(folderContentRef.value),
-    measureContentHeight(folderContentRef.value),
+    // 用户目录首次请求前还没有渲染，预留其标题和分界线的固定高度
+    Math.max(
+      1,
+      measureContentHeight(folderContentRef.value) - commonHeight - folderSectionHeadingHeight,
+    ),
     folderCardMinWidth,
     folderCardHeight,
   )
-  if (!pageSize || pageSize === folderPageSize.value) return false
-  folderPageSize.value = pageSize
+  const boundedPageSize = Math.min(200, pageSize)
+  if (!boundedPageSize || boundedPageSize === folderPageSize.value) return false
+  folderPageSize.value = boundedPageSize
   return true
 }
 
@@ -1478,20 +1525,23 @@ async function loadScopeOptions(): Promise<void> {
     folderListSearch.value = restoreFolder ? navigation.saved.folderSearch : ''
     await loadProjectEnvironments(selectedProjectId.value)
     await loadFolders({ targetPage: restoreFolder ? folderPage.value : 1 })
+    // 显式路由优先于会话记忆，后退到项目列表时不能重新打开上次的目录
+    const folderId = queryProjectId ? routeNavigationValue('folderId') : navigation.saved.folderId
+    const groupId = queryProjectId ? routeNavigationValue('groupId') : navigation.saved.groupId
     // 先恢复项目目录，再恢复 groups 下的子目录，使用最新接口数据校验当前位置
-    if (restoreFolder && !folderLoadFailed.value) {
-      const folder = folders.value.find(
-        (item) => (item.folderGroupId || item.id) === navigation.saved.folderId,
-      )
+    if (!folderLoadFailed.value) {
+      const folder = folders.value.find((item) => (item.folderGroupId || item.id) === folderId)
       if (folder) {
         await openFolder(folder)
         const group = serviceGroups.value.find(
-          (item) => (item.folderGroupId || item.id) === navigation.saved.groupId,
+          (item) => (item.folderGroupId || item.id) === groupId,
         )
-        if (group) openServiceGroup(group)
+        if (group) await openServiceGroup(group)
       }
     }
     navigationReady.value = true
+    scopeInitialized = true
+    syncNavigationToRoute('replace')
   } catch {
     organizations.value = []
     projects.value = []
@@ -1517,15 +1567,78 @@ function isCollaborationProjectExpiring(projectId: string): boolean {
   return Number.isFinite(remaining) && remaining >= 0 && remaining <= 7 * 24 * 60 * 60 * 1000
 }
 
-function syncSelectedProjectToRoute(projectId: string): void {
-  const currentProjectId =
-    typeof route.query.projectId === 'string' ? route.query.projectId.trim() : ''
-  if (currentProjectId === projectId) return
+function routeNavigationValue(key: string): string {
+  const value = route.query[key]
+  return typeof value === 'string' ? value.trim() : ''
+}
 
+// 用户导航压入历史，初始化校正只替换当前记录，异步恢复期间不反向写入路由
+function syncNavigationToRoute(mode: 'push' | 'replace' | 'back' = 'push'): void {
+  if (!navigationReady.value) return
   const query = { ...route.query }
-  if (projectId) query.projectId = projectId
-  else delete query.projectId
-  void router.replace({ name: 'SecretList', query })
+  const values = {
+    projectId: selectedProjectId.value,
+    folderId: activeFolder.value ? folderLogicalKey(activeFolder.value) : '',
+    groupId: activeServiceGroup.value ? folderLogicalKey(activeServiceGroup.value) : '',
+  }
+  if (Object.entries(values).every(([key, value]) => routeNavigationValue(key) === value)) return
+  Object.entries(values).forEach(([key, value]) => {
+    if (value) query[key] = value
+    else delete query[key]
+  })
+  const target = { name: 'SecretList', query }
+  // 页面返回优先复用已有的上一条记录，直接打开的链接则回到父目录
+  if (mode === 'back' && router.options?.history.state.back === router.resolve(target).fullPath) {
+    router.back()
+  } else if (mode === 'replace' || mode === 'back') {
+    void router.replace(target)
+  } else {
+    void router.push(target)
+  }
+}
+
+// 浏览器前进、后退只恢复目标位置，不再添加新的历史记录
+async function restoreRouteNavigation(): Promise<void> {
+  if (!scopeInitialized) return
+  const projectId = routeNavigationValue('projectId')
+  const folderId = routeNavigationValue('folderId')
+  const groupId = routeNavigationValue('groupId')
+  const project = projects.value.find((item) => item.id === projectId)
+  if (!project) return
+  const sequence = ++routeRestoreSequence
+  if (
+    projectId === selectedProjectId.value &&
+    folderId === (activeFolder.value ? folderLogicalKey(activeFolder.value) : '') &&
+    groupId === (activeServiceGroup.value ? folderLogicalKey(activeServiceGroup.value) : '')
+  ) {
+    navigationReady.value = true
+    return
+  }
+
+  navigationReady.value = false
+  try {
+    if (projectId !== selectedProjectId.value) {
+      selectedOrgId.value = project.orgId
+      selectedProjectId.value = projectId
+      folderPage.value = 1
+      await reloadProjectData()
+      if (sequence !== routeRestoreSequence) return
+    }
+    const folder = folders.value.find((item) => folderLogicalKey(item) === folderId)
+    if (!folder) {
+      closeDetail()
+      return
+    }
+    if (activeFolderId.value !== folder.id) {
+      await openFolder(folder)
+      if (sequence !== routeRestoreSequence) return
+    }
+    const group = serviceGroups.value.find((item) => folderLogicalKey(item) === groupId)
+    if (group) await openServiceGroup(group)
+    else if (activeGroupId.value) goBack()
+  } finally {
+    if (sequence === routeRestoreSequence) navigationReady.value = true
+  }
 }
 
 function ownerColor(owner: string): string {
@@ -1541,7 +1654,9 @@ function ownerColor(owner: string): string {
 }
 
 async function reloadProjectData(): Promise<void> {
-  await loadProjectEnvironments(selectedProjectId.value)
+  const projectId = selectedProjectId.value
+  await loadProjectEnvironments(projectId)
+  if (projectId !== selectedProjectId.value) return
   await loadFolders({ targetPage: 1 })
 }
 
@@ -1551,7 +1666,9 @@ function selectOrganization(id: string): void {
   folderPage.value = 1
   cascadeLevel.value = 'project'
   cascadeSearch.value = ''
-  syncSelectedProjectToRoute(selectedProjectId.value)
+  activeFolderId.value = ''
+  activeGroupId.value = ''
+  syncNavigationToRoute()
   void reloadProjectData()
 }
 
@@ -1562,7 +1679,9 @@ function selectProject(id: string): void {
   folderPage.value = 1
   cascadeOpen.value = false
   cascadeSearch.value = ''
-  syncSelectedProjectToRoute(id)
+  activeFolderId.value = ''
+  activeGroupId.value = ''
+  syncNavigationToRoute()
   void reloadProjectData()
 }
 
@@ -1700,6 +1819,7 @@ async function openFolder(folder: VaultFolder): Promise<void> {
   activeGroupId.value = ''
   folderSearch.value = ''
   serviceGroups.value = []
+  syncNavigationToRoute()
   if (folder.type === 'groups') {
     await nextTick()
     updateGroupPageSize()
@@ -1711,12 +1831,13 @@ async function openFolder(folder: VaultFolder): Promise<void> {
   await loadSecretsForFolder(folder)
 }
 
-function openServiceGroup(group: VaultFolder): void {
+async function openServiceGroup(group: VaultFolder): Promise<void> {
   finishInlineEdit(false)
   activeGroupId.value = group.id
+  syncNavigationToRoute()
   observeResponsiveContainer()
   folderSearch.value = ''
-  void loadSecretsForFolder(group)
+  await loadSecretsForFolder(group)
 }
 
 function goBack(): void {
@@ -1724,6 +1845,7 @@ function goBack(): void {
   closeKeyHistory()
   if (activeGroupId.value) {
     activeGroupId.value = ''
+    syncNavigationToRoute('back')
     folderSearch.value = ''
     void nextTick().then(() => {
       observeResponsiveContainer()
@@ -1734,6 +1856,7 @@ function goBack(): void {
   activeFolderId.value = ''
   serviceGroups.value = []
   folderSearch.value = ''
+  syncNavigationToRoute('back')
   void nextTick().then(() => {
     observeResponsiveContainer()
     reloadAfterPageSizeChange()
@@ -1746,6 +1869,7 @@ function closeDetail(): void {
   activeFolderId.value = ''
   activeGroupId.value = ''
   serviceGroups.value = []
+  syncNavigationToRoute()
   void nextTick().then(() => {
     observeResponsiveContainer()
     reloadAfterPageSizeChange()
@@ -2910,19 +3034,8 @@ watch(folderListSearch, () => {
 watch(createFolderForm, persistCreateFolderDraft, { deep: true })
 watch([keyDraftRows, keyForm], persistKeyDialogDraft, { deep: true })
 watch(
-  () => route.query.projectId,
-  (value) => {
-    const projectId = typeof value === 'string' ? value.trim() : ''
-    if (!projectId || projectId === selectedProjectId.value) return
-    const project = projects.value.find((item) => item.id === projectId)
-    if (!project) return
-
-    selectedOrgId.value = project.orgId
-    selectedProjectId.value = project.id
-    folderPage.value = 1
-    cascadeOpen.value = false
-    void reloadProjectData()
-  },
+  () => [route.query.projectId, route.query.folderId, route.query.groupId],
+  () => void restoreRouteNavigation(),
 )
 </script>
 
@@ -3063,93 +3176,111 @@ watch(
         ref="folderContentRef"
         v-loading="folderLoading || scopeLoading"
         class="vault-page__content is-folder-list"
+        :style="{ '--folder-section-heading-height': `${folderSectionHeadingHeight}px` }"
         @scroll.passive="handleFolderContentScroll"
       >
         <div v-if="folders.length" class="vault-folder-list">
           <div v-if="visibleFolders.length" class="vault-folder-scroll">
-            <div class="vault-folders">
-              <article
-                v-for="folder in visibleFolders"
-                :key="folder.id"
-                class="vault-folder"
-                tabindex="0"
-                role="button"
-                @click="openFolder(folder)"
-                @keydown.enter.self="openFolder(folder)"
-              >
-                <div class="vault-folder__top">
-                  <span class="vault-folder__icon" :class="`is-${folder.type}`">
-                    <el-icon><component :is="folderMeta(folder.type).icon" /></el-icon>
-                  </span>
-                  <span class="vault-folder__labels">
-                    <span class="vault-folder__tag" :class="`is-${folder.type}`">
-                      {{ folderMeta(folder.type).label }}
+            <div
+              v-for="section in folderSections"
+              :key="section.category"
+              :ref="
+                (element) => {
+                  if (section.category === 'common')
+                    commonFolderSectionRef = element as HTMLElement | null
+                }
+              "
+              class="vault-folder-section"
+              :class="{ 'vault-folder-section--common': section.category === 'common' }"
+              :aria-label="section.category === 'common' ? '通用目录' : '用户目录'"
+            >
+              <div class="vault-folder-section__heading">
+                <span>{{ section.category === 'common' ? '通用目录' : '用户目录' }}</span>
+              </div>
+              <div class="vault-folders">
+                <article
+                  v-for="folder in section.folders"
+                  :key="folder.id"
+                  class="vault-folder"
+                  tabindex="0"
+                  role="button"
+                  @click="openFolder(folder)"
+                  @keydown.enter.self="openFolder(folder)"
+                >
+                  <div class="vault-folder__top">
+                    <span class="vault-folder__icon" :class="`is-${folder.type}`">
+                      <el-icon><component :is="folderMeta(folder.type).icon" /></el-icon>
                     </span>
-                    <button
-                      type="button"
-                      class="vault-folder__favorite"
-                      :class="{ 'is-active': folder.favorite }"
-                      :aria-label="folder.favorite ? '取消收藏' : '收藏'"
-                      @click.stop="toggleFavorite(folder)"
-                      @keydown.enter.stop
-                    >
-                      <el-icon>
-                        <StarFilled v-if="folder.favorite" />
-                        <Star v-else />
-                      </el-icon>
-                    </button>
-                    <template v-if="managementMode">
+                    <span class="vault-folder__labels">
+                      <span class="vault-folder__tag" :class="`is-${folder.type}`">
+                        {{ folderMeta(folder.type).label }}
+                      </span>
                       <button
                         type="button"
-                        class="vault-folder__edit vault-edit-action"
-                        :disabled="!!deletingFolderGroupId"
-                        :aria-label="`编辑${folder.name}`"
-                        @click.stop="openFolderEdit(folder)"
+                        class="vault-folder__favorite"
+                        :class="{ 'is-active': folder.favorite }"
+                        :aria-label="folder.favorite ? '取消收藏' : '收藏'"
+                        @click.stop="toggleFavorite(folder)"
                         @keydown.enter.stop
                       >
-                        <el-icon><Edit /></el-icon>
-                      </button>
-
-                      <button
-                        type="button"
-                        class="vault-folder__delete vault-delete-action"
-                        :disabled="!!deletingFolderGroupId"
-                        :aria-label="`删除${folder.name}`"
-                        @click.stop="confirmFolderDelete(folder)"
-                        @keydown.enter.stop
-                      >
-                        <el-icon
-                          :class="{
-                            'is-loading': deletingFolderGroupId === folder.folderGroupId,
-                          }"
-                        >
-                          <Loading v-if="deletingFolderGroupId === folder.folderGroupId" />
-                          <Delete v-else />
+                        <el-icon>
+                          <StarFilled v-if="folder.favorite" />
+                          <Star v-else />
                         </el-icon>
                       </button>
-                    </template>
-                  </span>
-                </div>
+                      <template v-if="managementMode">
+                        <button
+                          type="button"
+                          class="vault-folder__edit vault-edit-action"
+                          :disabled="!!deletingFolderGroupId"
+                          :aria-label="`编辑${folder.name}`"
+                          @click.stop="openFolderEdit(folder)"
+                          @keydown.enter.stop
+                        >
+                          <el-icon><Edit /></el-icon>
+                        </button>
 
-                <h2>{{ folder.name }}</h2>
-                <p>{{ folder.description }}</p>
-
-                <footer>
-                  <span class="vault-folder__owner">
-                    <span
-                      class="vault-folder__avatar"
-                      :style="{ background: ownerColor(folder.owner) }"
-                    >
-                      {{ folder.owner.slice(0, 1) }}
+                        <button
+                          type="button"
+                          class="vault-folder__delete vault-delete-action"
+                          :disabled="!!deletingFolderGroupId"
+                          :aria-label="`删除${folder.name}`"
+                          @click.stop="confirmFolderDelete(folder)"
+                          @keydown.enter.stop
+                        >
+                          <el-icon
+                            :class="{
+                              'is-loading': deletingFolderGroupId === folder.folderGroupId,
+                            }"
+                          >
+                            <Loading v-if="deletingFolderGroupId === folder.folderGroupId" />
+                            <Delete v-else />
+                          </el-icon>
+                        </button>
+                      </template>
                     </span>
-                    {{ folder.owner }}
-                  </span>
-                  <span v-if="folder.type === 'groups'">
-                    {{ folder.groups ?? '--' }} 个密钥集
-                  </span>
-                  <span v-else>{{ folder.count ?? '--' }} 个密钥</span>
-                </footer>
-              </article>
+                  </div>
+
+                  <h2>{{ folder.name }}</h2>
+                  <p>{{ folder.description }}</p>
+
+                  <footer>
+                    <span class="vault-folder__owner">
+                      <span
+                        class="vault-folder__avatar"
+                        :style="{ background: ownerColor(folder.owner) }"
+                      >
+                        {{ folder.owner.slice(0, 1) }}
+                      </span>
+                      {{ folder.owner }}
+                    </span>
+                    <span v-if="folder.type === 'groups'">
+                      {{ folder.groups ?? '--' }} 个密钥集
+                    </span>
+                    <span v-else>{{ folder.count ?? '--' }} 个密钥</span>
+                  </footer>
+                </article>
+              </div>
             </div>
           </div>
           <div v-else-if="favoriteOnly" class="vault-empty">
@@ -3162,8 +3293,8 @@ watch(
               favoriteOnly
                 ? `已加载 ${visibleFolders.length} 个收藏配置目录`
                 : folderHasMore
-                  ? `已加载 ${folders.length} / ${folderTotal} 个配置目录`
-                  : `已全部加载 ${folderTotal} 个配置目录`
+                  ? `已加载 ${folders.length} / ${totalFolderCount} 个目录`
+                  : `已全部加载 ${folders.length} 个目录`
             }}</span>
             <el-button
               v-if="folderHasMore"
@@ -5568,6 +5699,29 @@ watch(
   width: 100%;
   padding-bottom: 4px;
   overflow: visible;
+}
+
+.vault-folder-section {
+  &--common {
+    margin-bottom: 14px;
+  }
+
+  &__heading {
+    display: flex;
+    align-items: center;
+    height: var(--folder-section-heading-height);
+    padding-bottom: 12px;
+    gap: 12px;
+    color: var(--v-text-secondary);
+    font-size: 12px;
+
+    &::after {
+      height: 1px;
+      flex: 1;
+      background: var(--v-divider);
+      content: '';
+    }
+  }
 }
 
 .vault-folders {
