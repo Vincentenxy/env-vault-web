@@ -1,5 +1,4 @@
 /* Design tokens — 单一来源,所有页面/组件统一引用。
-   Infisical 风:深侧栏 + 浅主区,紫主色 accent,紧凑密度。
    亮 / 暗 两套值分别在 :root 和 .dark 下定义,
    切换时由 useThemeStore 给 <html> 加 .dark class 来切换。 */
 
@@ -11,16 +10,17 @@
   /* 页面整体底色(比 surface 略深一档,营造层次) */
   --v-app-bg: #f1f5f9;
 
-  /* 侧栏深色板 — 亮色模式下也是深侧栏(Infisical 风) */
-  --v-sidebar-bg: #0f172a;
-  --v-sidebar-bg-hover: #1e293b;
-  --v-sidebar-bg-active: rgba(37, 99, 235, 0.18);
-  --v-sidebar-border: rgba(255, 255, 255, 0.06);
-  --v-sidebar-text: #94a3b8;
+  --v-sidebar-bg: #ffffff;
+  --v-sidebar-bg-hover: #f1f5f9;
+  --v-sidebar-bg-active: var(--v-brand-primary);
+  --v-sidebar-border: #e2e8f0;
+  --v-sidebar-brand: #0f172a;
+  --v-sidebar-caption: #64748b;
+  --v-sidebar-text: #475569;
   --v-sidebar-text-active: #ffffff;
-  --v-sidebar-text-hover: #e2e8f0;
+  --v-sidebar-text-hover: #0f172a;
   --v-sidebar-icon: #64748b;
-  --v-sidebar-icon-active: #60a5fa;
+  --v-sidebar-icon-active: #ffffff;
 
   /* 卡片/表格/弹窗浅色板 */
   --v-surface-bg: #ffffff;
@@ -90,15 +90,17 @@
   --v-app-bg: #09090b;
 
   /* 侧栏保持深色,只是与主区拉开层次 */
-  --v-sidebar-bg: #0a0a0c;
-  --v-sidebar-bg-hover: #18181b;
-  --v-sidebar-bg-active: rgba(124, 58, 237, 0.18);
-  --v-sidebar-border: rgba(255, 255, 255, 0.05);
-  --v-sidebar-text: #a1a1aa;
+  --v-sidebar-bg: #020817;
+  --v-sidebar-bg-hover: #111c31;
+  --v-sidebar-bg-active: var(--v-brand-primary);
+  --v-sidebar-border: rgba(148, 163, 184, 0.12);
+  --v-sidebar-brand: #ffffff;
+  --v-sidebar-caption: #94a3b8;
+  --v-sidebar-text: #94a3b8;
   --v-sidebar-text-active: #ffffff;
-  --v-sidebar-text-hover: #e4e4e7;
-  --v-sidebar-icon: #71717a;
-  --v-sidebar-icon-active: #a78bfa;
+  --v-sidebar-text-hover: #e2e8f0;
+  --v-sidebar-icon: #94a3b8;
+  --v-sidebar-icon-active: #ffffff;
 
   --v-surface-bg: #18181b;
   --v-surface-border: #27272a;

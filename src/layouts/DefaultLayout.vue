@@ -146,6 +146,7 @@ async function onLogout(): Promise<void> {
           type="button"
           class="ops-layout__icon-button"
           :aria-label="theme.mode === 'dark' ? '切换为亮色' : '切换为暗色'"
+          :aria-pressed="theme.mode === 'dark'"
           @click="theme.toggleMode"
         >
           <Sun v-if="theme.mode === 'dark'" :size="16" :stroke-width="1.7" />
@@ -189,6 +190,7 @@ async function onLogout(): Promise<void> {
           type="button"
           class="ops-layout__nav-item"
           :class="{ 'is-active': isNavActive(item.path) }"
+          :aria-current="isNavActive(item.path) ? 'page' : undefined"
           :aria-label="item.label"
           :title="item.label"
           @click="navigate(item.path)"
@@ -223,6 +225,7 @@ async function onLogout(): Promise<void> {
             type="button"
             class="ops-layout__nav-item ops-layout__nav-item--child"
             :class="{ 'is-active': isNavActive('/app/settings/profile') }"
+            :aria-current="isNavActive('/app/settings/profile') ? 'page' : undefined"
             aria-label="个人信息"
             title="个人信息"
             @click="navigate('/app/settings/profile')"
@@ -235,6 +238,7 @@ async function onLogout(): Promise<void> {
             type="button"
             class="ops-layout__nav-item ops-layout__nav-item--child"
             :class="{ 'is-active': isNavActive('/app/settings/users') }"
+            :aria-current="isNavActive('/app/settings/users') ? 'page' : undefined"
             aria-label="用户管理"
             title="用户管理"
             @click="navigate('/app/settings/users')"
@@ -268,8 +272,9 @@ async function onLogout(): Promise<void> {
 
   &__brand,
   &__sidebar {
-    background: #020817;
-    color: #fff;
+    background: var(--v-sidebar-bg);
+    border-right: 1px solid var(--v-sidebar-border);
+    color: var(--v-sidebar-text);
   }
 
   &__brand {
@@ -277,7 +282,8 @@ async function onLogout(): Promise<void> {
     align-items: center;
     gap: 8px;
     padding: 0 20px;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+    border-bottom: 1px solid var(--v-sidebar-border);
+    color: var(--v-sidebar-brand);
 
     strong {
       font-size: 14px;
@@ -477,7 +483,7 @@ async function onLogout(): Promise<void> {
 
   &__nav-caption {
     padding: 16px 22px 7px;
-    color: #475569;
+    color: var(--v-sidebar-caption);
     font-size: 11px;
   }
 
@@ -502,7 +508,7 @@ async function onLogout(): Promise<void> {
     border: 0;
     border-radius: 7px;
     background: transparent;
-    color: #94a3b8;
+    color: var(--v-sidebar-text);
     font: inherit;
     font-size: 14px;
     text-align: left;
@@ -511,25 +517,44 @@ async function onLogout(): Promise<void> {
       background 0.15s ease,
       color 0.15s ease;
 
-    &:hover {
-      color: #e2e8f0;
-      background: #111c31;
+    &:hover,
+    &:focus-visible {
+      color: var(--v-sidebar-text-hover);
+      background: var(--v-sidebar-bg-hover);
+
+      .el-icon {
+        color: inherit;
+      }
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--v-brand-primary);
+      outline-offset: 2px;
     }
 
     &.is-active {
-      color: #fff;
-      background: var(--v-brand-primary);
+      color: var(--v-sidebar-text-active);
+      background: var(--v-sidebar-bg-active);
       box-shadow: 0 5px 14px rgba(37, 99, 235, 0.2);
+
+      .el-icon {
+        color: var(--v-sidebar-icon-active);
+      }
     }
 
     .el-icon {
       flex: 0 0 auto;
       font-size: 17px;
+      color: var(--v-sidebar-icon);
     }
 
     &--parent.is-parent-active {
-      color: #e2e8f0;
-      background: #111c31;
+      color: var(--v-sidebar-text-hover);
+      background: var(--v-sidebar-bg-hover);
+
+      .el-icon {
+        color: inherit;
+      }
     }
 
     &--child {
