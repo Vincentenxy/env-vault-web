@@ -10,7 +10,7 @@ import {
   Check,
   CollectionTag,
   Delete,
-  Edit,
+  Document,
   Folder,
   OfficeBuilding,
   Plus,
@@ -732,6 +732,7 @@ async function confirmResourceDelete(item: ResourceItem): Promise<void> {
 
 const createDialogVisible = ref(false)
 const editDialogVisible = ref(false)
+const resourceReadOnly = ref(false)
 const editSubmitting = ref(false)
 const editingResource = ref<ResourceItem | null>(null)
 const editingResourceLevel = ref<ResourceLevel>('tenant')
@@ -740,7 +741,8 @@ function openCreate(): void {
   createDialogVisible.value = true
 }
 
-function openResourceEdit(item: ResourceItem): void {
+function openResourceDetails(item: ResourceItem): void {
+  resourceReadOnly.value = true
   editingResource.value = item
   editingResourceLevel.value = resourceLevel.value
   editDialogVisible.value = true
@@ -748,7 +750,7 @@ function openResourceEdit(item: ResourceItem): void {
 
 async function submitResourceEdit(payload: ResourceEditPayload): Promise<void> {
   const resource = editingResource.value
-  if (!resource || editSubmitting.value) return
+  if (resourceReadOnly.value || !resource || editSubmitting.value) return
 
   editSubmitting.value = true
   try {
@@ -1039,11 +1041,7 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <main
-      ref="organizationContentRef"
-      v-loading="contentLoading"
-      class="organization-content"
-    >
+    <main ref="organizationContentRef" v-loading="contentLoading" class="organization-content">
       <div v-if="hasVisibleResources" class="resource-grid">
         <article
           v-for="item in visibleResources"
@@ -1060,6 +1058,15 @@ onBeforeUnmount(() => {
             <span class="resource-card__actions">
               <button
                 type="button"
+                class="resource-card__detail"
+                :aria-label="`查看${item.name}详情`"
+                @click.stop="openResourceDetails(item)"
+                @keydown.enter.stop
+              >
+                <el-icon><Document /></el-icon>
+              </button>
+              <button
+                type="button"
                 class="resource-card__favorite"
                 :class="{ 'is-active': favoriteIds.has(item.id) }"
                 :aria-label="favoriteIds.has(item.id) ? '取消收藏' : '收藏'"
@@ -1072,27 +1079,16 @@ onBeforeUnmount(() => {
                 </el-icon>
               </button>
 
-              <template v-if="managementMode">
-                <button
-                  type="button"
-                  class="resource-card__edit vault-edit-action"
-                  :aria-label="`编辑${item.name}`"
-                  @click.stop="openResourceEdit(item)"
-                  @keydown.enter.stop
-                >
-                  <el-icon><Edit /></el-icon>
-                </button>
-
-                <button
-                  type="button"
-                  class="resource-card__delete vault-delete-action"
-                  :aria-label="`删除${item.name}`"
-                  @click.stop="confirmResourceDelete(item)"
-                  @keydown.enter.stop
-                >
-                  <el-icon><Delete /></el-icon>
-                </button>
-              </template>
+              <button
+                v-if="managementMode"
+                type="button"
+                class="resource-card__delete vault-delete-action"
+                :aria-label="`删除${item.name}`"
+                @click.stop="confirmResourceDelete(item)"
+                @keydown.enter.stop
+              >
+                <el-icon><Delete /></el-icon>
+              </button>
             </span>
           </div>
 
@@ -1184,6 +1180,7 @@ onBeforeUnmount(() => {
     <ResourceEditDialog
       :key="editingResource?.id ?? 'resource-edit'"
       v-model="editDialogVisible"
+      :read-only="resourceReadOnly"
       :resource-type="editingResourceLevel"
       :resource-id="editingResource?.id ?? ''"
       :name="editingResource?.name ?? ''"
@@ -1193,6 +1190,7 @@ onBeforeUnmount(() => {
       :tenant-id="editingResource ? resourceTenantId(editingResource) : ''"
       :org-id="editingResource ? resourceOrgId(editingResource) : ''"
       :submitting="editSubmitting"
+      @edit="resourceReadOnly = false"
       @submit="submitResourceEdit"
       @members-changed="loadCurrentLevel"
     />
@@ -1420,7 +1418,7 @@ onBeforeUnmount(() => {
     gap: 2px;
   }
 
-  &__edit,
+  &__detail,
   &__delete,
   &__favorite {
     width: 26px;
@@ -1436,13 +1434,13 @@ onBeforeUnmount(() => {
     cursor: pointer;
   }
 
-  &__edit {
-    color: #176dfb;
-
+  &__detail {
     &:hover,
     &:focus-visible {
-      background: rgba(23, 109, 251, 0.08);
-      outline: none;
+      color: var(--v-brand-primary);
+      background: var(--v-surface-row-hover);
+      outline: 2px solid var(--v-brand-primary);
+      outline-offset: 1px;
     }
   }
 
@@ -1806,6 +1804,5 @@ onBeforeUnmount(() => {
   .organization-content {
     padding: 14px 16px 22px;
   }
-
 }
 </style>

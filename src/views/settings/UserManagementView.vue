@@ -1,16 +1,27 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useNavigationMemory } from '@/composables/use-navigation-memory'
-import { Building2, KeyRound, RefreshCw, Search, Settings, UsersRound } from '@lucide/vue'
+import {
+  Building2,
+  KeyRound,
+  RefreshCw,
+  ScrollText,
+  Search,
+  Settings,
+  UsersRound,
+} from '@lucide/vue'
 import { listTenants, type Tenant } from '@/api/tenant'
 import { listManagedUsers, type UserManagementListItem } from '@/api/user'
 import { formatDateTime } from '@/utils/format'
+import { auditResourceLocation } from '@/utils/audit-route'
 import LockedUserSecretDialog from './components/LockedUserSecretDialog.vue'
 import UserEditDialog from './components/UserEditDialog.vue'
 
 defineOptions({ name: 'UserManagementView' })
 
 const tenantPageSize = 200
+const router = useRouter()
 const navigation = useNavigationMemory('users', { tenantId: '' })
 const tenantOptions = ref<Tenant[]>([])
 const selectedTenantID = ref(navigation.saved.tenantId)
@@ -146,6 +157,15 @@ function openUserEdit(user: UserManagementListItem): void {
   editDialogVisible.value = true
 }
 
+function openUserAudit(user: UserManagementListItem): void {
+  if (!user.userId.trim()) return
+  void router.push(auditResourceLocation('user', user.userId))
+}
+
+function openListAudit(): void {
+  void router.push(auditResourceLocation('userCollection', selectedTenantID.value || 'all'))
+}
+
 function handleUserSaved(): void {
   void loadUsers()
 }
@@ -199,6 +219,17 @@ onMounted(() => {
         >
           <Search :size="16" :stroke-width="1.8" />
         </button>
+
+        <el-tooltip content="列表查询记录" placement="top">
+          <button
+            type="button"
+            class="user-management-round-action"
+            aria-label="查看用户列表查询记录"
+            @click="openListAudit"
+          >
+            <ScrollText :size="16" :stroke-width="1.8" />
+          </button>
+        </el-tooltip>
 
         <button
           type="button"
@@ -277,9 +308,20 @@ onMounted(() => {
             <el-table-column label="更新时间" width="168">
               <template #default="{ row }">{{ formatDateTime(row.updateAt) || '—' }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="148" fixed="right" align="center">
+            <el-table-column label="操作" width="184" fixed="right" align="center">
               <template #default="{ row }">
                 <div class="managed-user-actions">
+                  <el-tooltip content="操作记录" placement="top">
+                    <button
+                      type="button"
+                      class="managed-user-settings-action"
+                      :disabled="!row.userId"
+                      :aria-label="`查看${row.nickname || row.username || row.userId}的操作记录`"
+                      @click="openUserAudit(asManagedUser(row))"
+                    >
+                      <ScrollText :size="16" :stroke-width="1.8" />
+                    </button>
+                  </el-tooltip>
                   <button
                     type="button"
                     class="managed-user-settings-action"
@@ -564,12 +606,17 @@ onMounted(() => {
     color 0.18s ease,
     background-color 0.18s ease;
 
-  &:hover,
-  &:focus-visible {
+  &:hover:not(:disabled),
+  &:focus-visible:not(:disabled) {
     border-color: rgb(23, 93, 251);
     background: rgba(23, 93, 251, 0.07);
     color: rgb(23, 93, 251);
     outline: none;
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.48;
   }
 }
 

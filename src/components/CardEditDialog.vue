@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
+import { Edit } from '@element-plus/icons-vue'
 import ManagerSelect from '@/components/ManagerSelect.vue'
 import ResourceAuditPanel from '@/components/ResourceAuditPanel.vue'
 import { isValidKeyPattern, type EditKeyPatternMode } from '@/utils/secret-key-pattern'
@@ -19,7 +20,9 @@ const props = withDefaults(
     name: string
     remark: string
     submitting: boolean
+    readOnly?: boolean
     managerId?: string
+    managerName?: string
     managerProjectId?: string
     showKeyPattern?: boolean
     keyPattern?: string
@@ -28,7 +31,9 @@ const props = withDefaults(
     auditResourceName?: string
   }>(),
   {
+    readOnly: false,
     managerId: '',
+    managerName: '',
     managerProjectId: '',
     showKeyPattern: false,
     keyPattern: '',
@@ -40,6 +45,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
+  edit: []
   submit: [payload: CardEditPayload]
 }>()
 
@@ -103,6 +109,7 @@ function resetForm(): void {
 }
 
 async function submit(): Promise<void> {
+  if (props.readOnly) return
   if (props.submitting || activeTab.value !== 'basic' || !hasChanges.value) return
   const valid = await formRef.value?.validate().catch(() => false)
   if (!valid) return
@@ -128,8 +135,10 @@ watch(
 <template>
   <el-dialog
     v-model="dialogVisible"
+    :title="title"
     :width="hasAuditTab ? '860px' : '620px'"
     class="vault-card-edit-dialog"
+    :class="{ 'vault-card-edit-dialog--details': readOnly }"
     :close-on-click-modal="false"
     :close-on-press-escape="!submitting"
     :show-close="!submitting"
@@ -159,6 +168,16 @@ watch(
         </button>
       </nav>
       <strong v-else class="vault-card-edit-dialog__title">{{ title }}</strong>
+      <button
+        v-if="readOnly"
+        type="button"
+        class="vault-card-edit-dialog__header-edit"
+        aria-label="编辑"
+        :disabled="submitting"
+        @click="emit('edit')"
+      >
+        <el-icon><Edit /></el-icon>
+      </button>
     </template>
 
     <div class="vault-card-edit-dialog__body">
@@ -167,6 +186,7 @@ watch(
         ref="formRef"
         :model="form"
         :rules="rules"
+        :hide-required-asterisk="readOnly"
         label-position="left"
         label-width="96px"
         require-asterisk-position="right"
@@ -176,15 +196,19 @@ watch(
           <el-input
             v-model="form.name"
             maxlength="64"
-            show-word-limit
+            :show-word-limit="!readOnly"
+            :readonly="readOnly"
             placeholder="请输入名称"
             :disabled="submitting"
           />
         </el-form-item>
         <el-form-item v-if="managerProjectId" label="管理员" prop="managerId">
+          <el-input v-if="readOnly" :model-value="managerName || managerId || '—'" readonly />
           <ManagerSelect
+            v-else
             v-model="form.managerId"
             :project-id="managerProjectId"
+            :selected-name="managerName"
             :disabled="submitting"
           />
         </el-form-item>
@@ -194,13 +218,14 @@ watch(
             type="textarea"
             :rows="4"
             maxlength="256"
-            show-word-limit
+            :show-word-limit="!readOnly"
+            :readonly="readOnly"
             placeholder="可选，填写相关说明"
             :disabled="submitting"
           />
         </el-form-item>
         <el-form-item v-if="showKeyPattern" label="Key 校验">
-          <el-radio-group v-model="form.keyPatternMode" :disabled="submitting">
+          <el-radio-group v-model="form.keyPatternMode" :disabled="readOnly || submitting">
             <el-radio-button value="none">关闭校验</el-radio-button>
             <el-radio-button value="custom">自定义表达式</el-radio-button>
           </el-radio-group>
@@ -212,6 +237,7 @@ watch(
         >
           <el-input
             v-model="form.keyPattern"
+            :readonly="readOnly"
             placeholder="^[A-Z][A-Z0-9_]*$"
             :disabled="submitting"
           />
@@ -231,10 +257,10 @@ watch(
 
     <template #footer>
       <el-button :disabled="submitting" @click="dialogVisible = false">
-        {{ activeTab === 'basic' ? '取消' : '关闭' }}
+        {{ !readOnly && activeTab === 'basic' ? '取消' : '关闭' }}
       </el-button>
       <el-button
-        v-if="activeTab === 'basic'"
+        v-if="!readOnly && activeTab === 'basic'"
         type="primary"
         :loading="submitting"
         :disabled="!hasChanges"

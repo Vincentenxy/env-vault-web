@@ -33,6 +33,7 @@ export interface AuditRecord {
   failureCode: string
   failureReason: string
   correlationId: string
+  traceId?: string
   protocolStatus: string
   createBy: string
   createByName: string

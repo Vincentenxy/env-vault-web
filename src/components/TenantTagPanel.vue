@@ -6,7 +6,10 @@ import { updateTag, deleteTag, listTags, type Tag, type TagForm } from '@/api/ta
 import { ApiError } from '@/types/api'
 import TenantTagCreatePanel from './TenantTagCreatePanel.vue'
 
-const props = defineProps<{ tenantId: string; active: boolean }>()
+const props = withDefaults(
+  defineProps<{ tenantId: string; active: boolean; readOnly?: boolean }>(),
+  { readOnly: false },
+)
 const emit = defineEmits<{ busy: [value: boolean] }>()
 const items = ref<Tag[]>([])
 const loading = ref(false)
@@ -48,6 +51,16 @@ let timer: ReturnType<typeof setTimeout> | undefined
 
 watch(busy, (value) => emit('busy', value), { flush: 'sync' })
 
+watch(
+  () => props.readOnly,
+  (readOnly) => {
+    if (readOnly) {
+      creating.value = false
+      dialogVisible.value = false
+    }
+  },
+)
+
 async function load(): Promise<void> {
   if (!props.active || !props.tenantId) return
   const request = ++sequence
@@ -86,7 +99,7 @@ function search(): void {
 }
 
 function openCreate(): void {
-  if (busy.value) return
+  if (props.readOnly || busy.value) return
   creating.value = true
   createPanel.value?.open()
 }
@@ -97,7 +110,7 @@ function onCreated(): void {
 }
 
 function openEditor(tag?: Tag): void {
-  if (!tag || busy.value) return
+  if (props.readOnly || !tag || busy.value) return
   editingId.value = tag.id
   Object.assign(form, {
     code: tag?.code ?? '',
@@ -110,7 +123,7 @@ function openEditor(tag?: Tag): void {
 }
 
 async function save(): Promise<void> {
-  if (submitting.value) return
+  if (props.readOnly || submitting.value) return
   submitting.value = true
   try {
     if (!(await formRef.value?.validate().catch(() => false))) return
@@ -132,7 +145,7 @@ async function save(): Promise<void> {
 }
 
 async function remove(tag?: Tag): Promise<void> {
-  if (!tag || busy.value) return
+  if (props.readOnly || !tag || busy.value) return
   confirming.value = true
   try {
     await ElMessageBox.confirm(
@@ -190,6 +203,7 @@ onBeforeUnmount(() => {
 <template>
   <section class="tenant-tags" :class="{ 'tenant-tags--list': !creating }">
     <TenantTagCreatePanel
+      v-if="!readOnly"
       ref="createPanel"
       v-show="creating"
       :tenant-id="tenantId"
@@ -214,6 +228,7 @@ onBeforeUnmount(() => {
             @input="search"
           />
           <button
+            v-if="!readOnly"
             class="resource-members__add"
             type="button"
             aria-label="新建 Tag"
@@ -241,7 +256,7 @@ onBeforeUnmount(() => {
               }}</el-tag></template
             ></el-table-column
           >
-          <el-table-column label="操作" width="110" fixed="right"
+          <el-table-column v-if="!readOnly" label="操作" width="110" fixed="right"
             ><template #default="{ row, $index }">
               <div class="tenant-tags__actions">
                 <el-button

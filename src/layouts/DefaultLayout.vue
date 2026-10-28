@@ -9,6 +9,7 @@ import {
   LogOut,
   Moon,
   Search,
+  ScrollText,
   Settings,
   Sun,
   UserRound,
@@ -39,6 +40,7 @@ const navItems: NavItem[] = [
   { path: '/app/organizations', label: '组织管理', icon: OfficeBuilding },
   { path: '/app/secrets', label: '秘钥管理', icon: KeyRound },
   { path: '/app/secretSearch', label: '秘钥检索', icon: Search },
+  { path: '/app/audit', label: '审计日志', icon: ScrollText },
 ]
 const userName = computed(() => {
   const user = auth.currentUser

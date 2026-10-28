@@ -24,6 +24,7 @@ import {
   Close,
   CopyDocument,
   Delete,
+  Document,
   Edit,
   FolderOpened,
   Hide,
@@ -331,6 +332,7 @@ const createFolderForm = reactive({
   customKeyPattern: '',
 })
 const folderEditDialogVisible = ref(false)
+const folderReadOnly = ref(false)
 const folderEditSubmitting = ref(false)
 const editingFolder = ref<VaultFolder | null>(null)
 const deletingFolderGroupId = ref('')
@@ -1706,14 +1708,15 @@ function openCreateFolder(parentFolder: VaultFolder | null = null): void {
   createFolderDialogVisible.value = true
 }
 
-function openFolderEdit(folder: VaultFolder): void {
+function openFolderDetails(folder: VaultFolder): void {
+  folderReadOnly.value = true
   editingFolder.value = folder
   folderEditDialogVisible.value = true
 }
 
 async function submitFolderEdit(payload: CardEditPayload): Promise<void> {
   const folder = editingFolder.value
-  if (!folder || folderEditSubmitting.value) return
+  if (folderReadOnly.value || !folder || folderEditSubmitting.value) return
   if (!folder.folderGroupId) {
     ElMessage.error('当前配置目录缺少 groupId，无法更新')
     return
@@ -3217,6 +3220,15 @@ watch(
                       </span>
                       <button
                         type="button"
+                        class="vault-folder__detail"
+                        :aria-label="`查看${folder.name}详情`"
+                        @click.stop="openFolderDetails(folder)"
+                        @keydown.enter.stop
+                      >
+                        <el-icon><Document /></el-icon>
+                      </button>
+                      <button
+                        type="button"
                         class="vault-folder__favorite"
                         :class="{ 'is-active': folder.favorite }"
                         :aria-label="folder.favorite ? '取消收藏' : '收藏'"
@@ -3228,36 +3240,24 @@ watch(
                           <Star v-else />
                         </el-icon>
                       </button>
-                      <template v-if="managementMode">
-                        <button
-                          type="button"
-                          class="vault-folder__edit vault-edit-action"
-                          :disabled="!!deletingFolderGroupId"
-                          :aria-label="`编辑${folder.name}`"
-                          @click.stop="openFolderEdit(folder)"
-                          @keydown.enter.stop
+                      <button
+                        v-if="managementMode"
+                        type="button"
+                        class="vault-folder__delete vault-delete-action"
+                        :disabled="!!deletingFolderGroupId"
+                        :aria-label="`删除${folder.name}`"
+                        @click.stop="confirmFolderDelete(folder)"
+                        @keydown.enter.stop
+                      >
+                        <el-icon
+                          :class="{
+                            'is-loading': deletingFolderGroupId === folder.folderGroupId,
+                          }"
                         >
-                          <el-icon><Edit /></el-icon>
-                        </button>
-
-                        <button
-                          type="button"
-                          class="vault-folder__delete vault-delete-action"
-                          :disabled="!!deletingFolderGroupId"
-                          :aria-label="`删除${folder.name}`"
-                          @click.stop="confirmFolderDelete(folder)"
-                          @keydown.enter.stop
-                        >
-                          <el-icon
-                            :class="{
-                              'is-loading': deletingFolderGroupId === folder.folderGroupId,
-                            }"
-                          >
-                            <Loading v-if="deletingFolderGroupId === folder.folderGroupId" />
-                            <Delete v-else />
-                          </el-icon>
-                        </button>
-                      </template>
+                          <Loading v-if="deletingFolderGroupId === folder.folderGroupId" />
+                          <Delete v-else />
+                        </el-icon>
+                      </button>
                     </span>
                   </div>
 
@@ -3467,34 +3467,29 @@ watch(
               </div>
               <span>{{ group.count ?? '--' }} 个密钥</span>
               <span class="vault-groups__actions">
-                <template v-if="managementMode">
-                  <button
-                    type="button"
-                    class="vault-groups__edit vault-edit-action"
-                    :disabled="!!deletingFolderGroupId"
-                    :aria-label="`编辑${group.name}`"
-                    @click.stop="openFolderEdit(group)"
-                    @keydown.enter.stop
-                  >
-                    <el-icon><Edit /></el-icon>
-                  </button>
-
-                  <button
-                    type="button"
-                    class="vault-groups__delete vault-delete-action"
-                    :disabled="!!deletingFolderGroupId"
-                    :aria-label="`删除${group.name}`"
-                    @click.stop="confirmFolderDelete(group)"
-                    @keydown.enter.stop
-                  >
-                    <el-icon
-                      :class="{ 'is-loading': deletingFolderGroupId === group.folderGroupId }"
-                    >
-                      <Loading v-if="deletingFolderGroupId === group.folderGroupId" />
-                      <Delete v-else />
-                    </el-icon>
-                  </button>
-                </template>
+                <button
+                  type="button"
+                  class="vault-groups__detail"
+                  :aria-label="`查看${group.name}详情`"
+                  @click.stop="openFolderDetails(group)"
+                  @keydown.enter.stop
+                >
+                  <el-icon><Document /></el-icon>
+                </button>
+                <button
+                  v-if="managementMode"
+                  type="button"
+                  class="vault-groups__delete vault-delete-action"
+                  :disabled="!!deletingFolderGroupId"
+                  :aria-label="`删除${group.name}`"
+                  @click.stop="confirmFolderDelete(group)"
+                  @keydown.enter.stop
+                >
+                  <el-icon :class="{ 'is-loading': deletingFolderGroupId === group.folderGroupId }">
+                    <Loading v-if="deletingFolderGroupId === group.folderGroupId" />
+                    <Delete v-else />
+                  </el-icon>
+                </button>
                 <el-icon><ArrowRight /></el-icon>
               </span>
             </article>
@@ -4083,10 +4078,12 @@ watch(
 
     <CardEditDialog
       v-model="folderEditDialogVisible"
-      title="编辑配置目录"
+      :title="folderReadOnly ? '配置目录详情' : '编辑配置目录'"
+      :read-only="folderReadOnly"
       :name="editingFolder?.name ?? ''"
       :remark="editingFolder?.remark ?? ''"
       :manager-id="editingFolder?.managerId ?? ''"
+      :manager-name="editingFolder?.owner ?? ''"
       :manager-project-id="editingFolder?.projectId ?? ''"
       :key-pattern="editingFolder?.keyPattern ?? ''"
       show-key-pattern
@@ -4094,6 +4091,7 @@ watch(
       :audit-resource-id="editingFolder?.folderGroupId ?? ''"
       :audit-resource-name="editingFolder?.name ?? ''"
       :submitting="folderEditSubmitting"
+      @edit="folderReadOnly = false"
       @submit="submitFolderEdit"
     />
 
@@ -5791,15 +5789,20 @@ watch(
 
   &__top {
     justify-content: space-between;
+    gap: 6px;
     margin-bottom: 12px;
   }
 
   &__labels {
-    gap: 7px;
+    min-width: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 4px;
   }
 
   &__icon {
     display: inline-flex;
+    flex-shrink: 0;
     align-items: center;
     justify-content: center;
     width: 34px;
@@ -5901,7 +5904,7 @@ watch(
     }
   }
 
-  &__edit,
+  &__detail,
   &__delete {
     display: inline-flex;
     align-items: center;
@@ -5922,13 +5925,15 @@ watch(
     }
   }
 
-  &__edit {
-    color: #176dfb;
+  &__detail {
+    color: var(--v-text-tertiary);
 
-    &:hover:not(:disabled),
-    &:focus-visible:not(:disabled) {
-      background: rgba(23, 109, 251, 0.08);
-      outline: none;
+    &:hover,
+    &:focus-visible {
+      color: var(--v-brand-primary);
+      background: var(--v-surface-row-hover);
+      outline: 2px solid var(--v-brand-primary);
+      outline-offset: 1px;
     }
   }
 
@@ -7123,7 +7128,7 @@ watch(
 
   article {
     display: grid;
-    grid-template-columns: 40px minmax(0, 1fr) auto 52px;
+    grid-template-columns: 40px minmax(0, 1fr) auto;
     align-items: center;
     gap: 12px;
     min-height: 100px;
@@ -7169,6 +7174,7 @@ watch(
   }
 
   &__actions {
+    grid-column: 2 / -1;
     display: inline-flex;
     align-items: center;
     justify-content: flex-end;
@@ -7176,7 +7182,7 @@ watch(
     color: var(--v-text-tertiary);
   }
 
-  &__edit,
+  &__detail,
   &__delete {
     width: 26px;
     height: 26px;
@@ -7195,13 +7201,15 @@ watch(
     }
   }
 
-  &__edit {
-    color: #176dfb;
+  &__detail {
+    color: var(--v-text-tertiary);
 
-    &:hover:not(:disabled),
-    &:focus-visible:not(:disabled) {
-      background: rgba(23, 109, 251, 0.08);
-      outline: none;
+    &:hover,
+    &:focus-visible {
+      color: var(--v-brand-primary);
+      background: var(--v-surface-row-hover);
+      outline: 2px solid var(--v-brand-primary);
+      outline-offset: 1px;
     }
   }
 

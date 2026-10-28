@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import PageRefreshButton from '@/components/PageRefreshButton.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import {
   Eye,
@@ -11,6 +12,7 @@ import {
   Pencil,
   Plus,
   Search,
+  ScrollText,
   Trash2,
 } from '@lucide/vue'
 import {
@@ -25,8 +27,15 @@ import {
 } from '@/api/personal-secret'
 import { formatDateTime } from '@/utils/format'
 import { notify } from '@/utils/notify'
+import { auditResourceLocation } from '@/utils/audit-route'
 
 type FormMode = 'create' | 'edit'
+const router = useRouter()
+
+function openAudit(item: PersonalSecret): void {
+  if (!item.id) return
+  void router.push(auditResourceLocation('personalSecret', item.id))
+}
 
 const listLoading = ref(false)
 const items = ref<PersonalSecret[]>([])
@@ -524,9 +533,19 @@ onBeforeUnmount(() => {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="126" fixed="right" align="right">
+        <el-table-column label="操作" width="184" fixed="right" align="right">
           <template #default="{ row }">
             <div class="personal-secret-operations">
+              <el-tooltip content="操作记录" placement="top">
+                <el-button
+                  text
+                  circle
+                  :aria-label="`查看${row.name}的操作记录`"
+                  @click="openAudit(asPersonalSecret(row))"
+                >
+                  <ScrollText :size="16" :stroke-width="1.8" />
+                </el-button>
+              </el-tooltip>
               <el-button text circle aria-label="编辑" @click="openEdit(asPersonalSecret(row))">
                 <Pencil :size="16" :stroke-width="1.8" />
               </el-button>
@@ -1051,15 +1070,22 @@ onBeforeUnmount(() => {
     width: 28px;
     height: 28px;
     margin: 0;
+    border: 1px solid var(--v-surface-border);
+    background: var(--v-surface-bg);
     color: var(--v-text-secondary);
 
     &:hover,
     &:focus-visible {
       color: var(--el-color-primary);
+      border-color: var(--el-color-primary);
     }
 
     &.is-danger {
       color: var(--v-color-danger);
+      &:hover,
+      &:focus-visible {
+        border-color: var(--v-color-danger);
+      }
     }
   }
 }

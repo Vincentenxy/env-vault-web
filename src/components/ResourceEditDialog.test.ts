@@ -5,6 +5,7 @@ import ElementPlus from 'element-plus'
 import ResourceEditDialog, { type EditableResourceType } from './ResourceEditDialog.vue'
 import { allocateUsers, listUsers, type UserListItem } from '@/api/user'
 import { ApiError } from '@/types/api'
+import { createEnvironment, listEnvironments, updateEnvironment } from '@/api/env'
 
 vi.mock('@/api/user', () => ({ allocateUsers: vi.fn(), listUsers: vi.fn() }))
 vi.mock('@/api/env', () => ({
@@ -25,15 +26,17 @@ const candidates = [
 const response = (list: UserListItem[]) => ({ list, total: list.length, pageNum: 1, pageSize: 100 })
 const mounted: ReturnType<typeof mount>[] = []
 
-function dialog(resourceType: EditableResourceType = 'tenant') {
+function dialog(resourceType: EditableResourceType = 'tenant', readOnly = false) {
   const wrapper = mount(ResourceEditDialog, {
     props: {
       modelValue: true,
+      readOnly,
       resourceType,
       resourceId: `${resourceType}-1`,
       name: '测试资源',
       remark: '',
       managerId: 'manager',
+      managerName: '负责人',
       tenantId: 'tenant-1',
       orgId: 'org-1',
       submitting: false,
@@ -79,6 +82,75 @@ afterEach(() => {
 })
 
 describe('ResourceEditDialog member pages', () => {
+  it.each(['tenant', 'organization', 'project'] as const)(
+    'shows %s details and members without mutation controls',
+    async (resourceType) => {
+      const wrapper = dialog(resourceType, true)
+      await flushPromises()
+      expect(wrapper.get<HTMLInputElement>('.tenant-edit-dialog__form input').element.value).toBe(
+        '测试资源',
+      )
+      expect(wrapper.get('.tenant-edit-dialog__form input').attributes('readonly')).toBeDefined()
+      expect(wrapper.get('.tenant-edit-dialog__form textarea').attributes('readonly')).toBeDefined()
+      expect(wrapper.findAll('input').some((input) => input.element.value === '负责人')).toBe(true)
+      expect(button(wrapper, '保存')).toBeUndefined()
+      expect(button(wrapper, '关闭')).toBeDefined()
+      await openUsers(wrapper)
+      expect(listUsers).toHaveBeenCalledWith(
+        resourceType === 'tenant'
+          ? { tenantId: 'tenant-1' }
+          : resourceType === 'organization'
+            ? { orgId: 'organization-1' }
+            : { projectId: 'project-1' },
+      )
+      expect(wrapper.find('[aria-label="添加成员"]').exists()).toBe(false)
+      expect(wrapper.find('.resource-members__remove').exists()).toBe(false)
+      expect(allocateUsers).not.toHaveBeenCalled()
+      expect(button(wrapper, '编辑')).toBeUndefined()
+      await wrapper.get('.el-dialog__header [aria-label="编辑"]').trigger('click')
+      expect(wrapper.emitted('edit')).toHaveLength(1)
+      await wrapper.setProps({ readOnly: false })
+      expect(wrapper.get('.tenant-edit-tabs__item.is-active').text()).toBe('用户管理')
+      expect(wrapper.text()).toContain('负责人')
+      expect(wrapper.find('[aria-label="编辑"]').exists()).toBe(false)
+      expect(wrapper.find('[aria-label="添加成员"]').exists()).toBe(true)
+    },
+  )
+
+  it('loads project environments while preventing creation and permission changes in details', async () => {
+    vi.mocked(listEnvironments).mockResolvedValue([
+      {
+        id: 'env-1',
+        projectId: 'project-1',
+        code: 'dev',
+        name: '开发环境',
+        remark: '',
+        orderNo: 10,
+        isCheckPerm: true,
+        createBy: '',
+        updateBy: '',
+        createAt: '',
+        updateAt: '',
+      },
+    ])
+    const wrapper = dialog('project', true)
+    await flushPromises()
+    await wrapper
+      .findAll('.tenant-edit-tabs__item')
+      .find((item) => item.text() === '环境管理')!
+      .trigger('click')
+    await flushPromises()
+    expect(listEnvironments).toHaveBeenCalledWith({ projectId: 'project-1' })
+    expect(wrapper.text()).toContain('开发环境')
+    expect(wrapper.find('[aria-label="新建环境"]').exists()).toBe(false)
+    const permissionSwitch = wrapper.getComponent({ name: 'ElSwitch' })
+    expect(permissionSwitch.props('disabled')).toBe(true)
+    permissionSwitch.vm.$emit('change', false)
+    await flushPromises()
+    expect(updateEnvironment).not.toHaveBeenCalled()
+    expect(createEnvironment).not.toHaveBeenCalled()
+  })
+
   it.each([
     { resourceType: 'tenant' as const, scope: { undistributed: true }, type: 'tenant' },
     { resourceType: 'organization' as const, scope: { tenantId: 'tenant-1' }, type: 'org' },

@@ -212,6 +212,41 @@ function folderFixture(code: string, type: 'common' | 'customer'): Folder {
 }
 
 describe('SecretListView folder sections', () => {
+  it('opens folder details without navigating and switches directly to editing', async () => {
+    const wrapper = mount(SecretListView, {
+      global: { plugins: [ElementPlus, createPinia()], stubs: { ManagerSelect: true } },
+      attachTo: document.body,
+    })
+    await flushPromises()
+    expect(wrapper.find('[aria-label="编辑应用配置"]').exists()).toBe(false)
+    await wrapper.get('[aria-label="管理卡片"]').trigger('click')
+    expect(wrapper.find('[aria-label="编辑应用配置"]').exists()).toBe(false)
+    expect(wrapper.find('[aria-label="删除应用配置"]').exists()).toBe(true)
+    const detail = wrapper.get('[aria-label="查看应用配置详情"]')
+    expect(detail.element.nextElementSibling?.getAttribute('aria-label')).toBe('收藏')
+    await detail.trigger('click')
+    await flushPromises()
+    const dialog = wrapper.getComponent({ name: 'CardEditDialog' })
+    expect(listSecretsByFolderGroup).not.toHaveBeenCalled()
+    expect(dialog.props('readOnly')).toBe(true)
+    expect(dialog.get<HTMLInputElement>('input').element.value).toBe('应用配置')
+    expect(dialog.get('input').attributes('readonly')).toBeDefined()
+    expect(
+      dialog.findAllComponents({ name: 'ElButton' }).some((button) => button.text() === '保存'),
+    ).toBe(false)
+    expect(dialog.find('.el-dialog__footer [aria-label="编辑"]').exists()).toBe(false)
+    await dialog.get('.el-dialog__header [aria-label="编辑"]').trigger('click')
+    await flushPromises()
+    expect(dialog.props('readOnly')).toBe(false)
+    expect(dialog.props('modelValue')).toBe(true)
+    expect(dialog.get<HTMLInputElement>('input').element.value).toBe('应用配置')
+    expect(dialog.get('input').attributes('readonly')).toBeUndefined()
+    expect(
+      dialog.findAllComponents({ name: 'ElButton' }).some((button) => button.text() === '保存'),
+    ).toBe(true)
+    wrapper.unmount()
+  })
+
   it('records each directory step and restores it on browser back and forward', async () => {
     realNavigation.enabled = true
     vi.mocked(listFolders).mockImplementation(async (request) => {

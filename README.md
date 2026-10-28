@@ -1,5 +1,11 @@
 # EnvVault Web 前端架构设计
 
+系统内审计日志中心入口：左侧“审计日志”菜单（`/app/audit`），调用 `POST /api/v1/audit/global/list`。支持跨资源查询、已删除资源的原 ID 查询、组合筛选、分页和只读事件详情；直接进入时默认查询最近 7 个自然日，清空时间后不限制日期。字符串筛选为精确匹配，操作人填写工号 / 用户 ID。后端保留登录认证并接入权限责任链，当前全局查看策略暂时默认通过，真实资源范围授权后续接入。
+
+用户管理列表和个人密钥列表已增加“操作记录”图标，跳转日志中心并按目标资源查询全部历史（`timeRange=all`）。用户资料日志使用 `resourceType=user`、`resourceId=工号 userId`，不是用户表主键，也不是操作人筛选；个人密钥使用 `resourceType=personalSecret`、`resourceId=密钥 id`。用户管理工具栏另有“列表查询记录”，使用 `resourceType=userCollection`，资源 ID 为当前租户 ID，未选租户时为 `all`。成员分配日志仍归属实际租户、组织或项目，通过对应资源的日志入口查看。主密钥快捷入口后续补充。
+
+日志中心的筛选和分页保存在 URL，刷新、复制链接及浏览器前进 / 后退会恢复相同查询；未提交的输入不会影响分页。URL 仅保存查询条件，不携带密钥值或完整资源对象；参数无效时显示提示并停止请求，可调整筛选或重置恢复。
+
 ## 1. 背景与定位
 
 EnvVault Web 是 EnvVault 密钥管理平台的前端工程。后端提供基于 HTTP 的组织 / 项目 / 环境 / Folder / Secret 管理能力,并配套 RBAC、审计、删除快照、Secret 版本历史和路径访问。前端负责把这些能力以安全、易用、可审计的方式呈现给用户。
@@ -755,15 +761,13 @@ flowchart TD
 ```bash
 docker login harbor.gtjaqh.net
 
-export IMAGE=harbor.gtjaqh.net/lucy-dev/env-vault-web:0.0.1-alpha.5
-
 docker buildx build \
   --platform linux/amd64 \
   --build-arg NODE_IMAGE=m.daocloud.io/docker.io/library/node:20-alpine \
   --build-arg NGINX_IMAGE=harbor.gtjaqh.net/infra/nginx:mainline \
   --build-arg VITE_AUTH_MODE=company \
   --build-arg VITE_COMPANY_LOGIN_URL=/tologin.do \
-  -t "$IMAGE" \
+  -t "harbor.gtjaqh.net/lucy-dev/env-vault-web:0.0.1-alpha.6" \
   --push \
   .
 ```

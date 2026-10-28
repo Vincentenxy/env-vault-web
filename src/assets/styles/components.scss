@@ -402,6 +402,55 @@
   margin: -22px -24px -24px;
 }
 
+.vault-card-edit-dialog.el-dialog.vault-card-edit-dialog--details {
+  > .el-dialog__header {
+    padding-right: 96px;
+  }
+
+  .tenant-edit-tabs {
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .tenant-edit-tabs__item {
+    flex-shrink: 0;
+  }
+}
+
+.vault-card-edit-dialog__header-edit {
+  position: absolute;
+  top: 10px;
+  right: 53px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #176dfb;
+  font-size: 16px;
+  cursor: pointer;
+
+  &:hover:not(:disabled),
+  &:focus-visible:not(:disabled) {
+    background: var(--v-surface-bg-subtle);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--v-brand-primary);
+    outline-offset: -2px;
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+}
+
 .resource-members {
   min-height: 382px;
 }

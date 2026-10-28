@@ -12,6 +12,7 @@ import {
   Check,
   Close,
   Delete,
+  Edit,
   Plus,
   Rank,
   Search,
@@ -67,12 +68,14 @@ const props = withDefaults(
     tenantId?: string
     orgId?: string
     submitting: boolean
+    readOnly?: boolean
   }>(),
-  { managerName: '', tenantId: '', orgId: '' },
+  { managerName: '', tenantId: '', orgId: '', readOnly: false },
 )
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
+  edit: []
   submit: [payload: ResourceEditPayload]
   'members-changed': []
 }>()
@@ -335,7 +338,7 @@ function resetEnvironmentForm(): void {
 }
 
 function openEnvironmentDraft(): void {
-  if (environmentDraftVisible.value) return
+  if (props.readOnly || environmentDraftVisible.value) return
   resetEnvironmentForm()
   environmentDraftIndex.value = orderedEnvironments.value.length
   environmentDraftVisible.value = true
@@ -377,6 +380,7 @@ function finishEnvironmentDraftDrag(): void {
 }
 
 async function createProjectEnvironment(): Promise<void> {
+  if (props.readOnly) return
   if (!environmentDraftVisible.value || environmentCreateSubmitting.value) return
   const valid = await environmentFormRef.value?.validate().catch(() => false)
   if (!valid) return
@@ -409,6 +413,7 @@ async function updateEnvironmentPermission(
   environment: Environment,
   isCheckPerm: boolean,
 ): Promise<void> {
+  if (props.readOnly) return
   if (environmentPermissionUpdatingId.value || environment.isCheckPerm === isCheckPerm) {
     return
   }
@@ -433,6 +438,7 @@ async function updateEnvironmentPermission(
 }
 
 async function submit(): Promise<void> {
+  if (props.readOnly) return
   if (props.submitting || activeTab.value !== 'basic' || !hasChanges.value) return
   const valid = await formRef.value?.validate().catch(() => false)
   if (!valid) return
@@ -462,6 +468,7 @@ function backToMembers(): void {
 }
 
 async function openAddMembers(): Promise<void> {
+  if (props.readOnly) return
   if (memberLoading.value || memberLoadFailed.value || memberBusy.value) return
   memberAdding.value = true
   await loadCandidates()
@@ -490,6 +497,7 @@ function toggleAllVisibleCandidates(checked: CheckboxValueType): void {
 }
 
 async function addSelectedUsers(): Promise<void> {
+  if (props.readOnly) return
   if (
     !memberAdding.value ||
     !selectedCandidateIds.value.length ||
@@ -520,6 +528,7 @@ async function addSelectedUsers(): Promise<void> {
 }
 
 async function removeUser(user: UserListItem): Promise<void> {
+  if (props.readOnly) return
   const userId = userIdOf(user)
   if (!userId || userId === props.managerId || removingUserId.value) return
   const cascadeNotice =
@@ -597,8 +606,10 @@ onBeforeUnmount(() => {
 <template>
   <el-dialog
     v-model="dialogVisible"
+    :title="`${resourceLabel}${readOnly ? '详情' : '编辑'}`"
     width="860px"
     class="vault-card-edit-dialog tenant-edit-dialog resource-edit-dialog"
+    :class="{ 'vault-card-edit-dialog--details': readOnly }"
     :close-on-click-modal="false"
     :close-on-press-escape="!submitting && !tagBusy && !memberBusy"
     :show-close="!submitting && !tagBusy && !memberBusy"
@@ -607,7 +618,10 @@ onBeforeUnmount(() => {
     @closed="resetDialog"
   >
     <template #header>
-      <nav class="tenant-edit-tabs" :aria-label="`${resourceLabel}编辑菜单`">
+      <nav
+        class="tenant-edit-tabs"
+        :aria-label="`${resourceLabel}${readOnly ? '详情' : '编辑'}菜单`"
+      >
         <button
           type="button"
           class="tenant-edit-tabs__item"
@@ -661,6 +675,16 @@ onBeforeUnmount(() => {
           操作记录
         </button>
       </nav>
+      <button
+        v-if="readOnly"
+        type="button"
+        class="vault-card-edit-dialog__header-edit"
+        aria-label="编辑"
+        :disabled="submitting || tagBusy || memberBusy"
+        @click="emit('edit')"
+      >
+        <el-icon><Edit /></el-icon>
+      </button>
     </template>
 
     <div
@@ -675,6 +699,7 @@ onBeforeUnmount(() => {
         ref="formRef"
         :model="form"
         :rules="rules"
+        :hide-required-asterisk="readOnly"
         label-position="left"
         label-width="96px"
         require-asterisk-position="right"
@@ -684,7 +709,8 @@ onBeforeUnmount(() => {
           <el-input
             v-model="form.name"
             maxlength="64"
-            show-word-limit
+            :show-word-limit="!readOnly"
+            :readonly="readOnly"
             :placeholder="`请输入${resourceLabel}名称`"
             :disabled="submitting"
           />
@@ -701,7 +727,9 @@ onBeforeUnmount(() => {
           </button>
         </el-form-item>
         <el-form-item label="管理员" prop="managerId">
+          <el-input v-if="readOnly" :model-value="managerName || managerId || '—'" readonly />
           <ManagerSelect
+            v-else
             v-model="form.managerId"
             :tenant-id="resourceType === 'tenant' ? resourceId : ''"
             :org-id="resourceType === 'organization' ? resourceId : ''"
@@ -717,7 +745,8 @@ onBeforeUnmount(() => {
             type="textarea"
             :rows="5"
             maxlength="256"
-            show-word-limit
+            :show-word-limit="!readOnly"
+            :readonly="readOnly"
             :placeholder="`可选，填写${resourceLabel}相关说明`"
             :disabled="submitting"
           />
@@ -732,6 +761,7 @@ onBeforeUnmount(() => {
           </div>
 
           <button
+            v-if="!readOnly"
             type="button"
             class="resource-members__add"
             aria-label="新建环境"
@@ -794,7 +824,7 @@ onBeforeUnmount(() => {
                         active-text="开"
                         inactive-text="关"
                         :loading="environmentPermissionUpdatingId === row.environment.id"
-                        :disabled="Boolean(environmentPermissionUpdatingId)"
+                        :disabled="readOnly || Boolean(environmentPermissionUpdatingId)"
                         @change="updateEnvironmentPermission(row.environment, Boolean($event))"
                       />
                     </td>
@@ -899,7 +929,7 @@ onBeforeUnmount(() => {
           <div v-else-if="!environmentLoading" class="resource-members__empty">
             <strong>{{ environmentLoadFailed ? '环境加载失败' : '暂无环境' }}</strong>
             <el-button
-              v-if="!environmentLoadFailed"
+              v-if="!readOnly && !environmentLoadFailed"
               type="primary"
               link
               @click="openEnvironmentDraft"
@@ -953,7 +983,7 @@ onBeforeUnmount(() => {
             </el-input>
 
             <button
-              v-if="!memberAdding"
+              v-if="!readOnly && !memberAdding"
               type="button"
               class="resource-members__add"
               aria-label="添加成员"
@@ -1030,7 +1060,7 @@ onBeforeUnmount(() => {
                 <th>工号</th>
                 <th>角色</th>
                 <th>状态</th>
-                <th aria-label="操作"></th>
+                <th v-if="!readOnly" aria-label="操作"></th>
               </tr>
             </thead>
             <tbody>
@@ -1068,7 +1098,7 @@ onBeforeUnmount(() => {
                     {{ user.isBlocked ? '已停用' : '正常' }}
                   </span>
                 </td>
-                <td class="resource-members__operation">
+                <td v-if="!readOnly" class="resource-members__operation">
                   <el-tooltip
                     content="请先更换管理员"
                     :disabled="userIdOf(user) !== managerId"
@@ -1119,6 +1149,7 @@ onBeforeUnmount(() => {
         v-if="resourceType === 'tenant' && dialogVisible"
         v-show="activeTab === 'tags'"
         :tenant-id="resourceId"
+        :read-only="readOnly"
         :active="activeTab === 'tags'"
         @busy="tagBusy = $event"
       />
@@ -1135,10 +1166,10 @@ onBeforeUnmount(() => {
 
     <template #footer>
       <el-button :disabled="submitting || tagBusy || memberBusy" @click="dialogVisible = false">
-        {{ activeTab === 'basic' ? '取消' : '关闭' }}
+        {{ !readOnly && activeTab === 'basic' ? '取消' : '关闭' }}
       </el-button>
       <el-button
-        v-if="activeTab === 'basic'"
+        v-if="!readOnly && activeTab === 'basic'"
         type="primary"
         :loading="submitting"
         :disabled="!hasChanges"

@@ -10,6 +10,7 @@ import { Permission } from '@/constants/permission'
  *  - /app/projects/:projectId(项目详情:env 多选 + 目录树 + Secrets/Folder Tab)
  *  - /app/envs(环境管理)
  *  - /app/secrets(密钥管理)
+ *  - /app/audit(审计日志)
  *  - /app/settings/profile(个人信息)
  *  - /app/settings/users(用户管理)
  *
@@ -70,6 +71,12 @@ export const routes: RouteRecordRaw[] = [
         name: 'SecretSearch',
         component: () => import('@/views/secret/SecretSearchView.vue'),
         meta: { title: '秘钥检索', requiresAuth: true },
+      },
+      {
+        path: 'audit',
+        name: 'AuditLog',
+        component: () => import('@/views/audit/AuditLogView.vue'),
+        meta: { title: '审计日志', requiresAuth: true },
       },
       {
         path: 'settings/profile',

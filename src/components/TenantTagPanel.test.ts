@@ -25,13 +25,13 @@ const tag: Tag = {
   updateAt: '',
 }
 const mounted: ReturnType<typeof mount>[] = []
-function panel(active = true) {
+function panel(active = true, readOnly = false) {
   const pinia = createPinia()
   const auth = useAuthStore(pinia)
   auth.setToken('test-session')
   auth.setCurrentUser({ id: 'user-1', userId: 'user-1', nickname: '测试用户' })
   const wrapper = mount(TenantTagPanel, {
-    props: { tenantId: 'tenant-1', active },
+    props: { tenantId: 'tenant-1', active, readOnly },
     global: { plugins: [ElementPlus, pinia] },
     attachTo: document.body,
   })
@@ -53,6 +53,20 @@ afterEach(() => {
 })
 
 describe('TenantTagPanel', () => {
+  it('allows tag browsing without creating, editing or deleting in details', async () => {
+    const wrapper = panel(true, true)
+    await flushPromises()
+    expect(wrapper.text()).toContain('password')
+    expect(wrapper.text()).toContain('禁止')
+    expect(wrapper.findComponent(TenantTagCreatePanel).exists()).toBe(false)
+    expect(wrapper.find('[aria-label="新建 Tag"]').exists()).toBe(false)
+    expect(wrapper.find('[aria-label="编辑 Tag"]').exists()).toBe(false)
+    expect(wrapper.find('[aria-label="删除 Tag"]').exists()).toBe(false)
+    expect(createTag).not.toHaveBeenCalled()
+    expect(updateTag).not.toHaveBeenCalled()
+    expect(deleteTag).not.toHaveBeenCalled()
+  })
+
   it('loads only when the tenant tab is active', async () => {
     const wrapper = panel(false)
     await flushPromises()
